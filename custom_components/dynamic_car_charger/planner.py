@@ -124,6 +124,7 @@ def make_plan(prices, now, deadline, soc, target, capacity, power, efficiency, m
         Slot(max(s.start, now), min(s.end, deadline), number(s.price))
         for s in prices
         if s.end > now and s.start < deadline
+        and (max_price is None or number(s.price) <= number(max_price))
     ]
     clipped.sort(key=lambda s: s.start)
     cursor = now
