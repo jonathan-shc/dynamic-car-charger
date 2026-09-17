@@ -26,10 +26,16 @@ def schema(values):
         ("price_adjustment", -2, 2, 0.0001, "EUR/kWh"),
         ("soc_max_age_minutes", 5, 240, 1, "min"),
     ]:
+        selector_config = {
+            "min": lo,
+            "max": hi,
+            "step": step,
+            "mode": "box",
+        }
+        if unit is not None:
+            selector_config["unit_of_measurement"] = unit
         fields[vol.Required(key, default=values.get(key, DEFAULTS[key]))] = selector.NumberSelector(
-            selector.NumberSelectorConfig(
-                min=lo, max=hi, step=step, mode="box", unit_of_measurement=unit
-            )
+            selector.NumberSelectorConfig(**selector_config)
         )
     fields[vol.Required("interval_minutes", default=str(values.get("interval_minutes", 60)))] = (
         selector.SelectSelector(selector.SelectSelectorConfig(options=["60", "15"]))
