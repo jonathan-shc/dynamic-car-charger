@@ -80,6 +80,13 @@ class ChargerCoordinator(DataUpdateCoordinator):
             "pending_stop": self._pending_stop,
         }
 
+    async def async_change_price_threshold(self, value):
+        """Update the live price threshold from the Number entity."""
+        async with self._lock:
+            self.settings["max_price_eur_kwh"] = number(value, 0, 5)
+            await self.store.async_save(self._save_data())
+        await self.async_reconcile()
+
     async def async_change(self, **changes):
         async with self._lock:
             if changes.get("enabled") is False:
