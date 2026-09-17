@@ -3,7 +3,6 @@
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
-from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import selector
 
 from .const import DEFAULTS, DOMAIN, NAME
@@ -33,9 +32,6 @@ def schema(values):
 
 def validate(hass, data):
     """Only accept actual entities and explicitly understood units."""
-    registered = er.async_get(hass).async_get(data["charger_entity"])
-    if registered and registered.platform == DOMAIN:
-        return {"charger_entity": "own_switch"}
     expected_domains = {
         "charger_entity": {"switch"},
         "soc_entity": {"sensor", "input_number"},
