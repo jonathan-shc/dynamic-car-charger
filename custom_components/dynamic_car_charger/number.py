@@ -32,7 +32,7 @@ class Target(ChargerEntity, NumberEntity):
 class PriceThreshold(ChargerEntity, NumberEntity):
     _attr_native_min_value = 0
     _attr_native_max_value = 5
-    _attr_native_step = 0.001
+    _attr_native_step = 0.01
     _attr_native_unit_of_measurement = "EUR/kWh"
     _attr_mode = NumberMode.BOX
     _attr_icon = "mdi:cash-clock"

@@ -18,7 +18,7 @@ def schema(values):
         ("power_kw", 0.1, 50, 0.1, "kW"),
         ("efficiency", 0.5, 1, 0.01, None),
         ("price_adjustment", -2, 2, 0.001, "EUR/kWh"),
-        ("max_price_eur_kwh", 0, 5, 0.001, "EUR/kWh"),
+        ("max_price_eur_kwh", 0, 5, 0.01, "EUR/kWh"),
         ("soc_max_age_minutes", 5, 240, 1, "min"),
     ]:
         selector_config = {"min": lo, "max": hi, "step": step, "mode": "box"}
