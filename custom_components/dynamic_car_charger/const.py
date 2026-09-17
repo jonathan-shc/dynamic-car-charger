@@ -9,5 +9,6 @@ DEFAULTS = {
     "efficiency": 0.9,
     "interval_minutes": 60,
     "price_adjustment": 0.0,
+    "max_price_eur_kwh": 0.20,
     "soc_max_age_minutes": 60,
 }

@@ -109,7 +109,7 @@ def parse_prices(attributes, interval_minutes=60, adjustment=0):
     return slots
 
 
-def make_plan(prices, now, deadline, soc, target, capacity, power, efficiency):
+def make_plan(prices, now, deadline, soc, target, capacity, power, efficiency, max_price=None):
     """Fractional cheapest-first allocation, optimal for fixed power/efficiency.
 
     Unknown periods are never assigned a made-up price. A partial final slot

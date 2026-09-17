@@ -162,16 +162,19 @@ class ChargerCoordinator(DataUpdateCoordinator):
             try:
                 if self.deadline is not None:
                     soc, effective, prices = self._read(now)
-                    plan = make_plan(
-                        prices,
-                        now,
-                        self.deadline,
-                        effective,
-                        self.target,
-                        self.settings["capacity_kwh"],
-                        self.settings["power_kw"],
-                        self.settings["efficiency"],
-                    )
+                    threshold = self.settings.get("max_price_eur_kwh", 0.20)
+                    threshold_plan = make_plan(
+                        prices, now, self.deadline, effective, self.target,
+                        self.settings["capacity_kwh"], self.settings["power_kw"],
+                        self.settings["efficiency"], max_price=threshold)
+                    safety_hours = max(1.0, threshold_plan.required_kwh / self.settings["power_kw"] * 1.5)
+                    safety_mode = (self.deadline - now).total_seconds() / 3600 <= safety_hours
+                    plan = threshold_plan if not safety_mode else make_plan(
+                        prices, now, self.deadline, effective, self.target,
+                        self.settings["capacity_kwh"], self.settings["power_kw"],
+                        self.settings["efficiency"])
+                    data["price_threshold_eur_kwh"] = threshold
+                    data["threshold_safety_mode"] = safety_mode
                     data.update(plan.as_dict(self.settings["power_kw"]))
                     data["measured_soc"] = soc
                     data["estimated_soc"] = round(effective, 2)
@@ -182,10 +185,10 @@ class ChargerCoordinator(DataUpdateCoordinator):
                         status = "deadline_passed"
                     elif effective >= self.target:
                         status = "awaiting_soc_confirmation"
+                    elif not safety_mode and threshold_plan.shortfall_kwh > 0.001:
+                        status = "waiting_above_threshold" if threshold_plan.coverage_complete else "waiting_for_prices"
                     elif plan.shortfall_kwh > 0.001:
-                        status = (
-                            "insufficient_time" if plan.coverage_complete else "waiting_for_prices"
-                        )
+                        status = "insufficient_time" if plan.coverage_complete else "waiting_for_prices"
                     elif not plan.coverage_complete:
                         status = "provisional_plan"
                     else:
@@ -199,7 +202,9 @@ class ChargerCoordinator(DataUpdateCoordinator):
             data["charging_requested"] = desired and self.enabled
             if self.enabled or force_stop or self._pending_stop:
                 error = await self._control(desired and self.enabled, now, force_stop)
-                if error:
+                if error == "waiting_for_car":
+                    data.update(status="waiting_for_car", error=None, charging_requested=False)
+                elif error:
                     data.update(status="control_error", error=error)
                 elif not self.enabled:
                     self._pending_stop = False
@@ -222,8 +227,8 @@ class ChargerCoordinator(DataUpdateCoordinator):
             and (now - self._command_time).total_seconds() < 120
         ):
             return f"Waiting for charger to confirm {wanted}" if actual != wanted else None
-        if desired and actual not in ("on", "off"):
-            return "Charger unavailable; cannot start charging"
+        if actual not in ("on", "off"):
+            return "waiting_for_car" if desired else None
         self._command, self._command_time = desired, now
         try:
             async with asyncio.timeout(30):
