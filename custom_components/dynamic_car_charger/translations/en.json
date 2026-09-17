@@ -1,0 +1,82 @@
+{
+  "title": "Dynamic Car Charger",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up Dynamic Car Charger",
+        "description": "Connect your existing Wallbox, car battery and NextEnergy price entities. Automatic control starts disabled so you can inspect the plan first.",
+        "data": {
+          "charger_entity": "Wallbox pause/resume switch",
+          "soc_entity": "Car battery percentage sensor",
+          "price_entity": "NextEnergy price sensor (EUR/kWh)",
+          "power_entity": "Wallbox actual charging power sensor (W or kW)",
+          "capacity_kwh": "Usable car battery capacity (kWh)",
+          "power_kw": "Expected charging power from the grid (kW)",
+          "efficiency": "Charging efficiency (0.90 means 90%)",
+          "interval_minutes": "Price interval in minutes",
+          "price_adjustment": "Contract adjustment to all-in price (EUR/kWh)",
+          "soc_max_age_minutes": "Maximum age of battery reports (minutes)"
+        },
+        "data_description": {
+          "charger_entity": "Select the Wallbox charging switch: on resumes, off pauses. Do not select a power relay.",
+          "soc_entity": "Use live battery percentage telemetry. A manual helper is an estimate and must be refreshed each session.",
+          "price_entity": "Use Enever NextEnergy with prices_today/prices_tomorrow, or a compatible prices list. Configure the source integration first.",
+          "power_entity": "Used to estimate energy added between battery percentage changes.",
+          "capacity_kwh": "Replace the example with your B05 variant’s usable capacity.",
+          "power_kw": "Use the lower of car AC capability and configured Wallbox power. Allow for load balancing. This integration does not change the current limit.",
+          "price_adjustment": "Enever already includes VAT and levies. Only enter a difference between your contract and the feed.",
+          "interval_minutes": "Choose 60 for current NextEnergy hourly billing. Use 15 only if your contract and source both use quarter-hours."
+        }
+      }
+    },
+    "error": {
+      "entity_missing": "Entity not found. Set up the source integration first.",
+      "soc_unit": "Choose a battery sensor with the unit %.",
+      "power_unit": "Choose a charging power sensor with the unit W or kW.",
+      "price_unit": "Choose prices in EUR/kWh or €/kWh.",
+      "charger_in_use": "This charger already has a scheduler.",
+      "own_switch": "Select the Wallbox switch, not this integration’s own automatic charging switch."
+    },
+    "abort": {
+      "already_configured": "This charger is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Charger and tariff settings",
+        "description": "Changing settings reloads the integration and requests a pause before restarting control.",
+        "data": {
+          "charger_entity": "Wallbox pause/resume switch",
+          "soc_entity": "Car battery percentage sensor",
+          "price_entity": "NextEnergy price sensor (EUR/kWh)",
+          "power_entity": "Wallbox actual charging power sensor (W or kW)",
+          "capacity_kwh": "Usable car battery capacity (kWh)",
+          "power_kw": "Expected charging power from the grid (kW)",
+          "efficiency": "Charging efficiency (0.90 means 90%)",
+          "interval_minutes": "Price interval in minutes",
+          "price_adjustment": "Contract adjustment to all-in price (EUR/kWh)",
+          "soc_max_age_minutes": "Maximum age of battery reports (minutes)"
+        },
+        "data_description": {
+          "charger_entity": "Select the Wallbox charging switch: on resumes, off pauses. Do not select a power relay.",
+          "soc_entity": "Use live battery percentage telemetry. A manual helper is an estimate and must be refreshed each session.",
+          "price_entity": "Use Enever NextEnergy with prices_today/prices_tomorrow, or a compatible prices list. Configure the source integration first.",
+          "power_entity": "Used to estimate energy added between battery percentage changes.",
+          "capacity_kwh": "Replace the example with your B05 variant’s usable capacity.",
+          "power_kw": "Use the lower of car AC capability and configured Wallbox power. Allow for load balancing. This integration does not change the current limit.",
+          "price_adjustment": "Enever already includes VAT and levies. Only enter a difference between your contract and the feed.",
+          "interval_minutes": "Choose 60 for current NextEnergy hourly billing. Use 15 only if your contract and source both use quarter-hours."
+        }
+      }
+    },
+    "error": {
+      "entity_missing": "Entity not found. Set up the source integration first.",
+      "soc_unit": "Choose a battery sensor with the unit %.",
+      "power_unit": "Choose a charging power sensor with the unit W or kW.",
+      "price_unit": "Choose prices in EUR/kWh or €/kWh.",
+      "charger_in_use": "This charger already has a scheduler.",
+      "own_switch": "Select the Wallbox switch, not this integration’s own automatic charging switch."
+    }
+  }
+}

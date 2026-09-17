@@ -1,0 +1,15 @@
+{
+  "domain": "dynamic_car_charger",
+  "name": "Dynamic Car Charger",
+  "codeowners": [
+    "@jonathan-shc"
+  ],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/jonathan-shc/dynamic-car-charger",
+  "integration_type": "service",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/jonathan-shc/dynamic-car-charger/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}

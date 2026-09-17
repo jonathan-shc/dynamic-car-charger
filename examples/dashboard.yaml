@@ -1,0 +1,40 @@
+type: vertical-stack
+cards:
+  - type: entities
+    title: Dynamic Car Charger
+    show_header_toggle: false
+    entities:
+      - entity: number.dynamic_car_charger_target_charge
+        name: Target battery
+      - entity: datetime.dynamic_car_charger_ready_by
+        name: Ready by
+      - entity: switch.dynamic_car_charger_automatic_charging
+        name: Automatic charging
+      - entity: sensor.dynamic_car_charger_charging_plan
+        name: Plan status
+      - entity: sensor.dynamic_car_charger_remaining_charging_cost
+        name: Estimated remaining cost
+  - type: markdown
+    title: Charging plan
+    content: |-
+      {% set plan = 'sensor.dynamic_car_charger_charging_plan' %}
+      {% set error = state_attr(plan, 'error') %}
+      {% if error %}**Attention:** {{ error }}
+
+      {% endif %}
+      {% if state_attr(plan, 'coverage_complete') == false %}
+      **Provisional:** future prices are not fully published.
+
+      {% endif %}
+      {% set shortfall = state_attr(plan, 'shortfall_kwh') | float(0) %}
+      {% if shortfall > 0 %}**Energy still unscheduled:** {{ shortfall | round(2) }} kWh.
+
+      {% endif %}
+      {% set slots = state_attr(plan, 'slots') or [] %}
+      {% if slots %}
+      | Start | End | €/kWh | kWh |
+      |:--|:--|--:|--:|
+      {% for slot in slots %}
+      | {{ as_timestamp(slot.start) | timestamp_custom('%a %d/%m %H:%M') }} | {{ as_timestamp(slot.end) | timestamp_custom('%H:%M') }} | {{ slot.price_eur_kwh | round(3) }} | {{ slot.energy_kwh | round(2) }} |
+      {% endfor %}
+      {% else %}No charging intervals are currently scheduled.{% endif %}
