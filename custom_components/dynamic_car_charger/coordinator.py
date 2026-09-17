@@ -174,12 +174,21 @@ class ChargerCoordinator(DataUpdateCoordinator):
                         prices, now, self.deadline, effective, self.target,
                         self.settings["capacity_kwh"], self.settings["power_kw"],
                         self.settings["efficiency"], max_price=threshold)
-                    safety_hours = max(1.0, threshold_plan.required_kwh / self.settings["power_kw"] * 1.5)
-                    safety_mode = (self.deadline - now).total_seconds() / 3600 <= safety_hours
-                    plan = threshold_plan if not safety_mode else make_plan(
+                    full_plan = make_plan(
                         prices, now, self.deadline, effective, self.target,
                         self.settings["capacity_kwh"], self.settings["power_kw"],
                         self.settings["efficiency"])
+                    safety_hours = max(1.0, threshold_plan.required_kwh / self.settings["power_kw"] * 1.5)
+                    safety_mode = (self.deadline - now).total_seconds() / 3600 <= safety_hours
+                    # Once prices are known continuously through the deadline,
+                    # use the normal least-cost plan. The threshold only limits
+                    # provisional planning while future prices are still unknown.
+                    if full_plan.coverage_complete:
+                        plan = full_plan
+                    elif safety_mode:
+                        plan = full_plan
+                    else:
+                        plan = threshold_plan
                     data["price_threshold_eur_kwh"] = threshold
                     data["threshold_safety_mode"] = safety_mode
                     data.update(plan.as_dict(self.settings["power_kw"]))
@@ -192,8 +201,6 @@ class ChargerCoordinator(DataUpdateCoordinator):
                         status = "deadline_passed"
                     elif effective >= self.target:
                         status = "awaiting_soc_confirmation"
-                    elif not safety_mode and threshold_plan.shortfall_kwh > 0.001:
-                        status = "waiting_above_threshold" if threshold_plan.coverage_complete else "waiting_for_prices"
                     elif plan.shortfall_kwh > 0.001:
                         status = "insufficient_time" if plan.coverage_complete else "waiting_for_prices"
                     elif not plan.coverage_complete:
