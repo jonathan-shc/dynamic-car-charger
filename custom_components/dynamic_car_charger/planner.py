@@ -120,19 +120,25 @@ def make_plan(prices, now, deadline, soc, target, capacity, power, efficiency, m
     capacity, power = number(capacity, 0.1, 300), number(power, 0.1, 50)
     efficiency = number(efficiency, 0.1, 1)
     required = max(0, target - soc) / 100 * capacity / efficiency
-    clipped = [
+    all_clipped = [
         Slot(max(s.start, now), min(s.end, deadline), number(s.price))
         for s in prices
         if s.end > now and s.start < deadline
-        and (max_price is None or number(s.price) <= number(max_price))
     ]
-    clipped.sort(key=lambda s: s.start)
+    all_clipped.sort(key=lambda s: s.start)
+    # Coverage answers whether prices are known continuously to the deadline;
+    # it must include expensive known hours. The threshold only filters the
+    # candidate slots that may be selected for charging.
     cursor = now
-    for slot in clipped:
+    for slot in all_clipped:
         if slot.start > cursor:
             break
         cursor = max(cursor, slot.end)
     coverage = cursor >= deadline
+    clipped = [
+        slot for slot in all_clipped
+        if max_price is None or slot.price <= number(max_price)
+    ]
     remaining, cost, chosen = required, 0.0, []
     for slot in sorted(clipped, key=lambda s: (s.price, s.start)):
         if remaining < 1e-8:
