@@ -2,7 +2,7 @@
 
 DOMAIN = "dynamic_car_charger"
 NAME = "Dynamic Car Charger"
-PLATFORMS = ["sensor", "number", "datetime", "switch"]
+PLATFORMS = ["sensor", "number", "datetime", "switch", "button"]
 DEFAULTS = {
     "capacity_kwh": 60.0,
     "power_kw": 7.4,

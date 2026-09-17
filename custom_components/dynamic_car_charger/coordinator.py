@@ -80,6 +80,13 @@ class ChargerCoordinator(DataUpdateCoordinator):
             "pending_stop": self._pending_stop,
         }
 
+    async def async_set_deadline_preset(self, days, hour):
+        """Set the deadline to a local-time preset calculated by the integration."""
+        current = dt_util.now()
+        deadline = (current.replace(hour=hour, minute=0, second=0, microsecond=0)
+                    + timedelta(days=days))
+        await self.async_change(deadline=deadline)
+
     async def async_change_price_threshold(self, value):
         """Update the live price threshold from the Number entity."""
         async with self._lock:
