@@ -25,8 +25,8 @@ def schema(values):
         fields[vol.Required(key, default=values.get(key, DEFAULTS[key]))] = selector.NumberSelector(
             selector.NumberSelectorConfig(**selector_config)
         )
-    fields[vol.Required("interval_minutes", default=str(values.get("interval_minutes", 60)))] = (
-        selector.SelectSelector(selector.SelectSelectorConfig(options=["60", "15"]))
+    fields[vol.Required("interval_minutes", default=int(values.get("interval_minutes", 60)))] = selector.NumberSelector(
+        selector.NumberSelectorConfig(min=15, max=60, step=45, mode="box")
     )
     return vol.Schema(fields)
 
