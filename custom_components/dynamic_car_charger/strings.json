@@ -35,7 +35,8 @@
       "power_unit": "Choose a charging power sensor with the unit W or kW.",
       "price_unit": "Choose prices in EUR/kWh or €/kWh.",
       "charger_in_use": "This charger already has a scheduler.",
-      "own_switch": "Select the Wallbox switch, not this integration’s own automatic charging switch."
+      "own_switch": "Select the Wallbox switch, not this integration’s own automatic charging switch.",
+      "wrong_domain": "Select an entity from the correct domain."
     },
     "abort": {
       "already_configured": "This charger is already configured."
@@ -76,7 +77,8 @@
       "power_unit": "Choose a charging power sensor with the unit W or kW.",
       "price_unit": "Choose prices in EUR/kWh or €/kWh.",
       "charger_in_use": "This charger already has a scheduler.",
-      "own_switch": "Select the Wallbox switch, not this integration’s own automatic charging switch."
+      "own_switch": "Select the Wallbox switch, not this integration’s own automatic charging switch.",
+      "wrong_domain": "Select an entity from the correct domain."
     }
   }
 }

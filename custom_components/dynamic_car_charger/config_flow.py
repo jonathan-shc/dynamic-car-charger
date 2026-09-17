@@ -11,14 +11,9 @@ from .const import DEFAULTS, DOMAIN, NAME
 
 def schema(values):
     fields = {}
-    for key, domains in {
-        "charger_entity": ["switch"],
-        "soc_entity": ["sensor", "input_number"],
-        "price_entity": ["sensor"],
-        "power_entity": ["sensor"],
-    }.items():
+    for key in ("charger_entity", "soc_entity", "price_entity", "power_entity"):
         marker = vol.Required(key, default=values[key]) if key in values else vol.Required(key)
-        fields[marker] = selector.EntitySelector(selector.EntitySelectorConfig(domain=domains))
+        fields[marker] = selector.EntitySelector()
     for key, lo, hi, step, unit in [
         ("capacity_kwh", 1, 300, 0.1, "kWh"),
         ("power_kw", 0.1, 50, 0.1, "kW"),
@@ -26,14 +21,7 @@ def schema(values):
         ("price_adjustment", -2, 2, 0.0001, "EUR/kWh"),
         ("soc_max_age_minutes", 5, 240, 1, "min"),
     ]:
-        selector_config = {
-            "min": lo,
-            "max": hi,
-            "step": step,
-            "mode": "box",
-        }
-        if unit is not None:
-            selector_config["unit_of_measurement"] = unit
+        selector_config = {"min": lo, "max": hi, "step": step, "mode": "box"}
         fields[vol.Required(key, default=values.get(key, DEFAULTS[key]))] = selector.NumberSelector(
             selector.NumberSelectorConfig(**selector_config)
         )
@@ -48,10 +36,19 @@ def validate(hass, data):
     registered = er.async_get(hass).async_get(data["charger_entity"])
     if registered and registered.platform == DOMAIN:
         return {"charger_entity": "own_switch"}
+    expected_domains = {
+        "charger_entity": {"switch"},
+        "soc_entity": {"sensor", "input_number"},
+        "price_entity": {"sensor"},
+        "power_entity": {"sensor"},
+    }
     for key in ("charger_entity", "soc_entity", "price_entity", "power_entity"):
-        state = hass.states.get(data[key])
+        entity_id = data.get(key)
+        state = hass.states.get(entity_id)
         if state is None:
             return {key: "entity_missing"}
+        if entity_id.split(".", 1)[0] not in expected_domains[key]:
+            return {key: "wrong_domain"}
         unit = state.attributes.get("unit_of_measurement")
         if key == "soc_entity" and unit != "%":
             return {key: "soc_unit"}
