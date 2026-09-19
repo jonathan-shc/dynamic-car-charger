@@ -12,7 +12,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN, NAME
+from .const import DOMAIN, EVENT_CAR_CONNECTED, NAME
 from .planner import make_plan, number, parse_prices, timestamp
 
 _LOGGER = logging.getLogger(__name__)
@@ -25,6 +25,7 @@ class ChargerCoordinator(DataUpdateCoordinator):
         self.settings = {**entry.data, **entry.options}
         self.store = Store(hass, 1, f"{DOMAIN}.{entry.entry_id}")
         self.enabled = False
+        self.immediate_charging = False
         self.target = 80.0
         self.deadline = None
         self._lock = asyncio.Lock()
@@ -32,6 +33,7 @@ class ChargerCoordinator(DataUpdateCoordinator):
         self._credit_kwh = 0.0
         self._sample_time = None
         self._sample_power = 0.0
+        self._power_report_old = False
         self._command = None
         self._command_time = None
         self._command_attempt_time = None
@@ -41,6 +43,7 @@ class ChargerCoordinator(DataUpdateCoordinator):
         self._boot = dt_util.utcnow()
         self._stopping = False
         self._pending_stop = False
+        self._charger_available = False
         self._unsubs = []
         self.data = {"status": "set_deadline", "slots": []}
 
@@ -48,10 +51,13 @@ class ChargerCoordinator(DataUpdateCoordinator):
         saved = await self.store.async_load() or {}
         self.target = number(saved.get("target", 80), 0, 100)
         self.enabled = bool(saved.get("enabled", False))
+        self.immediate_charging = bool(saved.get("immediate_charging", False))
         self._pending_stop = bool(saved.get("pending_stop", False))
         self.deadline = timestamp(saved["deadline"]) if saved.get("deadline") else None
         self._observed_soc = saved.get("observed_soc")
         self._credit_kwh = number(saved.get("credit_kwh", 0), 0)
+        charger_state = self.hass.states.get(self.settings["charger_entity"])
+        self._charger_available = self._is_available(charger_state)
         self._unsubs = [
             self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, self._shutdown),
             async_track_state_change_event(
@@ -68,8 +74,23 @@ class ChargerCoordinator(DataUpdateCoordinator):
 
     @callback
     def _changed(self, event):
+        if event.data.get("entity_id") == self.settings["charger_entity"]:
+            available = self._is_available(event.data.get("new_state"))
+            if available and not self._charger_available:
+                self.hass.bus.async_fire(
+                    EVENT_CAR_CONNECTED,
+                    {
+                        "config_entry_id": self.entry.entry_id,
+                        "charger_entity": self.settings["charger_entity"],
+                    },
+                )
+            self._charger_available = available
         if not self._stopping:
             self.hass.async_create_task(self.async_reconcile())
+
+    @staticmethod
+    def _is_available(state):
+        return state is not None and state.state not in ("unknown", "unavailable")
 
     async def _tick(self, now):
         await self.async_reconcile()
@@ -78,6 +99,7 @@ class ChargerCoordinator(DataUpdateCoordinator):
         return {
             "target": self.target,
             "enabled": self.enabled,
+            "immediate_charging": self.immediate_charging,
             "deadline": self.deadline.isoformat() if self.deadline else None,
             "observed_soc": self._observed_soc,
             "credit_kwh": self._credit_kwh,
@@ -104,6 +126,10 @@ class ChargerCoordinator(DataUpdateCoordinator):
                 self._pending_stop = True
             elif changes.get("enabled") is True:
                 self._pending_stop = False
+            if changes.get("immediate_charging") is False and not self.enabled:
+                self._pending_stop = True
+            elif changes.get("immediate_charging") is True:
+                self._pending_stop = False
             for key, value in changes.items():
                 setattr(self, key, value)
             await self.store.async_save(self._save_data())
@@ -127,15 +153,6 @@ class ChargerCoordinator(DataUpdateCoordinator):
             raise ValueError("Battery sensor must report %")
         if price_state.attributes.get("unit_of_measurement") not in ("EUR/kWh", "€/kWh"):
             raise ValueError("Prices must be EUR/kWh")
-        # Battery sources may publish only on change. Age alone does not prove
-        # that their still-available value is invalid. Keep power freshness strict
-        # because integrating an old nonzero power reading invents energy.
-        for state, age, label in (
-            (power_state, 300, "Charging power"),
-        ):
-            report = state.last_reported
-            if report < self._boot or (now - report).total_seconds() > age:
-                raise ValueError(f"{label} needs a fresh report")
         soc = number(soc_state.state, 0, 100)
         power = number(power_state.state, 0, 50_000)
         unit = power_state.attributes.get("unit_of_measurement")
@@ -145,6 +162,16 @@ class ChargerCoordinator(DataUpdateCoordinator):
             raise ValueError("Power sensor must report W or kW")
         if power > 50:
             raise ValueError("Charging power out of range")
+        power_report = power_state.last_reported
+        self._power_report_old = (
+            power_report < self._boot
+            or (now - power_report).total_seconds() > 300
+        )
+        if self._power_report_old:
+            # Many car and charger integrations stop publishing power after a
+            # session finishes. Never integrate that stale reading, but do not
+            # turn a normal idle state into an input error either.
+            power = 0.0
         if soc != self._observed_soc or not self.enabled:
             self._observed_soc, self._credit_kwh = soc, 0.0
         elif self._sample_time is not None:
@@ -172,13 +199,41 @@ class ChargerCoordinator(DataUpdateCoordinator):
                 "status": "set_deadline",
                 "slots": [],
                 "enabled": self.enabled,
+                "immediate_charging": self.immediate_charging,
                 "target_percentage": self.target,
                 "deadline": self.deadline.isoformat() if self.deadline else None,
                 "error": None,
                 "estimated_cost_eur": None,
             }
             try:
-                if self.deadline is not None:
+                if self.immediate_charging:
+                    soc, effective, _prices = self._read(now)
+                    battery_report = self.hass.states.get(
+                        self.settings["soc_entity"]
+                    ).last_reported
+                    age_minutes = max(
+                        0, (now - battery_report).total_seconds() / 60
+                    )
+                    data["soc_report_age_minutes"] = round(age_minutes, 1)
+                    data["soc_report_old"] = (
+                        age_minutes > self.settings["soc_max_age_minutes"]
+                    )
+                    data["measured_soc"] = soc
+                    data["estimated_soc"] = round(effective, 2)
+                    data["charging_power_report_old"] = self._power_report_old
+                    data["plan_status"] = "immediate_charging"
+                    data["plan_is_provisional"] = False
+                    if soc >= self.target:
+                        self.immediate_charging = False
+                        if not self.enabled:
+                            self._pending_stop = True
+                        data["immediate_charging"] = False
+                        data["status"] = "target_reached"
+                        data["plan_status"] = "target_reached"
+                    else:
+                        desired = True
+                        data["status"] = "charging"
+                elif self.deadline is not None:
                     soc, effective, prices = self._read(now)
                     price_signature = tuple(
                         (slot.start, slot.end, slot.price) for slot in prices
@@ -218,8 +273,22 @@ class ChargerCoordinator(DataUpdateCoordinator):
                     data["soc_report_old"] = age_minutes > self.settings["soc_max_age_minutes"]
                     data["measured_soc"] = soc
                     data["estimated_soc"] = round(effective, 2)
+                    data["charging_power_report_old"] = self._power_report_old
                     planned_now = plan.charging_at(now)
-                    if planned_now:
+                    awaiting_soc_confirmation = (
+                        soc < self.target
+                        and effective >= self.target
+                        and self._credit_kwh > 0
+                        and self._active_charge_until is not None
+                    )
+                    if awaiting_soc_confirmation:
+                        # The energy estimate must never end an active session
+                        # before the car itself reports the requested SOC. Keep
+                        # a short rolling window alive until telemetry confirms
+                        # the target; the vehicle BMS remains the final limit.
+                        planned_now = True
+                        self._active_charge_until = now + timedelta(minutes=5)
+                    elif planned_now:
                         continuous_end = None
                         for slot in plan.slots:
                             if slot.start <= now < slot.end:
@@ -295,9 +364,10 @@ class ChargerCoordinator(DataUpdateCoordinator):
                 data.update(status="input_error", error=str(err))
                 self._sample_time = None
                 desired = False
-            data["charging_requested"] = desired and self.enabled
-            if self.enabled or force_stop or self._pending_stop:
-                error = await self._control(desired and self.enabled, now, force_stop)
+            control_enabled = self.enabled or self.immediate_charging
+            data["charging_requested"] = desired and control_enabled
+            if control_enabled or force_stop or self._pending_stop:
+                error = await self._control(desired and control_enabled, now, force_stop)
                 if error == "waiting_for_car":
                     data.update(status="waiting_for_car", error=None, charging_requested=False)
                 elif error in ("starting_charge", "stopping_charge"):
@@ -360,7 +430,7 @@ class ChargerCoordinator(DataUpdateCoordinator):
             for unsub in self._unsubs:
                 unsub()
             self._unsubs.clear()
-            if self.enabled:
+            if self.enabled or self.immediate_charging:
                 error = await self._control(False, dt_util.utcnow(), force=True)
                 if error:
                     _LOGGER.warning("Integration stopped: %s. Check the charger", error)

@@ -2,7 +2,7 @@
 
 from datetime import timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant.core import HomeAssistant
@@ -94,6 +94,49 @@ async def test_target_reached_pauses(rig):
     assert not c.data["charging_requested"]
 
 
+async def test_estimated_target_waits_for_measured_soc(rig):
+    hass, c, calls = rig
+    c.target = 100
+    hass.states.async_set("sensor.battery", "99", {"unit_of_measurement": "%"})
+
+    await c.async_change(enabled=True)
+    assert calls == ["turn_on"]
+    assert c._active_charge_until is not None
+
+    # The power integration estimates that enough energy has been delivered,
+    # but the car itself still reports 99%. Charging must continue.
+    c._credit_kwh = 0.5
+    await c.async_reconcile()
+    assert c.data["status"] == "awaiting_soc_confirmation"
+    assert c.data["charging_requested"] is True
+    assert calls == ["turn_on"]
+
+    hass.states.async_set("sensor.battery", "100", {"unit_of_measurement": "%"})
+    await c.async_reconcile()
+    assert c.data["status"] == "target_reached"
+    assert c.data["charging_requested"] is False
+    assert calls[-1] == "turn_off"
+
+
+async def test_immediate_charging_works_without_automatic_mode(rig):
+    hass, c, calls = rig
+    assert c.enabled is False
+
+    await c.async_change(immediate_charging=True)
+    assert calls == ["turn_on"]
+    assert c.data["charging_requested"] is True
+
+    await c.async_reconcile()
+    assert c.data["status"] == "charging"
+    assert c.data["plan_status"] == "immediate_charging"
+
+    hass.states.async_set("sensor.battery", "30", {"unit_of_measurement": "%"})
+    await c.async_reconcile()
+    assert c.immediate_charging is False
+    assert c.data["status"] == "target_reached"
+    assert calls[-1] == "turn_off"
+
+
 async def test_missing_soc_pauses_and_recovers(rig):
     hass, c, calls = rig
     await c.async_change(enabled=True)
@@ -107,12 +150,14 @@ async def test_missing_soc_pauses_and_recovers(rig):
     assert calls[-1] == "turn_on"
 
 
-async def test_stale_report_blocks_start(rig):
-    hass, c, calls = rig
+async def test_stale_power_is_not_integrated_or_treated_as_error(rig):
+    _, c, calls = rig
     c._boot = dt_util.utcnow() + timedelta(seconds=1)
     await c.async_change(enabled=True)
-    assert calls == []
-    assert c.data["status"] == "input_error"
+    assert calls == ["turn_on"]
+    assert c.data["status"] == "starting_charge"
+    assert c.data["charging_power_report_old"] is True
+    assert c._sample_power == 0
 
 
 async def test_expired_deadline_stops(rig):

@@ -1,0 +1,55 @@
+# Copy this automation into Home Assistant and replace the notify service and
+# dashboard path. The integration fires the trigger when the configured
+# Wallbox switch changes from unavailable to available.
+alias: Dynamic Car Charger - car connected
+description: Ask what to do when the car is connected to the Wallbox
+mode: restart
+triggers:
+  - trigger: event
+    event_type: dynamic_car_charger_car_connected
+actions:
+  - action: notify.mobile_app_REPLACE_WITH_YOUR_PHONE
+    data:
+      title: Auto aangesloten
+      message: >-
+        Het huidige doel is
+        {{ states('number.dynamic_car_charger_target_charge') | int(80) }}%.
+        Kies direct laden, morgenochtend als deadline, of open de laadkaart om
+        het doelpercentage en de exacte deadline in te stellen.
+      data:
+        tag: dynamic-car-charger-connected
+        actions:
+          - action: DCC_CHARGE_NOW
+            title: Nu laden
+          - action: DCC_TOMORROW_0700
+            title: Morgen 07:00
+          - action: URI
+            title: Instellen
+            uri: /lovelace/dynamic-car-charger
+  - wait_for_trigger:
+      - trigger: event
+        event_type: mobile_app_notification_action
+        event_data:
+          action: DCC_CHARGE_NOW
+        id: charge_now
+      - trigger: event
+        event_type: mobile_app_notification_action
+        event_data:
+          action: DCC_TOMORROW_0700
+        id: tomorrow_0700
+    timeout: "01:00:00"
+    continue_on_timeout: false
+  - choose:
+      - conditions: "{{ wait.trigger.id == 'charge_now' }}"
+        sequence:
+          - action: switch.turn_on
+            target:
+              entity_id: switch.dynamic_car_charger_charge_now_to_target
+      - conditions: "{{ wait.trigger.id == 'tomorrow_0700' }}"
+        sequence:
+          - action: button.press
+            target:
+              entity_id: button.dynamic_car_charger_tomorrow_07_00
+          - action: switch.turn_on
+            target:
+              entity_id: switch.dynamic_car_charger_automatic_charging
