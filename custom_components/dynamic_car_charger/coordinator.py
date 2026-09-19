@@ -123,10 +123,10 @@ class ChargerCoordinator(DataUpdateCoordinator):
             raise ValueError("Battery sensor must report %")
         if price_state.attributes.get("unit_of_measurement") not in ("EUR/kWh", "€/kWh"):
             raise ValueError("Prices must be EUR/kWh")
-        # A fresh HA report is necessary after restart. Cloud timestamps can still
-        # be older: use a source that marks stale vehicle telemetry unavailable.
+        # Battery sources may publish only on change. Age alone does not prove
+        # that their still-available value is invalid. Keep power freshness strict
+        # because integrating an old nonzero power reading invents energy.
         for state, age, label in (
-            (soc_state, self.settings["soc_max_age_minutes"] * 60, "Battery"),
             (power_state, 300, "Charging power"),
         ):
             report = state.last_reported
@@ -199,6 +199,10 @@ class ChargerCoordinator(DataUpdateCoordinator):
                     data["price_threshold_eur_kwh"] = threshold
                     data["threshold_safety_mode"] = safety_mode
                     data.update(plan.as_dict(self.settings["power_kw"]))
+                    battery_report = self.hass.states.get(self.settings["soc_entity"]).last_reported
+                    age_minutes = max(0, (now - battery_report).total_seconds() / 60)
+                    data["soc_report_age_minutes"] = round(age_minutes, 1)
+                    data["soc_report_old"] = age_minutes > self.settings["soc_max_age_minutes"]
                     data["measured_soc"] = soc
                     data["estimated_soc"] = round(effective, 2)
                     desired = plan.charging_at(now) and now < self.deadline and soc < self.target
