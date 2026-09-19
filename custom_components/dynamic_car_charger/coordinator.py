@@ -34,6 +34,10 @@ class ChargerCoordinator(DataUpdateCoordinator):
         self._sample_power = 0.0
         self._command = None
         self._command_time = None
+        self._command_attempt_time = None
+        self._active_charge_until = None
+        self._active_plan_context = None
+        self._replan_stop_time = None
         self._boot = dt_util.utcnow()
         self._stopping = False
         self._pending_stop = False
@@ -176,7 +180,16 @@ class ChargerCoordinator(DataUpdateCoordinator):
             try:
                 if self.deadline is not None:
                     soc, effective, prices = self._read(now)
+                    price_signature = tuple(
+                        (slot.start, slot.end, slot.price) for slot in prices
+                    )
                     threshold = self.settings.get("max_price_eur_kwh", 0.20)
+                    plan_context = (
+                        price_signature,
+                        self.deadline,
+                        self.target,
+                        threshold,
+                    )
                     threshold_plan = make_plan(
                         prices, now, self.deadline, effective, self.target,
                         self.settings["capacity_kwh"], self.settings["power_kw"],
@@ -205,10 +218,62 @@ class ChargerCoordinator(DataUpdateCoordinator):
                     data["soc_report_old"] = age_minutes > self.settings["soc_max_age_minutes"]
                     data["measured_soc"] = soc
                     data["estimated_soc"] = round(effective, 2)
-                    desired = plan.charging_at(now) and now < self.deadline and soc < self.target
+                    planned_now = plan.charging_at(now)
+                    if planned_now:
+                        continuous_end = None
+                        for slot in plan.slots:
+                            if slot.start <= now < slot.end:
+                                continuous_end = slot.end
+                            elif continuous_end is not None and slot.start <= continuous_end:
+                                continuous_end = max(continuous_end, slot.end)
+                            elif continuous_end is not None:
+                                break
+                        if continuous_end is not None:
+                            self._active_charge_until = continuous_end
+                            self._active_plan_context = plan_context
+                            self._replan_stop_time = None
+                    elif (
+                        self._active_charge_until is not None
+                        and now < self._active_charge_until
+                        and plan_context == self._active_plan_context
+                    ):
+                        # Keep an already-started continuous run stable. A new
+                        # SOC report or replanning must not create an off/on
+                        # cycle at an hourly price boundary.
+                        planned_now = True
+                    elif self._active_charge_until is not None and now < self._active_charge_until:
+                        # Price/deadline updates can arrive in several HA state
+                        # changes. Give the new plan one short settling window so
+                        # an adjacent block is not interrupted by an intermediate
+                        # calculation. A real changed plan still stops afterwards.
+                        if self._replan_stop_time is None:
+                            self._replan_stop_time = now
+                        if (now - self._replan_stop_time).total_seconds() < 30:
+                            planned_now = True
+                        else:
+                            self._active_charge_until = None
+                            self._active_plan_context = None
+                            self._replan_stop_time = None
+                    else:
+                        self._active_charge_until = None
+                        self._active_plan_context = None
+                        self._replan_stop_time = None
+
+                    desired = planned_now and now < self.deadline and soc < self.target
+                    data["active_charge_until"] = (
+                        self._active_charge_until.isoformat()
+                        if self._active_charge_until is not None
+                        else None
+                    )
                     if soc >= self.target:
+                        self._active_charge_until = None
+                        self._active_plan_context = None
+                        self._replan_stop_time = None
                         status = "target_reached"
                     elif now >= self.deadline:
+                        self._active_charge_until = None
+                        self._active_plan_context = None
+                        self._replan_stop_time = None
                         status = "deadline_passed"
                     elif effective >= self.target:
                         status = "awaiting_soc_confirmation"
@@ -229,6 +294,8 @@ class ChargerCoordinator(DataUpdateCoordinator):
                 error = await self._control(desired and self.enabled, now, force_stop)
                 if error == "waiting_for_car":
                     data.update(status="waiting_for_car", error=None, charging_requested=False)
+                elif error in ("starting_charge", "stopping_charge"):
+                    data.update(status=error, error=None)
                 elif error:
                     data.update(status="control_error", error=error)
                 elif not self.enabled:
@@ -241,20 +308,34 @@ class ChargerCoordinator(DataUpdateCoordinator):
         state = self.hass.states.get(entity_id)
         wanted = "on" if desired else "off"
         actual = state.state if state else "unavailable"
-        # Reissue after the Wallbox cloud polling interval; a success response
-        # is not proof of execution. An opposite command bypasses this cooldown.
-        if actual == wanted and self._command in (None, desired):
+        # The car and charger may need time to wake up and complete their
+        # handshake. Keep that normal transition separate from a real failure.
+        if actual == wanted:
+            self._command = None
+            self._command_time = None
+            self._command_attempt_time = None
             return None
-        if (
-            not force
-            and self._command == desired
-            and self._command_time
-            and (now - self._command_time).total_seconds() < 120
-        ):
-            return f"Waiting for charger to confirm {wanted}" if actual != wanted else None
         if actual not in ("on", "off"):
             return "waiting_for_car" if desired else None
-        self._command, self._command_time = desired, now
+
+        if self._command != desired:
+            self._command = desired
+            self._command_time = now
+            self._command_attempt_time = None
+
+        elapsed = (now - self._command_time).total_seconds()
+        if not force and elapsed >= 300:
+            return f"Charger did not confirm {wanted} within 5 minutes"
+
+        should_send = (
+            force
+            or self._command_attempt_time is None
+            or (now - self._command_attempt_time).total_seconds() >= 120
+        )
+        if not should_send:
+            return "starting_charge" if desired else "stopping_charge"
+
+        self._command_attempt_time = now
         try:
             async with asyncio.timeout(30):
                 await self.hass.services.async_call(
@@ -262,7 +343,7 @@ class ChargerCoordinator(DataUpdateCoordinator):
                 )
         except (HomeAssistantError, TimeoutError):
             return f"Charger did not accept {wanted}; will retry"
-        return f"Waiting for charger to confirm {wanted}" if actual != wanted else None
+        return "starting_charge" if desired else "stopping_charge"
 
     async def _shutdown(self, event):
         await self.async_stop()

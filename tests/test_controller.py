@@ -136,7 +136,7 @@ async def test_failed_service_retries_without_flooding(rig):
     assert c.data["status"] == "control_error"
     await c.async_reconcile()
     assert calls == ["failed"]
-    c._command_time -= timedelta(seconds=121)
+    c._command_attempt_time -= timedelta(seconds=121)
     await c.async_reconcile()
     assert calls == ["failed", "failed"]
 
@@ -153,7 +153,7 @@ async def test_failed_disable_keeps_retrying(rig):
     hass.services.async_register("switch", "turn_off", broken)
     await c.async_change(enabled=False)
     assert c._pending_stop
-    c._command_time -= timedelta(seconds=121)
+    c._command_attempt_time -= timedelta(seconds=121)
     await c.async_reconcile()
     assert calls[-2:] == ["failed_stop", "failed_stop"]
 
@@ -177,3 +177,153 @@ async def test_config_schema_and_units(rig):
     assert validate(hass, c.settings) == {}
     hass.states.async_set("sensor.nextenergy", "12", {"unit_of_measurement": "ct/kWh"})
     assert validate(hass, c.settings) == {"price_entity": "price_unit"}
+
+
+async def test_delayed_start_is_pending_before_it_is_an_error(rig):
+    hass, c, calls = rig
+
+    async def delayed_start(call):
+        calls.append(call.service)
+
+    hass.services.async_register("switch", "turn_on", delayed_start)
+    await c.async_change(enabled=True)
+    assert c.data["status"] == "starting_charge"
+    assert c.data["error"] is None
+    assert c.data["charging_requested"] is True
+
+    c._command_time -= timedelta(seconds=90)
+    c._command_attempt_time -= timedelta(seconds=90)
+    await c.async_reconcile()
+    assert c.data["status"] == "starting_charge"
+    assert calls == ["turn_on"]
+
+    hass.states.async_set("switch.wallbox", "on")
+    await c.async_reconcile()
+    assert c.data["status"] == "charging"
+
+
+async def test_unconfirmed_start_becomes_error_after_five_minutes(rig):
+    hass, c, _ = rig
+
+    async def delayed_start(call):
+        pass
+
+    hass.services.async_register("switch", "turn_on", delayed_start)
+    await c.async_change(enabled=True)
+    c._command_time -= timedelta(seconds=301)
+    await c.async_reconcile()
+    assert c.data["status"] == "control_error"
+    assert c.data["error"] == "Charger did not confirm on within 5 minutes"
+
+
+async def test_new_prices_may_interrupt_active_run(rig):
+    hass, c, calls = rig
+    await c.async_change(enabled=True)
+    assert calls == ["turn_on"]
+    assert c._active_charge_until is not None
+
+    now = dt_util.utcnow()
+    hass.states.async_set(
+        "sensor.nextenergy",
+        ".1",
+        {
+            "unit_of_measurement": "EUR/kWh",
+            "prices": [
+                {
+                    "start": (now - timedelta(minutes=1)).isoformat(),
+                    "end": (now + timedelta(minutes=59)).isoformat(),
+                    "price": 0.5,
+                },
+                {
+                    "start": (now + timedelta(minutes=59)).isoformat(),
+                    "end": (now + timedelta(minutes=119)).isoformat(),
+                    "price": 0.1,
+                },
+            ],
+        },
+    )
+    await c.async_reconcile()
+    assert c.data["charging_requested"] is True
+    c._replan_stop_time -= timedelta(seconds=31)
+    await c.async_reconcile()
+    assert c.data["charging_requested"] is False
+    assert calls == ["turn_on", "turn_off"]
+
+
+async def test_adjacent_price_slots_do_not_restart_charging(rig):
+    hass, c, calls = rig
+    before = dt_util.utcnow()
+    boundary = before + timedelta(minutes=1)
+    c.deadline = boundary + timedelta(hours=1)
+    hass.states.async_set(
+        "sensor.nextenergy",
+        ".1",
+        {
+            "unit_of_measurement": "EUR/kWh",
+            "prices": [
+                {
+                    "start": (boundary - timedelta(hours=1)).isoformat(),
+                    "end": boundary.isoformat(),
+                    "price": 0.1,
+                },
+                {
+                    "start": boundary.isoformat(),
+                    "end": (boundary + timedelta(hours=1)).isoformat(),
+                    "price": 0.1,
+                },
+            ],
+        },
+    )
+
+    with patch(
+        "custom_components.dynamic_car_charger.coordinator.dt_util.utcnow",
+        return_value=before,
+    ):
+        await c.async_change(enabled=True)
+    assert calls == ["turn_on"]
+
+    with patch(
+        "custom_components.dynamic_car_charger.coordinator.dt_util.utcnow",
+        return_value=boundary + timedelta(seconds=1),
+    ):
+        await c.async_reconcile()
+    assert c.data["charging_requested"] is True
+    assert calls == ["turn_on"]
+
+
+async def test_deadline_change_may_interrupt_active_run(rig):
+    hass, c, calls = rig
+    now = dt_util.utcnow()
+    hass.states.async_set(
+        "sensor.nextenergy",
+        ".1",
+        {
+            "unit_of_measurement": "EUR/kWh",
+            "prices": [
+                {
+                    "start": (now - timedelta(minutes=1)).isoformat(),
+                    "end": (now + timedelta(minutes=59)).isoformat(),
+                    "price": 0.1,
+                },
+                {
+                    "start": (now + timedelta(minutes=59)).isoformat(),
+                    "end": (now + timedelta(minutes=119)).isoformat(),
+                    "price": 0.3,
+                },
+                {
+                    "start": (now + timedelta(minutes=119)).isoformat(),
+                    "end": (now + timedelta(minutes=179)).isoformat(),
+                    "price": 0.05,
+                },
+            ],
+        },
+    )
+    await c.async_change(enabled=True)
+    assert calls == ["turn_on"]
+
+    await c.async_change(deadline=now + timedelta(minutes=179))
+    assert c.data["charging_requested"] is True
+    c._replan_stop_time -= timedelta(seconds=31)
+    await c.async_reconcile()
+    assert c.data["charging_requested"] is False
+    assert calls == ["turn_on", "turn_off"]
