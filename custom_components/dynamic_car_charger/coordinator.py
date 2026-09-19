@@ -397,7 +397,11 @@ class ChargerCoordinator(DataUpdateCoordinator):
                     else:
                         status = "charging" if desired else "scheduled"
                     data["plan_is_provisional"] = not plan.coverage_complete
-                    data["status"] = status if self.enabled else "preview"
+                    data["status"] = (
+                        status
+                        if self.enabled or status == "target_reached"
+                        else "preview"
+                    )
                     data["plan_status"] = status
             except (ValueError, TypeError, KeyError, OverflowError) as err:
                 data.update(status="input_error", error=str(err))
