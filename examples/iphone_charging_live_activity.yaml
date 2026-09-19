@@ -45,14 +45,54 @@ actions:
               target_soc: >-
                 {{ states('number.dynamic_car_charger_target_charge') |
                 float(80) | round(0) | int }}
+              estimated_cost: >-
+                {{ state_attr('sensor.dynamic_car_charger_charging_plan',
+                'estimated_cost_eur') }}
+              plan_summary: >-
+                {% set plan = 'sensor.dynamic_car_charger_charging_plan' %}
+                {% set slots = state_attr(plan, 'slots') or [] %}
+                {% set now_ts = as_timestamp(now()) %}
+                {% set ns = namespace(active=false, current_end=none,
+                next_start=none) %}
+                {% for slot in slots %}
+                  {% set start_ts = as_timestamp(slot.start, 0) %}
+                  {% set end_ts = as_timestamp(slot.end, 0) %}
+                  {% if not ns.active and start_ts <= now_ts and now_ts < end_ts %}
+                    {% set ns.active = true %}
+                    {% set ns.current_end = end_ts %}
+                  {% elif ns.active and ns.next_start is none %}
+                    {% if start_ts <= ns.current_end + 1 %}
+                      {% set ns.current_end = [ns.current_end, end_ts] | max %}
+                    {% else %}
+                      {% set ns.next_start = start_ts %}
+                    {% endif %}
+                  {% elif not ns.active and ns.next_start is none and start_ts > now_ts %}
+                    {% set ns.next_start = start_ts %}
+                  {% endif %}
+                {% endfor %}
+                {% if ns.current_end is not none %}
+                  Nu tot {{ ns.current_end |
+                  timestamp_custom('%H:%M', true) }}
+                  {%- if ns.next_start is not none %} · daarna {{ ns.next_start |
+                  timestamp_custom('%H:%M', true) }}{% endif %}
+                {% elif ns.next_start is not none %}
+                  Volgende {{ ns.next_start |
+                  timestamp_custom('%d-%m %H:%M', true) }}
+                {% else %}
+                  Laadplan wordt bijgewerkt
+                {% endif %}
           - action: notify.mobile_app_iphone_van_jonathan_18_pro
             data:
               title: B05 wordt geladen
               message: >-
-                Batterij {{ current_soc }}% · doel {{ target_soc }}%
+                {{ current_soc }}% → {{ target_soc }}% · {{ plan_summary }} ·
+                {% if estimated_cost is number %}geschat €{{ '%.2f' |
+                format(estimated_cost) }}{% else %}kosten worden berekend{% endif %}
               data:
                 tag: b05_charging
                 live_update: true
+                silent: "{{ trigger.id != 'start' }}"
+                alert_once: true
                 critical_text: "{{ current_soc }}%"
                 progress: "{{ current_soc }}"
                 progress_max: "{{ target_soc }}"
