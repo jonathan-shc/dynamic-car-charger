@@ -45,6 +45,24 @@ def test_fractional_last_slot_and_losses():
     assert result.cost == pytest.approx(5.5)
 
 
+def test_near_equal_adjacent_partial_hours_are_made_contiguous():
+    result = plan([0.1334, 0.1326], target=50)
+
+    assert result.required_kwh == 15
+    assert result.slots[0].start == NOW + timedelta(minutes=30)
+    assert result.slots[0].end == result.slots[1].start
+    assert result.slots[1].end == NOW + timedelta(hours=2)
+    assert result.cost == pytest.approx(5 * 0.1334 + 10 * 0.1326)
+
+
+def test_meaningfully_different_partial_hours_stay_cheapest_first():
+    result = plan([0.15, 0.13], target=50)
+
+    assert result.slots[0].start == NOW
+    assert result.slots[0].end == NOW + timedelta(minutes=30)
+    assert result.slots[1].start == NOW + timedelta(hours=1)
+
+
 def test_negative_prices_do_not_overcharge():
     result = plan([-0.4, -0.2, -0.1], target=40)
     assert result.planned_kwh == 10

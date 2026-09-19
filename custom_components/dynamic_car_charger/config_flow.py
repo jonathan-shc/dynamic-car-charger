@@ -13,6 +13,19 @@ def schema(values):
     for key in ("charger_entity", "soc_entity", "price_entity", "power_entity"):
         marker = vol.Required(key, default=values[key]) if key in values else vol.Required(key)
         fields[marker] = selector.EntitySelector()
+    for key, domain in (
+        ("status_entity", "sensor"),
+        ("lock_entity", "lock"),
+        ("vehicle_state_entity", "sensor"),
+    ):
+        marker = (
+            vol.Optional(key, default=values[key])
+            if values.get(key)
+            else vol.Optional(key)
+        )
+        fields[marker] = selector.EntitySelector(
+            selector.EntitySelectorConfig(domain=domain)
+        )
     for key, lo, hi, step, unit in [
         ("capacity_kwh", 1, 300, 0.1, "kWh"),
         ("power_kw", 0.1, 50, 0.1, "kW"),
@@ -38,6 +51,9 @@ def validate(hass, data):
         "soc_entity": {"sensor", "input_number"},
         "price_entity": {"sensor"},
         "power_entity": {"sensor"},
+        "status_entity": {"sensor"},
+        "lock_entity": {"lock"},
+        "vehicle_state_entity": {"sensor"},
     }
     for key in ("charger_entity", "soc_entity", "price_entity", "power_entity"):
         entity_id = data.get(key)
@@ -53,6 +69,14 @@ def validate(hass, data):
             return {key: "power_unit"}
         if key == "price_entity" and unit not in ("EUR/kWh", "€/kWh"):
             return {key: "price_unit"}
+    for key in ("status_entity", "lock_entity", "vehicle_state_entity"):
+        entity_id = data.get(key)
+        if not entity_id:
+            continue
+        if hass.states.get(entity_id) is None:
+            return {key: "entity_missing"}
+        if entity_id.split(".", 1)[0] not in expected_domains[key]:
+            return {key: "wrong_domain"}
     return {}
 
 

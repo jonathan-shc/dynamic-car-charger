@@ -5,11 +5,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, State
 from homeassistant.util import dt as dt_util
 
 from custom_components.dynamic_car_charger.config_flow import schema, validate
-from custom_components.dynamic_car_charger.const import DEFAULTS
+from custom_components.dynamic_car_charger.const import DEFAULTS, EVENT_CAR_CONNECTED
 from custom_components.dynamic_car_charger.coordinator import ChargerCoordinator
 
 
@@ -135,6 +135,86 @@ async def test_immediate_charging_works_without_automatic_mode(rig):
     assert c.immediate_charging is False
     assert c.data["status"] == "target_reached"
     assert calls[-1] == "turn_off"
+
+
+async def test_wallbox_status_fires_connected_event(rig):
+    hass, c, _ = rig
+    c.settings["status_entity"] = "sensor.wallbox_status"
+    received = []
+    hass.bus.async_listen(EVENT_CAR_CONNECTED, received.append)
+
+    c._changed(SimpleNamespace(data={
+        "entity_id": "sensor.wallbox_status",
+        "old_state": State("sensor.wallbox_status", "Locked"),
+        "new_state": State("sensor.wallbox_status", "Locked, car connected"),
+    }))
+    await hass.async_block_till_done()
+
+    assert len(received) == 1
+    assert received[0].data["status"] == "Locked, car connected"
+
+
+async def test_charging_unlocks_wallbox_before_resume(rig):
+    hass, c, calls = rig
+    c.settings["lock_entity"] = "lock.wallbox"
+    hass.states.async_set("lock.wallbox", "locked")
+    lock_calls = []
+
+    async def unlock(call):
+        lock_calls.append(call.service)
+        hass.states.async_set("lock.wallbox", "unlocked")
+
+    hass.services.async_register("lock", "unlock", unlock)
+    await c.async_change(enabled=True)
+
+    assert lock_calls == ["unlock"]
+    assert calls == []
+    assert c.data["status"] == "unlocking_charger"
+
+    await c.async_reconcile()
+    assert calls == ["turn_on"]
+
+
+async def test_driving_locks_wallbox(rig):
+    hass, c, _ = rig
+    c.settings["lock_entity"] = "lock.wallbox"
+    c.settings["vehicle_state_entity"] = "sensor.leapmotor_state"
+    hass.states.async_set("lock.wallbox", "unlocked")
+    lock_calls = []
+
+    async def lock(call):
+        lock_calls.append(call.service)
+        hass.states.async_set("lock.wallbox", "locked")
+
+    hass.services.async_register("lock", "lock", lock)
+    c._changed(SimpleNamespace(data={
+        "entity_id": "sensor.leapmotor_state",
+        "old_state": State("sensor.leapmotor_state", "Parked"),
+        "new_state": State("sensor.leapmotor_state", "Driving"),
+    }))
+    await hass.async_block_till_done()
+
+    assert lock_calls == ["lock"]
+    assert hass.states.get("lock.wallbox").state == "locked"
+
+
+async def test_driving_prevents_wallbox_from_being_unlocked(rig):
+    hass, c, calls = rig
+    c.settings["lock_entity"] = "lock.wallbox"
+    c.settings["vehicle_state_entity"] = "sensor.leapmotor_state"
+    hass.states.async_set("lock.wallbox", "locked")
+    hass.states.async_set("sensor.leapmotor_state", "Driving")
+    unlock_calls = []
+
+    async def unlock(call):
+        unlock_calls.append(call.service)
+
+    hass.services.async_register("lock", "unlock", unlock)
+    await c.async_change(enabled=True)
+
+    assert unlock_calls == []
+    assert calls == []
+    assert c.data["status"] == "waiting_for_car"
 
 
 async def test_missing_soc_pauses_and_recovers(rig):

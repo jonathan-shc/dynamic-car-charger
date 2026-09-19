@@ -37,6 +37,8 @@ class ChargerCoordinator(DataUpdateCoordinator):
         self._command = None
         self._command_time = None
         self._command_attempt_time = None
+        self._unlock_command_time = None
+        self._unlock_attempt_time = None
         self._active_charge_until = None
         self._active_plan_context = None
         self._replan_stop_time = None
@@ -58,35 +60,72 @@ class ChargerCoordinator(DataUpdateCoordinator):
         self._credit_kwh = number(saved.get("credit_kwh", 0), 0)
         charger_state = self.hass.states.get(self.settings["charger_entity"])
         self._charger_available = self._is_available(charger_state)
+        tracked_entities = [
+            self.settings[key]
+            for key in ("charger_entity", "soc_entity", "price_entity", "power_entity")
+        ]
+        tracked_entities.extend(
+            self.settings[key]
+            for key in ("status_entity", "lock_entity", "vehicle_state_entity")
+            if self.settings.get(key)
+        )
         self._unsubs = [
             self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, self._shutdown),
             async_track_state_change_event(
                 self.hass,
-                [
-                    self.settings[key]
-                    for key in ("charger_entity", "soc_entity", "price_entity", "power_entity")
-                ],
+                tracked_entities,
                 self._changed,
             ),
             async_track_time_interval(self.hass, self._tick, timedelta(seconds=15)),
         ]
+        vehicle_entity = self.settings.get("vehicle_state_entity")
+        if vehicle_entity and self._state_text(
+            self.hass.states.get(vehicle_entity)
+        ) == "driving":
+            await self._async_lock_charger()
         await self.async_reconcile()
 
     @callback
     def _changed(self, event):
-        if event.data.get("entity_id") == self.settings["charger_entity"]:
+        entity_id = event.data.get("entity_id")
+        old_state = event.data.get("old_state")
+        new_state = event.data.get("new_state")
+        status_entity = self.settings.get("status_entity")
+        if entity_id == status_entity:
+            if self._is_car_connected(new_state) and not self._is_car_connected(old_state):
+                self._fire_car_connected(new_state)
+        elif not status_entity and entity_id == self.settings["charger_entity"]:
             available = self._is_available(event.data.get("new_state"))
             if available and not self._charger_available:
-                self.hass.bus.async_fire(
-                    EVENT_CAR_CONNECTED,
-                    {
-                        "config_entry_id": self.entry.entry_id,
-                        "charger_entity": self.settings["charger_entity"],
-                    },
-                )
+                self._fire_car_connected(new_state)
             self._charger_available = available
+        if (
+            entity_id == self.settings.get("vehicle_state_entity")
+            and self._state_text(new_state) == "driving"
+            and self._state_text(old_state) != "driving"
+        ):
+            self.hass.async_create_task(self._async_lock_charger())
         if not self._stopping:
             self.hass.async_create_task(self.async_reconcile())
+
+    def _fire_car_connected(self, state):
+        self.hass.bus.async_fire(
+            EVENT_CAR_CONNECTED,
+            {
+                "config_entry_id": self.entry.entry_id,
+                "charger_entity": self.settings["charger_entity"],
+                "status_entity": self.settings.get("status_entity"),
+                "status": state.state if state is not None else None,
+            },
+        )
+
+    @staticmethod
+    def _state_text(state):
+        return state.state.strip().casefold() if state is not None else ""
+
+    @classmethod
+    def _is_car_connected(cls, state):
+        return cls._state_text(state) == "locked, car connected"
 
     @staticmethod
     def _is_available(state):
@@ -370,7 +409,7 @@ class ChargerCoordinator(DataUpdateCoordinator):
                 error = await self._control(desired and control_enabled, now, force_stop)
                 if error == "waiting_for_car":
                     data.update(status="waiting_for_car", error=None, charging_requested=False)
-                elif error in ("starting_charge", "stopping_charge"):
+                elif error in ("unlocking_charger", "starting_charge", "stopping_charge"):
                     data.update(status=error, error=None)
                 elif error:
                     data.update(status="control_error", error=error)
@@ -380,6 +419,10 @@ class ChargerCoordinator(DataUpdateCoordinator):
             self.store.async_delay_save(self._save_data, 30)
 
     async def _control(self, desired, now, force=False):
+        if desired:
+            unlock_status = await self._ensure_unlocked(now)
+            if unlock_status is not None:
+                return unlock_status
         entity_id = self.settings["charger_entity"]
         state = self.hass.states.get(entity_id)
         wanted = "on" if desired else "off"
@@ -420,6 +463,62 @@ class ChargerCoordinator(DataUpdateCoordinator):
         except (HomeAssistantError, TimeoutError):
             return f"Charger did not accept {wanted}; will retry"
         return "starting_charge" if desired else "stopping_charge"
+
+    async def _ensure_unlocked(self, now):
+        """Unlock the Wallbox before the first resume/start request."""
+        entity_id = self.settings.get("lock_entity")
+        if not entity_id:
+            return None
+        vehicle_entity = self.settings.get("vehicle_state_entity")
+        if vehicle_entity and self._state_text(
+            self.hass.states.get(vehicle_entity)
+        ) == "driving":
+            return "waiting_for_car"
+        state = self.hass.states.get(entity_id)
+        actual = state.state if state is not None else "unavailable"
+        if actual == "unlocked":
+            self._unlock_command_time = None
+            self._unlock_attempt_time = None
+            return None
+        if actual in ("unknown", "unavailable"):
+            return "waiting_for_car"
+        if self._unlock_command_time is None:
+            self._unlock_command_time = now
+            self._unlock_attempt_time = None
+        if (now - self._unlock_command_time).total_seconds() >= 300:
+            return "Charger lock did not confirm unlocked within 5 minutes"
+        should_send = (
+            self._unlock_attempt_time is None
+            or (now - self._unlock_attempt_time).total_seconds() >= 120
+        )
+        if should_send:
+            self._unlock_attempt_time = now
+            try:
+                async with asyncio.timeout(30):
+                    await self.hass.services.async_call(
+                        "lock", "unlock", {"entity_id": entity_id}, blocking=True
+                    )
+            except (HomeAssistantError, TimeoutError):
+                return "Charger did not accept unlock; will retry"
+        return "unlocking_charger"
+
+    async def _async_lock_charger(self):
+        """Lock the Wallbox when the vehicle reports that it is driving."""
+        entity_id = self.settings.get("lock_entity")
+        if not entity_id:
+            return
+        state = self.hass.states.get(entity_id)
+        if state is not None and state.state == "locked":
+            return
+        try:
+            async with asyncio.timeout(30):
+                await self.hass.services.async_call(
+                    "lock", "lock", {"entity_id": entity_id}, blocking=True
+                )
+            self._unlock_command_time = None
+            self._unlock_attempt_time = None
+        except (HomeAssistantError, TimeoutError):
+            _LOGGER.warning("Wallbox could not be locked after the car disconnected")
 
     async def _shutdown(self, event):
         await self.async_stop()
