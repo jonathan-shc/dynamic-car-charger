@@ -1,0 +1,72 @@
+# Live Activity for iOS 17.2+ and Home Assistant Core 2026.7+.
+# Replace the notify action if your mobile app uses a different device name.
+alias: Dynamic Car Charger - iPhone Live Activity
+description: Show B05 charging progress on the Lock Screen and Dynamic Island
+mode: single
+
+triggers:
+  - trigger: template
+    value_template: >-
+      {{ state_attr('sensor.dynamic_car_charger_charging_plan',
+      'charging_requested') == true }}
+    id: start
+
+  - trigger: time_pattern
+    minutes: "/5"
+    id: refresh
+
+  - trigger: state
+    entity_id: number.dynamic_car_charger_target_charge
+    id: target_changed
+
+  - trigger: template
+    value_template: >-
+      {{ state_attr('sensor.dynamic_car_charger_charging_plan',
+      'charging_requested') == false }}
+    id: stop
+
+conditions: []
+
+actions:
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ trigger.id in ['start', 'refresh', 'target_changed'] and
+              state_attr('sensor.dynamic_car_charger_charging_plan',
+              'charging_requested') == true }}
+        sequence:
+          - variables:
+              current_soc: >-
+                {{ state_attr('sensor.dynamic_car_charger_charging_plan',
+                'measured_soc') | float(0) | round(0) | int }}
+              target_soc: >-
+                {{ states('number.dynamic_car_charger_target_charge') |
+                float(80) | round(0) | int }}
+          - action: notify.mobile_app_iphone_van_jonathan_18_pro
+            data:
+              title: B05 wordt geladen
+              message: >-
+                Batterij {{ current_soc }}% · doel {{ target_soc }}%
+              data:
+                tag: b05_charging
+                live_update: true
+                critical_text: "{{ current_soc }}%"
+                progress: "{{ current_soc }}"
+                progress_max: "{{ target_soc }}"
+                notification_icon: mdi:car-electric
+                notification_icon_color: "#03A9F4"
+                progress_bar_color: "#03A9F4"
+                background_color: "#101820"
+                text_color: "#FFFFFF"
+                url: /dashboard-dashboard/leapmotor-b05
+
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.id == 'stop' }}"
+        sequence:
+          - action: notify.mobile_app_iphone_van_jonathan_18_pro
+            data:
+              message: clear_notification
+              data:
+                tag: b05_charging
