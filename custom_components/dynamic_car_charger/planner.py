@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from math import isfinite
 
-
 CONTIGUOUS_PRICE_TOLERANCE = 0.001
 
 

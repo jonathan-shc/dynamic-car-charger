@@ -113,6 +113,8 @@ async def test_estimated_target_waits_for_measured_soc(rig):
 
     hass.states.async_set("sensor.battery", "100", {"unit_of_measurement": "%"})
     await c.async_reconcile()
+    assert c.data["status"] == "stopping_charge"
+    await c.async_reconcile()
     assert c.data["status"] == "target_reached"
     assert c.data["charging_requested"] is False
     assert calls[-1] == "turn_off"
@@ -133,6 +135,8 @@ async def test_immediate_charging_works_without_automatic_mode(rig):
     hass.states.async_set("sensor.battery", "30", {"unit_of_measurement": "%"})
     await c.async_reconcile()
     assert c.immediate_charging is False
+    assert c.data["status"] == "stopping_charge"
+    await c.async_reconcile()
     assert c.data["status"] == "target_reached"
     assert calls[-1] == "turn_off"
 
