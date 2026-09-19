@@ -277,12 +277,18 @@ class ChargerCoordinator(DataUpdateCoordinator):
                         status = "deadline_passed"
                     elif effective >= self.target:
                         status = "awaiting_soc_confirmation"
+                    elif desired:
+                        # The car is actively being asked to charge.  The
+                        # underlying price plan may still be provisional, but
+                        # that should not hide the current charging state.
+                        status = "charging"
                     elif plan.shortfall_kwh > 0.001:
                         status = "insufficient_time" if plan.coverage_complete else "waiting_for_prices"
                     elif not plan.coverage_complete:
                         status = "provisional_plan"
                     else:
                         status = "charging" if desired else "scheduled"
+                    data["plan_is_provisional"] = not plan.coverage_complete
                     data["status"] = status if self.enabled else "preview"
                     data["plan_status"] = status
             except (ValueError, TypeError, KeyError, OverflowError) as err:
