@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from math import isfinite
 
+
 def number(value, low=None, high=None):
     """Reject missing, nonfinite, and out-of-range inputs."""
     if isinstance(value, bool):
