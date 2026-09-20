@@ -33,6 +33,7 @@ def schema(values):
         ("price_adjustment", -2, 2, 0.001, "EUR/kWh"),
         ("max_price_eur_kwh", 0, 5, 0.01, "EUR/kWh"),
         ("soc_max_age_minutes", 5, 240, 1, "min"),
+        ("deadline_grace_minutes", 0, 720, 15, "min"),
     ]:
         selector_config = {"min": lo, "max": hi, "step": step, "mode": "box"}
         fields[vol.Required(key, default=values.get(key, DEFAULTS[key]))] = selector.NumberSelector(

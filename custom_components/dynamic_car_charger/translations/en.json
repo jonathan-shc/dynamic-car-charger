@@ -19,7 +19,8 @@
           "interval_minutes": "Price interval in minutes",
           "price_adjustment": "Contract adjustment to all-in price (EUR/kWh)",
           "soc_max_age_minutes": "Battery report age warning (minutes)",
-          "max_price_eur_kwh": "Maximum charging price (EUR/kWh)"
+          "max_price_eur_kwh": "Maximum charging price (EUR/kWh)",
+          "deadline_grace_minutes": "Maximum charging extension after deadline (minutes)"
         },
         "data_description": {
           "charger_entity": "Select the Wallbox charging switch: on resumes, off pauses. Do not select a power relay.",
@@ -33,7 +34,8 @@
           "power_kw": "Use the lower of car AC capability and configured Wallbox power. Allow for load balancing. This integration does not change the current limit.",
           "price_adjustment": "Enever already includes VAT and levies. Only enter a difference between your contract and the feed.",
           "interval_minutes": "Choose 60 for current NextEnergy hourly billing. Use 15 only if your contract and source both use quarter-hours.",
-          "max_price_eur_kwh": "Charge below this price while there is enough time; near the deadline the planner may exceed it to finish."
+          "max_price_eur_kwh": "Charge below this price while there is enough time; near the deadline the planner may exceed it to finish.",
+          "deadline_grace_minutes": "If an already-started session has not reached the measured target at the deadline, keep charging for at most this many minutes. This does not extend the planning horizon; 0 disables it."
         }
       }
     },
@@ -69,7 +71,8 @@
           "interval_minutes": "Price interval in minutes",
           "price_adjustment": "Contract adjustment to all-in price (EUR/kWh)",
           "soc_max_age_minutes": "Battery report age warning (minutes)",
-          "max_price_eur_kwh": "Maximum charging price (EUR/kWh)"
+          "max_price_eur_kwh": "Maximum charging price (EUR/kWh)",
+          "deadline_grace_minutes": "Maximum charging extension after deadline (minutes)"
         },
         "data_description": {
           "charger_entity": "Select the Wallbox charging switch: on resumes, off pauses. Do not select a power relay.",
@@ -83,7 +86,8 @@
           "power_kw": "Use the lower of car AC capability and configured Wallbox power. Allow for load balancing. This integration does not change the current limit.",
           "price_adjustment": "Enever already includes VAT and levies. Only enter a difference between your contract and the feed.",
           "interval_minutes": "Choose 60 for current NextEnergy hourly billing. Use 15 only if your contract and source both use quarter-hours.",
-          "max_price_eur_kwh": "Charge below this price while there is enough time; near the deadline the planner may exceed it to finish."
+          "max_price_eur_kwh": "Charge below this price while there is enough time; near the deadline the planner may exceed it to finish.",
+          "deadline_grace_minutes": "If an already-started session has not reached the measured target at the deadline, keep charging for at most this many minutes. This does not extend the planning horizon; 0 disables it."
         }
       }
     },

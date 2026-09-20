@@ -246,10 +246,40 @@ async def test_stale_power_is_not_integrated_or_treated_as_error(rig):
 
 async def test_expired_deadline_stops(rig):
     _, c, calls = rig
+    c.settings["deadline_grace_minutes"] = 0
     await c.async_change(enabled=True)
     await c.async_change(deadline=dt_util.utcnow() - timedelta(seconds=1))
     assert calls[-1] == "turn_off"
     assert not c.data["charging_requested"]
+
+
+async def test_active_session_continues_after_deadline_within_grace(rig):
+    _, c, calls = rig
+    now = dt_util.utcnow()
+    c.settings["deadline_grace_minutes"] = 60
+    c.deadline = now + timedelta(seconds=1)
+
+    await c.async_change(enabled=True)
+    assert calls == ["turn_on"]
+
+    with patch(
+        "custom_components.dynamic_car_charger.coordinator.dt_util.utcnow",
+        return_value=now + timedelta(minutes=30),
+    ):
+        await c.async_reconcile()
+    assert c.data["status"] == "charging_overtime"
+    assert c.data["deadline_extension_active"] is True
+    assert c.data["charging_requested"] is True
+    assert calls == ["turn_on"]
+
+    with patch(
+        "custom_components.dynamic_car_charger.coordinator.dt_util.utcnow",
+        return_value=now + timedelta(minutes=61, seconds=1),
+    ):
+        await c.async_reconcile()
+    assert c.data["status"] == "stopping_charge"
+    assert c.data["charging_requested"] is False
+    assert calls[-1] == "turn_off"
 
 
 async def test_failed_service_retries_without_flooding(rig):

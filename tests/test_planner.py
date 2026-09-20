@@ -45,7 +45,7 @@ def test_fractional_last_slot_and_losses():
     assert result.cost == pytest.approx(5.5)
 
 
-def test_near_equal_adjacent_partial_hours_are_made_contiguous():
+def test_adjacent_partial_hours_are_made_contiguous():
     result = plan([0.1334, 0.1326], target=50)
 
     assert result.required_kwh == 15
@@ -55,12 +55,34 @@ def test_near_equal_adjacent_partial_hours_are_made_contiguous():
     assert result.cost == pytest.approx(5 * 0.1334 + 10 * 0.1326)
 
 
-def test_meaningfully_different_partial_hours_stay_cheapest_first():
+def test_different_price_adjacent_hours_are_also_made_contiguous():
     result = plan([0.15, 0.13], target=50)
 
-    assert result.slots[0].start == NOW
-    assert result.slots[0].end == NOW + timedelta(minutes=30)
-    assert result.slots[1].start == NOW + timedelta(hours=1)
+    assert result.slots[0].start == NOW + timedelta(minutes=30)
+    assert result.slots[0].end == NOW + timedelta(hours=1)
+    assert result.slots[0].end == result.slots[1].start
+    assert result.slots[1].end == NOW + timedelta(hours=2)
+    assert result.cost == pytest.approx(5 * 0.15 + 10 * 0.13)
+
+
+def test_partial_consecutive_deadline_slots_are_packed_at_boundary():
+    power = 9.9
+    deadline = NOW + timedelta(hours=1, minutes=30)
+    result = plan(
+        [0.156, 0.147],
+        deadline=deadline,
+        soc=90,
+        target=100,
+        capacity=57.7,
+        power=power,
+    )
+
+    assert result.slots[0].end == result.slots[1].start == NOW + timedelta(hours=1)
+    assert result.slots[1].end == deadline
+    expected_start = NOW + timedelta(hours=1) - timedelta(hours=(5.77 - 4.95) / power)
+    assert (result.slots[0].start - expected_start).total_seconds() == pytest.approx(0)
+    assert result.planned_kwh == pytest.approx(5.77)
+    assert result.cost == pytest.approx(0.82 * 0.156 + 4.95 * 0.147)
 
 
 def test_negative_prices_do_not_overcharge():

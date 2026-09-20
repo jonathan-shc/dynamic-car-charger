@@ -8,7 +8,7 @@ triggers:
   - trigger: template
     value_template: >-
       {{ states('sensor.dynamic_car_charger_charging_plan') in
-      ['charging', 'awaiting_soc_confirmation'] }}
+      ['charging', 'charging_overtime', 'awaiting_soc_confirmation'] }}
     id: start
 
   - trigger: time_pattern
@@ -22,7 +22,7 @@ triggers:
   - trigger: template
     value_template: >-
       {{ states('sensor.dynamic_car_charger_charging_plan') not in
-      ['charging', 'awaiting_soc_confirmation', 'starting_charge',
+      ['charging', 'charging_overtime', 'awaiting_soc_confirmation', 'starting_charge',
       'unlocking_charger'] }}
     for: "00:01:30"
     id: stop
@@ -36,7 +36,7 @@ actions:
             value_template: >-
               {{ trigger.id in ['start', 'refresh', 'target_changed'] and
               states('sensor.dynamic_car_charger_charging_plan') in
-              ['charging', 'awaiting_soc_confirmation'] }}
+              ['charging', 'charging_overtime', 'awaiting_soc_confirmation'] }}
         sequence:
           - variables:
               current_soc: >-
@@ -70,7 +70,11 @@ actions:
                     {% set ns.next_start = start_ts %}
                   {% endif %}
                 {% endfor %}
-                {% if ns.current_end is not none %}
+                {% if states(plan) == 'charging_overtime' %}
+                  Uitloop tot {{ as_timestamp(
+                  state_attr(plan, 'deadline_extension_until'), 0) |
+                  timestamp_custom('%H:%M', true) }}
+                {% elif ns.current_end is not none %}
                   Nu tot {{ ns.current_end |
                   timestamp_custom('%H:%M', true) }}
                   {%- if ns.next_start is not none %} · daarna {{ ns.next_start |
@@ -86,8 +90,10 @@ actions:
               title: B05 wordt geladen
               message: >-
                 {{ current_soc }}% → {{ target_soc }}% · {{ plan_summary }} ·
-                {% if estimated_cost is number %}geschat €{{ '%.2f' |
-                format(estimated_cost) }}{% else %}kosten worden berekend{% endif %}
+                {% if estimated_cost not in [none, 'None', 'unknown',
+                'unavailable', ''] %}geschat €{{ '%.2f' |
+                format(estimated_cost | float(0)) }}{% else %}kosten worden
+                berekend{% endif %}
               data:
                 tag: b05_charging
                 live_update: true

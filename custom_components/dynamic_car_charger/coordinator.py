@@ -184,14 +184,11 @@ class ChargerCoordinator(DataUpdateCoordinator):
             raise ValueError(f"{key} is unavailable")
         return state
 
-    def _read(self, now):
+    def _read(self, now, *, include_prices=True):
         soc_state = self._state("soc_entity")
         power_state = self._state("power_entity")
-        price_state = self._state("price_entity")
         if soc_state.attributes.get("unit_of_measurement") != "%":
             raise ValueError("Battery sensor must report %")
-        if price_state.attributes.get("unit_of_measurement") not in ("EUR/kWh", "€/kWh"):
-            raise ValueError("Prices must be EUR/kWh")
         soc = number(soc_state.state, 0, 100)
         power = number(power_state.state, 0, 50_000)
         unit = power_state.attributes.get("unit_of_measurement")
@@ -221,11 +218,16 @@ class ChargerCoordinator(DataUpdateCoordinator):
                 )
         self._sample_time, self._sample_power = now, power
         effective_soc = min(100.0, soc + 100 * self._credit_kwh / self.settings["capacity_kwh"])
-        prices = parse_prices(
-            price_state.attributes,
-            int(self.settings["interval_minutes"]),
-            self.settings["price_adjustment"],
-        )
+        prices = []
+        if include_prices:
+            price_state = self._state("price_entity")
+            if price_state.attributes.get("unit_of_measurement") not in ("EUR/kWh", "€/kWh"):
+                raise ValueError("Prices must be EUR/kWh")
+            prices = parse_prices(
+                price_state.attributes,
+                int(self.settings["interval_minutes"]),
+                self.settings["price_adjustment"],
+            )
         return soc, effective_soc, prices
 
     async def async_reconcile(self, force_stop=False):
@@ -246,7 +248,7 @@ class ChargerCoordinator(DataUpdateCoordinator):
             }
             try:
                 if self.immediate_charging:
-                    soc, effective, _prices = self._read(now)
+                    soc, effective, _prices = self._read(now, include_prices=False)
                     battery_report = self.hass.states.get(
                         self.settings["soc_entity"]
                     ).last_reported
@@ -273,7 +275,16 @@ class ChargerCoordinator(DataUpdateCoordinator):
                         desired = True
                         data["status"] = "charging"
                 elif self.deadline is not None:
-                    soc, effective, prices = self._read(now)
+                    deadline_grace_minutes = number(
+                        self.settings.get("deadline_grace_minutes", 60), 0, 720
+                    )
+                    deadline_extension_until = self.deadline + timedelta(
+                        minutes=deadline_grace_minutes
+                    )
+                    after_deadline = now >= self.deadline
+                    soc, effective, prices = self._read(
+                        now, include_prices=not after_deadline
+                    )
                     price_signature = tuple(
                         (slot.start, slot.end, slot.price) for slot in prices
                     )
@@ -313,6 +324,12 @@ class ChargerCoordinator(DataUpdateCoordinator):
                     data["measured_soc"] = soc
                     data["estimated_soc"] = round(effective, 2)
                     data["charging_power_report_old"] = self._power_report_old
+                    data["deadline_grace_minutes"] = deadline_grace_minutes
+                    data["deadline_extension_until"] = (
+                        deadline_extension_until.isoformat()
+                        if deadline_grace_minutes > 0
+                        else None
+                    )
                     planned_now = plan.charging_at(now)
                     awaiting_soc_confirmation = (
                         soc < self.target
@@ -367,7 +384,31 @@ class ChargerCoordinator(DataUpdateCoordinator):
                         self._active_plan_context = None
                         self._replan_stop_time = None
 
-                    desired = planned_now and now < self.deadline and soc < self.target
+                    charger_state = self.hass.states.get(self.settings["charger_entity"])
+                    active_session = (
+                        (charger_state is not None and charger_state.state == "on")
+                        or self._command is True
+                    )
+                    vehicle_entity = self.settings.get("vehicle_state_entity")
+                    vehicle_is_driving = bool(
+                        vehicle_entity
+                        and self._state_text(self.hass.states.get(vehicle_entity)) == "driving"
+                    )
+                    deadline_extension_active = (
+                        after_deadline
+                        and deadline_grace_minutes > 0
+                        and now < deadline_extension_until
+                        and soc < self.target
+                        and active_session
+                        and not vehicle_is_driving
+                    )
+                    desired = (
+                        (planned_now and not after_deadline)
+                        or deadline_extension_active
+                    ) and soc < self.target
+                    data["deadline_extension_active"] = deadline_extension_active
+                    if deadline_extension_active:
+                        self._active_charge_until = deadline_extension_until
                     data["active_charge_until"] = (
                         self._active_charge_until.isoformat()
                         if self._active_charge_until is not None
@@ -378,7 +419,9 @@ class ChargerCoordinator(DataUpdateCoordinator):
                         self._active_plan_context = None
                         self._replan_stop_time = None
                         status = "target_reached"
-                    elif now >= self.deadline:
+                    elif deadline_extension_active:
+                        status = "charging_overtime"
+                    elif after_deadline:
                         self._active_charge_until = None
                         self._active_plan_context = None
                         self._replan_stop_time = None
