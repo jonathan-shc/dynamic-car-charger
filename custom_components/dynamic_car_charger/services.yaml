@@ -1,0 +1,25 @@
+set_session:
+  fields:
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: dynamic_car_charger
+    target_percentage:
+      example: 80
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 1
+          unit_of_measurement: "%"
+          mode: slider
+    ready_by:
+      example: "2026-09-25 07:30:00"
+      selector:
+        datetime:
+    automatic_charging:
+      selector:
+        boolean:
+    charge_now:
+      selector:
+        boolean:

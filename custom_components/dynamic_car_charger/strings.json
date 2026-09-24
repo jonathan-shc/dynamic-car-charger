@@ -27,7 +27,7 @@
           "soc_entity": "Use live battery percentage telemetry. A manual helper is an estimate and must be refreshed each session.",
           "price_entity": "Use Enever NextEnergy with prices_today/prices_tomorrow, or a compatible prices list. Configure the source integration first.",
           "power_entity": "Used to estimate energy added between battery percentage changes.",
-          "status_entity": "Select the sensor that reports 'Locked, car connected'. This triggers the connected-car event.",
+          "status_entity": "Select the sensor that reports 'Locked, car connected'. This fires the dynamic_car_charger_car_connected event.",
           "lock_entity": "Select the Wallbox lock. It is unlocked before charging and locked again when the vehicle reports Driving.",
           "vehicle_state_entity": "Select the Leapmotor state sensor that reports Driving after the cable has been removed.",
           "capacity_kwh": "Replace the example with your B05 variant’s usable capacity.",
@@ -35,7 +35,8 @@
           "price_adjustment": "Enever already includes VAT and levies. Only enter a difference between your contract and the feed.",
           "interval_minutes": "Choose 60 for current NextEnergy hourly billing. Use 15 only if your contract and source both use quarter-hours.",
           "max_price_eur_kwh": "Charge below this price while there is enough time; near the deadline the planner may exceed it to finish.",
-          "deadline_grace_minutes": "If an already-started session has not reached the measured target at the deadline, keep charging for at most this many minutes. This does not extend the planning horizon; 0 disables it."
+          "deadline_grace_minutes": "If an already-started session has not reached the measured target at the deadline, keep charging for at most this many minutes. This does not extend the planning horizon; 0 disables it.",
+          "soc_max_age_minutes": "Only marks the battery report as old (soc_report_old). It does not pause charging, because a battery percentage that does not change while parked is normal."
         }
       }
     },
@@ -79,7 +80,7 @@
           "soc_entity": "Use live battery percentage telemetry. A manual helper is an estimate and must be refreshed each session.",
           "price_entity": "Use Enever NextEnergy with prices_today/prices_tomorrow, or a compatible prices list. Configure the source integration first.",
           "power_entity": "Used to estimate energy added between battery percentage changes.",
-          "status_entity": "Select the sensor that reports 'Locked, car connected'. This triggers the connected-car event.",
+          "status_entity": "Select the sensor that reports 'Locked, car connected'. This fires the dynamic_car_charger_car_connected event.",
           "lock_entity": "Select the Wallbox lock. It is unlocked before charging and locked again when the vehicle reports Driving.",
           "vehicle_state_entity": "Select the Leapmotor state sensor that reports Driving after the cable has been removed.",
           "capacity_kwh": "Replace the example with your B05 variant’s usable capacity.",
@@ -87,7 +88,8 @@
           "price_adjustment": "Enever already includes VAT and levies. Only enter a difference between your contract and the feed.",
           "interval_minutes": "Choose 60 for current NextEnergy hourly billing. Use 15 only if your contract and source both use quarter-hours.",
           "max_price_eur_kwh": "Charge below this price while there is enough time; near the deadline the planner may exceed it to finish.",
-          "deadline_grace_minutes": "If an already-started session has not reached the measured target at the deadline, keep charging for at most this many minutes. This does not extend the planning horizon; 0 disables it."
+          "deadline_grace_minutes": "If an already-started session has not reached the measured target at the deadline, keep charging for at most this many minutes. This does not extend the planning horizon; 0 disables it.",
+          "soc_max_age_minutes": "Only marks the battery report as old (soc_report_old). It does not pause charging, because a battery percentage that does not change while parked is normal."
         }
       }
     },
@@ -99,6 +101,108 @@
       "charger_in_use": "This charger already has a scheduler.",
       "own_switch": "Select the Wallbox switch, not this integration’s own automatic charging switch.",
       "wrong_domain": "Select an entity from the correct domain."
+    }
+  },
+  "selector": {
+    "interval_minutes": {
+      "options": {
+        "60": "60 minutes (hourly prices)",
+        "15": "15 minutes (quarter-hour prices)"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "plan": {
+        "name": "Charging plan"
+      },
+      "cost": {
+        "name": "Remaining charging cost"
+      },
+      "session_cost": {
+        "name": "Session charging cost"
+      }
+    },
+    "number": {
+      "target": {
+        "name": "Target charge"
+      },
+      "price_threshold": {
+        "name": "Charging price threshold"
+      }
+    },
+    "datetime": {
+      "deadline": {
+        "name": "Ready by"
+      }
+    },
+    "switch": {
+      "automatic": {
+        "name": "Automatic charging"
+      },
+      "immediate_charging": {
+        "name": "Charge now to target"
+      }
+    },
+    "button": {
+      "tomorrow_0700": {
+        "name": "Tomorrow 07:00"
+      },
+      "tomorrow_0900": {
+        "name": "Tomorrow 09:00"
+      },
+      "day_after_tomorrow_0900": {
+        "name": "Day after tomorrow 09:00"
+      }
+    }
+  },
+  "services": {
+    "set_session": {
+      "name": "Set charging session",
+      "description": "Set the target, deadline and charging mode in one call. Only the fields you provide are changed.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Charger",
+          "description": "The Dynamic Car Charger entry. Can be left out when only one is set up."
+        },
+        "target_percentage": {
+          "name": "Target charge",
+          "description": "Battery percentage to reach."
+        },
+        "ready_by": {
+          "name": "Ready by",
+          "description": "Date and time the car must be charged. A time without offset uses the Home Assistant time zone."
+        },
+        "automatic_charging": {
+          "name": "Automatic charging",
+          "description": "Turn automatic charging on or off."
+        },
+        "charge_now": {
+          "name": "Charge now to target",
+          "description": "Charge immediately until the target is reached, ignoring prices."
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "no_changes": {
+      "message": "Provide at least one of target percentage, ready by, automatic charging or charge now."
+    },
+    "entry_required": {
+      "message": "Select which Dynamic Car Charger to change: none or more than one is loaded."
+    },
+    "entry_not_loaded": {
+      "message": "The selected Dynamic Car Charger is not loaded."
+    }
+  },
+  "issues": {
+    "input_error": {
+      "title": "{title}: charging inputs have been invalid for 30 minutes",
+      "description": "Automatic charging is paused because a required input is missing, stale or invalid: {error}\n\nCheck the battery, power and price entities selected for this charger. This issue clears itself when the inputs are valid again."
+    },
+    "control_error": {
+      "title": "{title}: the charger has not responded for 30 minutes",
+      "description": "The integration keeps retrying, but the charger has not confirmed the requested state: {error}\n\nCheck that the Wallbox is online, unlocked and connected to the car. This issue clears itself when the charger responds."
     }
   }
 }

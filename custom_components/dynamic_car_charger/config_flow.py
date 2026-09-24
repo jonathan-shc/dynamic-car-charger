@@ -1,5 +1,9 @@
 """Configure existing Home Assistant entities through the UI."""
 
+from __future__ import annotations
+
+from typing import Any
+
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
@@ -8,7 +12,15 @@ from homeassistant.helpers import selector
 from .const import DEFAULTS, DOMAIN, NAME
 
 
-def schema(values):
+def interval_default(values: dict[str, Any]) -> str:
+    """Return the configured interval as a select option.
+
+    Older entries stored the interval from a number field, such as 60.0.
+    """
+    return str(int(float(values.get("interval_minutes", DEFAULTS["interval_minutes"]))))
+
+
+def schema(values: dict[str, Any]) -> vol.Schema:
     fields = {}
     for key in ("charger_entity", "soc_entity", "price_entity", "power_entity"):
         marker = vol.Required(key, default=values[key]) if key in values else vol.Required(key)
@@ -18,34 +30,35 @@ def schema(values):
         ("lock_entity", "lock"),
         ("vehicle_state_entity", "sensor"),
     ):
-        marker = (
-            vol.Optional(key, default=values[key])
-            if values.get(key)
-            else vol.Optional(key)
-        )
-        fields[marker] = selector.EntitySelector(
-            selector.EntitySelectorConfig(domain=domain)
-        )
-    for key, lo, hi, step, unit in [
-        ("capacity_kwh", 1, 300, 0.1, "kWh"),
-        ("power_kw", 0.1, 50, 0.1, "kW"),
-        ("efficiency", 0.5, 1, 0.01, None),
-        ("price_adjustment", -2, 2, 0.001, "EUR/kWh"),
-        ("max_price_eur_kwh", 0, 5, 0.01, "EUR/kWh"),
-        ("soc_max_age_minutes", 5, 240, 1, "min"),
-        ("deadline_grace_minutes", 0, 720, 15, "min"),
+        marker = vol.Optional(key, default=values[key]) if values.get(key) else vol.Optional(key)
+        fields[marker] = selector.EntitySelector(selector.EntitySelectorConfig(domain=domain))
+    # Units are part of the field labels; see strings.json.
+    for key, lo, hi, step in [
+        ("capacity_kwh", 1, 300, 0.1),
+        ("power_kw", 0.1, 50, 0.1),
+        ("efficiency", 0.5, 1, 0.01),
+        ("price_adjustment", -2, 2, 0.001),
+        ("max_price_eur_kwh", 0, 5, 0.01),
+        ("soc_max_age_minutes", 5, 240, 1),
+        ("deadline_grace_minutes", 0, 720, 15),
     ]:
         selector_config = {"min": lo, "max": hi, "step": step, "mode": "box"}
         fields[vol.Required(key, default=values.get(key, DEFAULTS[key]))] = selector.NumberSelector(
             selector.NumberSelectorConfig(**selector_config)
         )
-    fields[vol.Required("interval_minutes", default=int(values.get("interval_minutes", 60)))] = selector.NumberSelector(
-        selector.NumberSelectorConfig(min=15, max=60, step=45, mode="box")
+    fields[vol.Required("interval_minutes", default=interval_default(values))] = (
+        selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=["60", "15"],
+                mode=selector.SelectSelectorMode.DROPDOWN,
+                translation_key="interval_minutes",
+            )
+        )
     )
     return vol.Schema(fields)
 
 
-def validate(hass, data):
+def validate(hass, data: dict[str, Any]) -> dict[str, str]:
     """Only accept actual entities and explicitly understood units."""
     expected_domains = {
         "charger_entity": {"switch"},
@@ -122,6 +135,12 @@ class OptionsFlow(config_entries.OptionsFlow):
                 ):
                     errors["charger_entity"] = "charger_in_use"
             if not errors:
+                # The entry is identified by its charger. Keep that in step
+                # when a different charger switch is selected.
+                if self.config_entry.unique_id != user_input["charger_entity"]:
+                    self.hass.config_entries.async_update_entry(
+                        self.config_entry, unique_id=user_input["charger_entity"]
+                    )
                 return self.async_create_entry(title="", data=user_input)
         values = user_input or {**self.config_entry.data, **self.config_entry.options}
         return self.async_show_form(step_id="init", data_schema=schema(values), errors=errors)

@@ -1,7 +1,11 @@
-"""Target percentage control."""
+"""Target percentage and price threshold controls."""
+
+from __future__ import annotations
 
 from homeassistant.components.number import NumberEntity, NumberMode
+from homeassistant.const import EntityCategory
 
+from .const import DEFAULTS
 from .entity import ChargerEntity
 from .planner import number
 
@@ -19,13 +23,13 @@ class Target(ChargerEntity, NumberEntity):
     _attr_icon = "mdi:battery-charging-80"
 
     def __init__(self, coordinator):
-        super().__init__(coordinator, "target", "Target charge")
+        super().__init__(coordinator, "target")
 
     @property
-    def native_value(self):
+    def native_value(self) -> float:
         return self.coordinator.target
 
-    async def async_set_native_value(self, value):
+    async def async_set_native_value(self, value: float) -> None:
         await self.coordinator.async_change(target=number(value, 0, 100))
 
 
@@ -36,13 +40,14 @@ class PriceThreshold(ChargerEntity, NumberEntity):
     _attr_native_unit_of_measurement = "EUR/kWh"
     _attr_mode = NumberMode.BOX
     _attr_icon = "mdi:cash-clock"
+    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, coordinator):
-        super().__init__(coordinator, "price_threshold", "Charging price threshold")
+        super().__init__(coordinator, "price_threshold")
 
     @property
-    def native_value(self):
-        return self.coordinator.settings.get("max_price_eur_kwh", 0.20)
+    def native_value(self) -> float:
+        return self.coordinator.settings.get("max_price_eur_kwh", DEFAULTS["max_price_eur_kwh"])
 
-    async def async_set_native_value(self, value):
+    async def async_set_native_value(self, value: float) -> None:
         await self.coordinator.async_change_price_threshold(number(value, 0, 5))
