@@ -1,14 +1,14 @@
 # Validation
 
-What has been checked for Dynamic Car Charger 0.6.0, and what still needs checking on real hardware.
+What has been checked for Dynamic Car Charger 0.6.1, and what still needs checking on real hardware.
 
 ## Automated checks
 
 Run on every push and pull request by [the Validate workflow](.github/workflows/validate.yml):
 
-| Check | Tool | Result for 0.6.0 |
+| Check | Tool | Result for 0.6.1 |
 | --- | --- | --- |
-| Unit and integration tests | `pytest` against Home Assistant 2026.9.2, Python 3.14 | 83 passed |
+| Unit and integration tests | `pytest` against Home Assistant 2026.9.2, Python 3.14 | 85 passed |
 | Lint | `ruff check` (rules ASYNC, B, E, F, I, SIM, UP, W) | Clean |
 | Formatting | `ruff format --check` | Clean |
 | Python 3.13 syntax | `compileall` on Python 3.13, for older Home Assistant versions | See the workflow run for this release |
@@ -35,6 +35,7 @@ The tests run the real coordinator against Home Assistant's state machine and se
 - Repair issues that appear after 30 minutes and clear themselves.
 - `set_session` action.
 - Price forecast: holidays, calibration to all-in prices, estimates on synthetic data with a known weather relation, no training on unpublished days, API parsing, fetch schedule and failure handling, switching between forecast and threshold, fallback, and estimated hours never starting charging.
+- Every platform creates its expected entities, each with a translated name.
 - Configuration validation, the interval selector with stored numeric values, and the options flow unique ID update.
 
 ## Hardware checks still to do
