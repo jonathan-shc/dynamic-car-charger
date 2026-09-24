@@ -52,3 +52,22 @@ class ImmediateCharging(ChargerEntity, SwitchEntity):
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         await self.coordinator.async_change(immediate_charging=False)
+
+
+class PriceForecast(ChargerEntity, SwitchEntity):
+    """Choose between the price forecast and the price threshold."""
+
+    _attr_icon = "mdi:weather-windy"
+
+    def __init__(self, coordinator):
+        super().__init__(coordinator, "price_forecast")
+
+    @property
+    def is_on(self) -> bool:
+        return self.coordinator.use_forecast
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self.coordinator.async_change(use_forecast=True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self.coordinator.async_change(use_forecast=False)

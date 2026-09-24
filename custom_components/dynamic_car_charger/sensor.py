@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
+from homeassistant.const import EntityCategory
 
 from .entity import ChargerEntity
 
@@ -82,3 +83,47 @@ class SessionCostSensor(ChargerEntity, SensorEntity):
             ),
             "cost_complete": session["cost_complete"],
         }
+
+
+class PriceForecastSensor(ChargerEntity, SensorEntity):
+    """State of the price forecast, with the estimated all-in prices."""
+
+    _attr_icon = "mdi:weather-windy"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _unrecorded_attributes = frozenset({"estimates"})
+
+    def __init__(self, coordinator):
+        super().__init__(coordinator, "price_forecast_status")
+
+    @property
+    def native_value(self) -> str:
+        if not self.coordinator.use_forecast:
+            return "off"
+        return self.coordinator.forecaster.status
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        forecaster = self.coordinator.forecaster
+        calibration = self.coordinator.forecast_calibration
+        model = forecaster.model
+        attributes: dict[str, Any] = {
+            "error": forecaster.error,
+            "trained_at": forecaster.trained_at.isoformat() if forecaster.trained_at else None,
+            "estimated_at": (
+                forecaster.estimated_at.isoformat() if forecaster.estimated_at else None
+            ),
+            "last_market_day": (
+                model.last_known_day.isoformat() if model and model.last_known_day else None
+            ),
+            "calibration_slope": round(calibration.slope, 4) if calibration else None,
+            "calibration_offset": round(calibration.offset, 4) if calibration else None,
+            "estimates": [],
+        }
+        if calibration and model and model.last_known_day:
+            # Only hours after the last published market day are estimates.
+            attributes["estimates"] = [
+                {"start": hour.isoformat(), "price_eur_kwh": round(calibration.apply(price), 4)}
+                for hour, price in sorted(forecaster.estimates.items())
+                if model.local_date(hour) > model.last_known_day
+            ]
+        return attributes

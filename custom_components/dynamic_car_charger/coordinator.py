@@ -18,6 +18,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, EVENT_CAR_CONNECTED, NAME
+from .forecaster import ForecastUnavailable, PriceForecaster
 from .planner import Plan, Slot, make_plan, number, parse_prices, timestamp
 
 _LOGGER = logging.getLogger(__name__)
@@ -33,6 +34,8 @@ REPLAN_SETTLE = timedelta(seconds=30)
 SOC_CONFIRMATION_LIMIT = timedelta(minutes=30)
 # An input or control problem that lasts this long raises a repair issue.
 REPAIR_DELAY = timedelta(minutes=30)
+# How often the price forecast checks for new prices and weather forecasts.
+FORECAST_INTERVAL = timedelta(minutes=15)
 SESSION_END_STATUSES = ("set_deadline", "target_reached", "deadline_passed")
 PENDING_STATUSES = ("unlocking_charger", "starting_charge", "stopping_charge")
 
@@ -52,6 +55,10 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.target = 80.0
         self.deadline: datetime | None = None
         self.session: dict[str, Any] | None = None
+        self.use_forecast = False
+        self.forecaster = PriceForecaster(hass)
+        self.forecast_calibration = None
+        self._forecast_unsub = None
         self._lock = asyncio.Lock()
         self._observed_soc: float | None = None
         self._credit_kwh = 0.0
@@ -88,6 +95,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._observed_soc = saved.get("observed_soc")
         self._credit_kwh = number(saved.get("credit_kwh", 0), 0)
         self.session = saved.get("session")
+        self.use_forecast = bool(saved.get("use_forecast", False))
         # Keep a live threshold change across restarts, unless the configured
         # threshold was changed in the options since it was saved.
         if (
@@ -113,6 +121,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ]
         if self._vehicle_is_driving():
             await self._async_lock_charger()
+        self._set_forecast_tracking()
         await self.async_reconcile()
 
     @callback
@@ -182,6 +191,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "max_price_eur_kwh": self.settings.get("max_price_eur_kwh"),
             "configured_max_price_eur_kwh": self._configured_max_price,
             "session": self.session,
+            "use_forecast": self.use_forecast,
         }
 
     async def async_set_deadline_preset(self, days: int, hour: int) -> None:
@@ -211,8 +221,30 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._pending_stop = False
             for key, value in changes.items():
                 setattr(self, key, value)
+            if "use_forecast" in changes:
+                self._set_forecast_tracking()
             await self.store.async_save(self._save_data())
         await self.async_reconcile(force_stop=changes.get("enabled") is False)
+
+    @callback
+    def _set_forecast_tracking(self) -> None:
+        """Only fetch prices and weather while the price forecast is used."""
+        if self.use_forecast and self._forecast_unsub is None and not self._stopping:
+            self._forecast_unsub = async_track_time_interval(
+                self.hass, self._forecast_tick, FORECAST_INTERVAL
+            )
+            self.hass.async_create_background_task(
+                self._forecast_tick(), f"{DOMAIN} price forecast"
+            )
+        elif not self.use_forecast and self._forecast_unsub is not None:
+            self._forecast_unsub()
+            self._forecast_unsub = None
+            self.forecaster.status = "off"
+
+    async def _forecast_tick(self, now: datetime | None = None) -> None:
+        await self.forecaster.async_update()
+        if not self._stopping:
+            await self.async_reconcile()
 
     def _state(self, key: str) -> State:
         state = self.hass.states.get(self.settings[key])
@@ -353,10 +385,10 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         data["status"] = "charging"
         return True
 
-    def _choose_plan(self, prices, now, effective, data) -> Plan:
+    def _choose_plan(self, prices, now, effective, data) -> tuple[Plan, bool]:
+        """Return the plan to follow and whether published prices reach the deadline."""
         threshold = self.settings.get("max_price_eur_kwh", 0.20)
         args = (
-            prices,
             now,
             self.deadline,
             effective,
@@ -365,18 +397,36 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.settings["power_kw"],
             self.settings["efficiency"],
         )
-        threshold_plan = make_plan(*args, max_price=threshold)
-        full_plan = make_plan(*args)
+        threshold_plan = make_plan(prices, *args, max_price=threshold)
+        full_plan = make_plan(prices, *args)
         safety_hours = max(1.0, threshold_plan.required_kwh / self.settings["power_kw"] * 1.5)
         safety_mode = (self.deadline - now).total_seconds() / 3600 <= safety_hours
         data["price_threshold_eur_kwh"] = threshold
         data["threshold_safety_mode"] = safety_mode
+        data["forecast_status"] = self.forecaster.status if self.use_forecast else "off"
+        data["forecast_error"] = None
         # Once prices are known continuously through the deadline, use the
-        # normal least-cost plan. The threshold only limits provisional
-        # planning while future prices are still unknown.
+        # normal least-cost plan. Near the deadline, use any published price.
         if full_plan.coverage_complete or safety_mode:
-            return full_plan
-        return threshold_plan
+            data["planning_method"] = "published_prices"
+            return full_plan, full_plan.coverage_complete
+        if self.use_forecast:
+            # Plan over published and estimated prices together. Estimated
+            # hours never start charging; they only show whether waiting for
+            # unpublished prices is likely to be cheaper.
+            try:
+                estimated, self.forecast_calibration = self.forecaster.estimate(
+                    prices, self.deadline
+                )
+            except ForecastUnavailable as err:
+                data["forecast_error"] = str(err)
+            else:
+                data["planning_method"] = "forecast"
+                return make_plan(prices + estimated, *args), False
+        # The threshold limits provisional planning while future prices are
+        # unknown, and is the fallback when the forecast is unavailable.
+        data["planning_method"] = "threshold"
+        return threshold_plan, False
 
     def _reconcile_deadline(self, now: datetime, data: dict[str, Any]):
         grace_minutes = number(self.settings.get("deadline_grace_minutes", 60), 0, 720)
@@ -388,8 +438,9 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.deadline,
             self.target,
             self.settings.get("max_price_eur_kwh", 0.20),
+            self.use_forecast,
         )
-        plan = self._choose_plan(prices, now, effective, data)
+        plan, coverage_complete = self._choose_plan(prices, now, effective, data)
         data.update(plan.as_dict(self.settings["power_kw"]))
         data.update(self._battery_details(now, soc, effective))
         data["deadline_grace_minutes"] = grace_minutes
@@ -424,7 +475,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._active_plan_context = None
         elif planned_now:
             continuous_end = None
-            for slot in plan.slots:
+            for slot in (s for s in plan.slots if not s.estimated):
                 if slot.start <= now < slot.end:
                     continuous_end = slot.end
                 elif continuous_end is not None and slot.start <= continuous_end:
@@ -493,12 +544,12 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # current charging state.
             status = "charging"
         elif plan.shortfall_kwh > 0.001:
-            status = "insufficient_time" if plan.coverage_complete else "waiting_for_prices"
-        elif not plan.coverage_complete:
+            status = "insufficient_time" if coverage_complete else "waiting_for_prices"
+        elif not coverage_complete:
             status = "provisional_plan"
         else:
             status = "scheduled"
-        data["plan_is_provisional"] = not plan.coverage_complete
+        data["plan_is_provisional"] = not coverage_complete
         data["status"] = status if self.enabled or status == "target_reached" else "preview"
         data["plan_status"] = status
         return desired, prices
@@ -682,6 +733,9 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             for unsub in self._unsubs:
                 unsub()
             self._unsubs.clear()
+            if self._forecast_unsub is not None:
+                self._forecast_unsub()
+                self._forecast_unsub = None
             if self.enabled or self.immediate_charging:
                 error = await self._control(False, dt_util.utcnow(), force=True)
                 if error and error not in PENDING_STATUSES:
