@@ -26,6 +26,8 @@ VAT = 1.21
 ALL_IN_OFFSET = 0.1327
 # Next-day prices are available in Enever from about 15:00 local time.
 PUBLICATION_HOUR = 15
+# Archived weather forecasts are available up to this many days ahead.
+MAX_LEAD_DAYS = 6
 
 # Public holidays behave like Sundays on the power market.
 HOLIDAYS = {
@@ -218,7 +220,7 @@ class WeatherModel:
             lag = (day - last_known_day).days
             # Archived "previous_dayN" forecasts were made about N x 24 hours
             # before the hour. Only use one that already existed at `now`.
-            lead = min(3, max(1, math.ceil((hour - now) / timedelta(days=1))))
+            lead = min(MAX_LEAD_DAYS, max(1, math.ceil((hour - now) / timedelta(days=1))))
             row = self._features(hour, lag, lead)
             if row is None:
                 continue

@@ -17,7 +17,7 @@ python tools/backtest/backtest.py   # writes tools/backtest/results/report.md an
 | Data | Source | Notes |
 | --- | --- | --- |
 | Dutch day-ahead prices | [Energy-Charts API](https://api.energy-charts.info/) (Fraunhofer ISE), CC BY 4.0, source Bundesnetzagentur / SMARD.de | Quarter hours (from October 2025) are averaged per hour. |
-| Weather forecasts | [Open-Meteo previous-runs API](https://open-meteo.com/en/docs/previous-runs-api) | The forecast as it was known 1, 2 and 3 days before each hour. Complete from March 2024. |
+| Weather forecasts | [Open-Meteo previous-runs API](https://open-meteo.com/en/docs/previous-runs-api) | The forecast as it was known 1 to 6 days before each hour. Complete from March 2024. |
 
 No API keys are needed. Energy-Charts rate-limits quick successive requests; `fetch.py` waits and retries.
 
@@ -30,6 +30,7 @@ Each session is simulated hour by hour. At every hour a strategy only sees the p
 | Strategy | Meaning |
 | --- | --- |
 | Oracle | Knows all prices in advance: the lowest possible cost. |
+| Charge immediately | No smart charging: full power from plug-in until done. |
 | Cheapest known, no threshold | Always uses the cheapest published hours. |
 | Threshold X | The integration today: while prices are incomplete, only charge at or below X. |
 | Profile forecast | Forecast = last known day's average + the typical hourly shape of the last 4 weeks. |
@@ -39,4 +40,4 @@ Forecast strategies plan over published and forecast prices together, but only c
 
 The weather model only uses weather forecasts that existed at the decision time, and it is only trained on prices published before the decision.
 
-Sessions: five plug-in/deadline patterns × 10, 22.5 and 40 kWh at 9.9 kW, starting every day.
+Sessions: seven plug-in/deadline patterns (1 to 5 days) × 10, 22.5 and 40 kWh at 9.9 kW, starting every day.

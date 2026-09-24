@@ -1,7 +1,7 @@
 """Download Dutch day-ahead prices and archived weather forecasts for the backtest.
 
 Prices: Energy-Charts (Fraunhofer ISE), CC BY 4.0, source Bundesnetzagentur | SMARD.de.
-Weather: Open-Meteo previous-runs API: the forecast as it was known 1, 2 and 3 days
+Weather: Open-Meteo previous-runs API: the forecast as it was known 1 to 6 days
 before each hour, so the backtest only uses information available at decision time.
 
 No API keys are needed. Output goes to tools/backtest/data/ (not committed).
@@ -28,8 +28,8 @@ WEATHER_POINTS = {
     "de_central": (51.0, 10.0),
 }
 WEATHER_VARIABLES = ("wind_speed_100m", "shortwave_radiation", "temperature_2m")
-LEADS = (1, 2, 3)
-# Archived forecasts with a 1-3 day lead are complete from this date.
+LEADS = (1, 2, 3, 4, 5, 6)
+# Archived forecasts with a 1-6 day lead are complete from this date.
 WEATHER_START = date(2024, 3, 1)
 
 

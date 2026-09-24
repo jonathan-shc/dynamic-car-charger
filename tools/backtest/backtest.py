@@ -43,6 +43,8 @@ SCENARIOS = (
     ("evening to second morning", 18, 2, 7, 30),
     ("evening to second late morning", 18, 2, 11, 30),
     ("evening to third morning", 20, 3, 7, 30),
+    ("evening to fourth morning", 18, 4, 7, 30),
+    ("evening to fifth morning", 18, 5, 7, 30),
 )
 ENERGIES_KWH = (10.0, 22.5, 40.0)
 
@@ -71,6 +73,15 @@ class Oracle:
             prices.append(Slot(hour, hour + HOUR, self.history.prices[hour]))
             hour += HOUR
         return plan(prices, now, deadline, energy)
+
+
+class Immediate:
+    """No smart charging: charge at full power from plug-in until done."""
+
+    name = "charge immediately"
+
+    def decide(self, now, known, deadline, energy):
+        return plan([Slot(now, deadline, 0.0)], now, deadline, energy)
 
 
 class Threshold:
@@ -195,10 +206,11 @@ def main():
     profile, weather = ProfileModel(history), WeatherModel(history)
     strategies = [
         Oracle(history),
+        Immediate(),
         Threshold(None),
         *(Threshold(t) for t in (0.18, 0.20, 0.25, 0.30)),
-        *(Forecast(profile, m) for m in (0.0, 0.02, 0.04)),
-        *(Forecast(weather, m) for m in (0.0, 0.02, 0.03, 0.04, 0.06)),
+        *(Forecast(profile, m) for m in (0.0, 0.02)),
+        *(Forecast(weather, m) for m in (0.0, 0.02, 0.04)),
     ]
 
     RESULTS.mkdir(exist_ok=True)
