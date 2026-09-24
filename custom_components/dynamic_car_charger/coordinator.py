@@ -507,7 +507,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not prices:
             try:
                 prices = self._prices()
-            except ValueError, TypeError, KeyError, OverflowError:
+            except (ValueError, TypeError, KeyError, OverflowError):
                 return None
         for slot in prices:
             if slot.start <= now < slot.end:
@@ -619,7 +619,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 await self.hass.services.async_call(
                     "switch", f"turn_{wanted}", {"entity_id": entity_id}, blocking=True
                 )
-        except HomeAssistantError, TimeoutError:
+        except (HomeAssistantError, TimeoutError):
             return f"Charger did not accept {wanted}; will retry"
         return pending
 
@@ -651,7 +651,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     await self.hass.services.async_call(
                         "lock", "unlock", {"entity_id": entity_id}, blocking=True
                     )
-            except HomeAssistantError, TimeoutError:
+            except (HomeAssistantError, TimeoutError):
                 return "Charger did not accept unlock; will retry"
         return pending
 
@@ -670,7 +670,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
             self._unlock_command_time = None
             self._unlock_attempt_time = None
-        except HomeAssistantError, TimeoutError:
+        except (HomeAssistantError, TimeoutError):
             _LOGGER.warning("Wallbox could not be locked after the car disconnected")
 
     async def _shutdown(self, event: Event) -> None:

@@ -2,7 +2,7 @@
 
 A Home Assistant custom integration for deadline-based EV charging. Set **80% by Friday at 07:30**, inspect the charging plan, and let the integration pause and resume your Wallbox during the cheapest published price intervals.
 
-Designed for a Leapmotor B05, Wallbox Pulsar Max and a NextEnergy dynamic contract. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Hardware compatibility must be checked with your actual devices. Current version: 0.5.0 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
+Designed for a Leapmotor B05, Wallbox Pulsar Max and a NextEnergy dynamic contract. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Hardware compatibility must be checked with your actual devices. Current version: 0.5.1 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
 
 ## What you get
 
@@ -187,7 +187,7 @@ Tests cover cost allocation, fractional intervals, losses, negative prices, gaps
 ### Releasing
 
 1. Update `version` in `custom_components/dynamic_car_charger/manifest.json` and in this README.
-2. Merge to `main`, then tag: `git tag v0.5.0 && git push origin v0.5.0`.
+2. Merge to `main`, then tag: `git tag v0.5.1 && git push origin v0.5.1`.
 3. The release workflow checks that the tag matches the manifest version and publishes a GitHub release with generated notes. HACS offers that release to users.
 
 See [VALIDATION.md](VALIDATION.md) for the actual results and remaining hardware checks. No credentials, vehicle identifiers or household consumption data belong in issues. Share only the relevant redacted configuration and plan attributes when reporting a problem.
