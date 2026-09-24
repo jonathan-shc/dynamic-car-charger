@@ -14,6 +14,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         [
             AutomaticCharging(entry.runtime_data),
             ImmediateCharging(entry.runtime_data),
+            PriceForecast(entry.runtime_data),
         ]
     )
 

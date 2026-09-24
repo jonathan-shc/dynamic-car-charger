@@ -83,6 +83,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._pending_stop = False
         self._charger_available = False
         self._unsubs: list = []
+        self._stop_unsub = None
         self.data = {"status": "set_deadline", "slots": []}
 
     async def async_start(self) -> None:
@@ -114,8 +115,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             for key in ("status_entity", "lock_entity", "vehicle_state_entity")
             if self.settings.get(key)
         )
+        self._stop_unsub = self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, self._shutdown)
         self._unsubs = [
-            self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, self._shutdown),
             async_track_state_change_event(self.hass, tracked_entities, self._changed),
             async_track_time_interval(self.hass, self._tick, TICK),
         ]
@@ -725,6 +726,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.warning("Wallbox could not be locked after the car disconnected")
 
     async def _shutdown(self, event: Event) -> None:
+        # A one-time listener is already removed once it has fired.
+        self._stop_unsub = None
         await self.async_stop()
 
     async def async_stop(self) -> None:
@@ -733,6 +736,9 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             for unsub in self._unsubs:
                 unsub()
             self._unsubs.clear()
+            if self._stop_unsub is not None:
+                self._stop_unsub()
+                self._stop_unsub = None
             if self._forecast_unsub is not None:
                 self._forecast_unsub()
                 self._forecast_unsub = None

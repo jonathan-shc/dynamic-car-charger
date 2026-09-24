@@ -843,3 +843,52 @@ async def test_forecast_switch_starts_updates_and_survives_restart(rig):
     await c.async_change(use_forecast=False)
     assert c._forecast_unsub is None
     assert c.forecaster.status == "off"
+
+
+EXPECTED_ENTITIES = {
+    "sensor": {"plan", "cost", "session_cost", "price_forecast_status"},
+    "number": {"target", "price_threshold"},
+    "datetime": {"deadline"},
+    "switch": {"automatic", "immediate_charging", "price_forecast"},
+    "button": {"tomorrow_0700", "tomorrow_0900", "day_after_tomorrow_0900"},
+}
+
+
+async def test_every_platform_creates_its_entities_with_names(rig):
+    import importlib
+    import json
+    from pathlib import Path
+
+    from custom_components.dynamic_car_charger.const import PLATFORMS
+
+    hass, c, _ = rig
+    strings = json.loads(
+        (
+            Path(__file__).parents[1] / "custom_components/dynamic_car_charger/strings.json"
+        ).read_text()
+    )
+    entry = SimpleNamespace(entry_id="test", runtime_data=c)
+    assert set(PLATFORMS) == set(EXPECTED_ENTITIES)
+    for platform in PLATFORMS:
+        module = importlib.import_module(f"custom_components.dynamic_car_charger.{platform}")
+        added = []
+        await module.async_setup_entry(
+            hass, entry, lambda entities, added=added: added.extend(entities)
+        )
+        keys = {entity.translation_key for entity in added}
+        assert keys == EXPECTED_ENTITIES[platform], platform
+        assert {entity.unique_id for entity in added} == {f"test_{key}" for key in keys}
+        for key in keys:
+            assert strings["entity"][platform][key]["name"], (platform, key)
+
+
+async def test_shutdown_does_not_remove_the_stop_listener_twice(rig, caplog):
+    from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+
+    hass, c, _ = rig
+    c.store.async_load = AsyncMock(return_value={})
+    await c.async_start()
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
+    await hass.async_block_till_done()
+    assert c._stopping is True
+    assert "Unable to remove unknown job listener" not in caplog.text
