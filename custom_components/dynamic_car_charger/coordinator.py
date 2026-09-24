@@ -23,6 +23,8 @@ class ChargerCoordinator(DataUpdateCoordinator):
         super().__init__(hass, _LOGGER, name=NAME, config_entry=entry)
         self.entry = entry
         self.settings = {**entry.data, **entry.options}
+        # The configured threshold, before any live change from the Number entity.
+        self._configured_max_price = self.settings.get("max_price_eur_kwh")
         self.store = Store(hass, 1, f"{DOMAIN}.{entry.entry_id}")
         self.enabled = False
         self.immediate_charging = False
@@ -58,6 +60,13 @@ class ChargerCoordinator(DataUpdateCoordinator):
         self.deadline = timestamp(saved["deadline"]) if saved.get("deadline") else None
         self._observed_soc = saved.get("observed_soc")
         self._credit_kwh = number(saved.get("credit_kwh", 0), 0)
+        # Keep a live threshold change across restarts, unless the configured
+        # threshold was changed in the options since it was saved.
+        if (
+            saved.get("max_price_eur_kwh") is not None
+            and saved.get("configured_max_price_eur_kwh") == self._configured_max_price
+        ):
+            self.settings["max_price_eur_kwh"] = number(saved["max_price_eur_kwh"], 0, 5)
         charger_state = self.hass.states.get(self.settings["charger_entity"])
         self._charger_available = self._is_available(charger_state)
         tracked_entities = [
@@ -143,6 +152,8 @@ class ChargerCoordinator(DataUpdateCoordinator):
             "observed_soc": self._observed_soc,
             "credit_kwh": self._credit_kwh,
             "pending_stop": self._pending_stop,
+            "max_price_eur_kwh": self.settings.get("max_price_eur_kwh"),
+            "configured_max_price_eur_kwh": self._configured_max_price,
         }
 
     async def async_set_deadline_preset(self, days, hour):
