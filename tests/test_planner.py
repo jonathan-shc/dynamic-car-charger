@@ -1,13 +1,13 @@
 """Cost, calendar and input correctness for the real scheduler."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from itertools import combinations
 
 import pytest
 
 from custom_components.dynamic_car_charger.planner import Slot, make_plan, parse_prices
 
-NOW = datetime(2026, 9, 17, 18, tzinfo=timezone.utc)
+NOW = datetime(2026, 9, 17, 18, tzinfo=UTC)
 
 
 def slots(prices):

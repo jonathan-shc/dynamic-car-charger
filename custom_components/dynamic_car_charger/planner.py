@@ -1,7 +1,8 @@
 """Pure, UTC-based least-cost planning. No Home Assistant dependencies."""
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 from math import isfinite
 
 
@@ -23,7 +24,7 @@ def timestamp(value):
     result = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
     if result.tzinfo is None or result.utcoffset() is None:
         raise ValueError("Timestamps must include a timezone offset")
-    return result.astimezone(timezone.utc)
+    return result.astimezone(UTC)
 
 
 @dataclass(frozen=True)
@@ -102,7 +103,7 @@ def parse_prices(attributes, interval_minutes=60, adjustment=0):
                 raise ValueError("Conflicting price rows")
             unique[start] = slot
     slots = sorted(unique.values(), key=lambda s: s.start)
-    if any(a.end > b.start for a, b in zip(slots, slots[1:])):
+    if any(a.end > b.start for a, b in pairwise(slots)):
         raise ValueError("Overlapping price intervals")
     if not slots:
         raise ValueError("No price intervals available")
@@ -128,13 +129,8 @@ def _compact_selected_slots(chosen, candidates):
         if duration >= source.end - source.start:
             continue
         next_selected = selected.get(source_index + 1)
-        if (
-            next_selected is not None
-            and source.end == sources[source_index + 1].start
-        ):
-            compacted[chosen_index] = Slot(
-                source.end - duration, source.end, chosen_slot.price
-            )
+        if next_selected is not None and source.end == sources[source_index + 1].start:
+            compacted[chosen_index] = Slot(source.end - duration, source.end, chosen_slot.price)
 
     return sorted(compacted, key=lambda slot: slot.start)
 
@@ -166,10 +162,7 @@ def make_plan(prices, now, deadline, soc, target, capacity, power, efficiency, m
             break
         cursor = max(cursor, slot.end)
     coverage = cursor >= deadline
-    clipped = [
-        slot for slot in all_clipped
-        if max_price is None or slot.price <= number(max_price)
-    ]
+    clipped = [slot for slot in all_clipped if max_price is None or slot.price <= number(max_price)]
     remaining, cost, chosen = required, 0.0, []
     for slot in sorted(clipped, key=lambda s: (s.price, s.start)):
         if remaining < 1e-8:
