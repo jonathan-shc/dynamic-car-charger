@@ -1,16 +1,17 @@
 # Validation
 
-What has been checked for Dynamic Car Charger 0.5.0, and what still needs checking on real hardware.
+What has been checked for Dynamic Car Charger 0.5.1, and what still needs checking on real hardware.
 
 ## Automated checks
 
 Run on every push and pull request by [the Validate workflow](.github/workflows/validate.yml):
 
-| Check | Tool | Result for 0.5.0 |
+| Check | Tool | Result for 0.5.1 |
 | --- | --- | --- |
 | Unit and integration tests | `pytest` against Home Assistant 2026.9.2, Python 3.14 | 65 passed |
 | Lint | `ruff check` (rules ASYNC, B, E, F, I, SIM, UP, W) | Clean |
 | Formatting | `ruff format --check` | Clean |
+| Python 3.13 syntax | `compileall` on Python 3.13, for older Home Assistant versions | See the workflow run for this release |
 | Integration manifest, translations and services | Hassfest | See the workflow run for this release |
 | HACS repository structure | HACS action (brands check excluded) | See the workflow run for this release |
 
