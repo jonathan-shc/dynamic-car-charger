@@ -330,6 +330,40 @@ async def test_measured_power_credits_energy_between_soc_changes(rig):
     assert c._credit_kwh == 0
 
 
+async def _restart(hass, c, options=None):
+    """Start a new coordinator for the same entry with the last saved data."""
+    saved = c.store.async_save.call_args.args[0]
+    entry = SimpleNamespace(
+        entry_id="test",
+        data=c.entry.data,
+        options=options or {},
+        async_on_unload=lambda f: None,
+    )
+    restarted = ChargerCoordinator(hass, entry)
+    restarted.store = SimpleNamespace(
+        async_load=AsyncMock(return_value=saved),
+        async_save=AsyncMock(),
+        async_delay_save=lambda *a: None,
+    )
+    await restarted.async_start()
+    await restarted.async_stop()
+    return restarted
+
+
+async def test_price_threshold_survives_restart(rig):
+    hass, c, _ = rig
+    await c.async_change_price_threshold(0.12)
+    restarted = await _restart(hass, c)
+    assert restarted.settings["max_price_eur_kwh"] == 0.12
+
+
+async def test_changed_configured_threshold_replaces_live_threshold(rig):
+    hass, c, _ = rig
+    await c.async_change_price_threshold(0.12)
+    restarted = await _restart(hass, c, options={"max_price_eur_kwh": 0.25})
+    assert restarted.settings["max_price_eur_kwh"] == 0.25
+
+
 async def test_config_schema_and_units(rig):
     hass, c, _ = rig
     assert schema(c.settings)(c.settings)["power_kw"] == 10
