@@ -1,14 +1,20 @@
 """Exercise the coordinator against real Home Assistant states and services."""
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 from homeassistant.core import HomeAssistant, State
 from homeassistant.util import dt as dt_util
 
-from custom_components.dynamic_car_charger.config_flow import schema, validate
+from custom_components.dynamic_car_charger.config_flow import (
+    OptionsFlow,
+    interval_default,
+    schema,
+    validate,
+)
 from custom_components.dynamic_car_charger.const import DEFAULTS, EVENT_CAR_CONNECTED
 from custom_components.dynamic_car_charger.coordinator import ChargerCoordinator
 
@@ -26,7 +32,13 @@ async def rig(tmp_path):
         power_kw=10.0,
         efficiency=1.0,
     )
-    entry = SimpleNamespace(entry_id="test", data=settings, options={}, async_on_unload=lambda f: None)
+    entry = SimpleNamespace(
+        entry_id="test",
+        title="Dynamic Car Charger",
+        data=settings,
+        options={},
+        async_on_unload=lambda f: None,
+    )
     c = ChargerCoordinator(hass, entry)
     c.store = SimpleNamespace(async_save=AsyncMock(), async_delay_save=lambda *a: None)
     calls = []
@@ -147,11 +159,15 @@ async def test_wallbox_status_fires_connected_event(rig):
     received = []
     hass.bus.async_listen(EVENT_CAR_CONNECTED, received.append)
 
-    c._changed(SimpleNamespace(data={
-        "entity_id": "sensor.wallbox_status",
-        "old_state": State("sensor.wallbox_status", "Locked"),
-        "new_state": State("sensor.wallbox_status", "Locked, car connected"),
-    }))
+    c._changed(
+        SimpleNamespace(
+            data={
+                "entity_id": "sensor.wallbox_status",
+                "old_state": State("sensor.wallbox_status", "Locked"),
+                "new_state": State("sensor.wallbox_status", "Locked, car connected"),
+            }
+        )
+    )
     await hass.async_block_till_done()
 
     assert len(received) == 1
@@ -191,11 +207,15 @@ async def test_driving_locks_wallbox(rig):
         hass.states.async_set("lock.wallbox", "locked")
 
     hass.services.async_register("lock", "lock", lock)
-    c._changed(SimpleNamespace(data={
-        "entity_id": "sensor.leapmotor_state",
-        "old_state": State("sensor.leapmotor_state", "Parked"),
-        "new_state": State("sensor.leapmotor_state", "Driving"),
-    }))
+    c._changed(
+        SimpleNamespace(
+            data={
+                "entity_id": "sensor.leapmotor_state",
+                "old_state": State("sensor.leapmotor_state", "Parked"),
+                "new_state": State("sensor.leapmotor_state", "Driving"),
+            }
+        )
+    )
     await hass.async_block_till_done()
 
     assert lock_calls == ["lock"]
@@ -335,6 +355,7 @@ async def _restart(hass, c, options=None):
     saved = c.store.async_save.call_args.args[0]
     entry = SimpleNamespace(
         entry_id="test",
+        title="Dynamic Car Charger",
         data=c.entry.data,
         options=options or {},
         async_on_unload=lambda f: None,
@@ -395,18 +416,29 @@ async def test_delayed_start_is_pending_before_it_is_an_error(rig):
     assert c.data["status"] == "charging"
 
 
-async def test_unconfirmed_start_becomes_error_after_five_minutes(rig):
-    hass, c, _ = rig
+async def test_unconfirmed_start_becomes_error_but_keeps_retrying(rig):
+    hass, c, calls = rig
 
     async def delayed_start(call):
-        pass
+        calls.append(call.service)
 
     hass.services.async_register("switch", "turn_on", delayed_start)
     await c.async_change(enabled=True)
     c._command_time -= timedelta(seconds=301)
     await c.async_reconcile()
     assert c.data["status"] == "control_error"
-    assert c.data["error"] == "Charger did not confirm on within 5 minutes"
+    assert c.data["error"] == "Charger did not confirm on within 5 minutes; retrying"
+    assert calls == ["turn_on"]
+
+    c._command_attempt_time -= timedelta(seconds=121)
+    await c.async_reconcile()
+    assert calls == ["turn_on", "turn_on"]
+    assert c.data["status"] == "control_error"
+
+    hass.states.async_set("switch.wallbox", "on")
+    await c.async_reconcile()
+    assert c.data["status"] == "charging"
+    assert c.data["error"] is None
 
 
 async def test_new_prices_may_interrupt_active_run(rig):
@@ -520,3 +552,192 @@ async def test_deadline_change_may_interrupt_active_run(rig):
     await c.async_reconcile()
     assert c.data["charging_requested"] is False
     assert calls == ["turn_on", "turn_off"]
+
+
+async def test_soc_confirmation_charges_at_most_30_minutes_past_estimate(rig):
+    hass, c, calls = rig
+    c.target = 100
+    hass.states.async_set("sensor.battery", "99", {"unit_of_measurement": "%"})
+    await c.async_change(enabled=True)
+    c._credit_kwh = 0.5
+    await c.async_reconcile()
+    assert c.data["status"] == "awaiting_soc_confirmation"
+    assert c.data["charging_requested"] is True
+    assert c.data["soc_confirmation_until"] is not None
+
+    # The car never reports 100%, for example because its own limit is lower.
+    c._soc_confirmation_since -= timedelta(minutes=30)
+    await c.async_reconcile()
+    assert c.data["charging_requested"] is False
+    assert calls[-1] == "turn_off"
+    await c.async_reconcile()
+    assert c.data["status"] == "awaiting_soc_confirmation"
+    assert c.data["charging_requested"] is False
+    assert calls == ["turn_on", "turn_off"]
+
+
+async def test_old_battery_report_is_flagged_but_does_not_stop_the_plan(rig):
+    _, c, calls = rig
+    c.settings["soc_max_age_minutes"] = 5
+    later = dt_util.utcnow() + timedelta(minutes=10)
+    with patch(
+        "custom_components.dynamic_car_charger.coordinator.dt_util.utcnow",
+        return_value=later,
+    ):
+        await c.async_change(enabled=True)
+    assert c.data["soc_report_old"] is True
+    assert c.data["charging_requested"] is True
+    assert calls == ["turn_on"]
+
+
+async def test_unconfirmed_unlock_becomes_error_but_keeps_retrying(rig):
+    hass, c, calls = rig
+    c.settings["lock_entity"] = "lock.wallbox"
+    hass.states.async_set("lock.wallbox", "locked")
+    unlock_calls = []
+
+    async def unlock(call):
+        unlock_calls.append(call.service)
+
+    hass.services.async_register("lock", "unlock", unlock)
+    await c.async_change(enabled=True)
+    assert c.data["status"] == "unlocking_charger"
+
+    c._unlock_command_time -= timedelta(seconds=301)
+    c._unlock_attempt_time -= timedelta(seconds=121)
+    await c.async_reconcile()
+    assert unlock_calls == ["unlock", "unlock"]
+    assert c.data["status"] == "control_error"
+
+    hass.states.async_set("lock.wallbox", "unlocked")
+    await c.async_reconcile()
+    assert calls == ["turn_on"]
+
+
+async def test_session_cost_accounts_measured_energy(rig):
+    hass, c, _ = rig
+    await c.async_change(enabled=True)
+    assert c.session["active"] is True
+
+    c._sample_time = dt_util.utcnow() - timedelta(seconds=36)
+    c._sample_power = 10
+    await c.async_reconcile()
+    assert c.session["energy_kwh"] == pytest.approx(0.1, abs=0.001)
+    assert c.session["cost_eur"] == pytest.approx(0.01, abs=0.0001)
+    assert c.session["cost_complete"] is True
+
+    hass.states.async_set("sensor.battery", "35", {"unit_of_measurement": "%"})
+    await c.async_reconcile()
+    assert c.session["active"] is False
+    assert c.session["ended"] is not None
+    assert c.session["energy_kwh"] == pytest.approx(0.1, abs=0.001)
+
+
+async def test_session_without_price_marks_cost_incomplete(rig):
+    hass, c, _ = rig
+    await c.async_change(immediate_charging=True)
+    hass.states.async_set("sensor.nextenergy", "unavailable")
+    c._sample_time = dt_util.utcnow() - timedelta(seconds=36)
+    c._sample_power = 10
+    await c.async_reconcile()
+    assert c.session["energy_kwh"] == pytest.approx(0.1, abs=0.001)
+    assert c.session["cost_complete"] is False
+
+
+async def test_persistent_input_error_raises_and_clears_repair_issue(rig):
+    hass, c, _ = rig
+    from homeassistant.helpers import issue_registry as ir
+
+    await ir.async_load(hass)
+    await c.async_change(enabled=True)
+    hass.states.async_set("sensor.battery", "unavailable")
+    await c.async_reconcile()
+    await c.async_reconcile()
+    assert c.data["status"] == "input_error"
+    registry = ir.async_get(hass)
+    assert registry.async_get_issue("dynamic_car_charger", "input_error_test") is None
+
+    c._problem_since -= timedelta(minutes=30)
+    await c.async_reconcile()
+    issue = registry.async_get_issue("dynamic_car_charger", "input_error_test")
+    assert issue is not None
+    assert issue.translation_placeholders["error"] == "soc_entity is unavailable"
+
+    hass.states.async_set("sensor.battery", "21", {"unit_of_measurement": "%"})
+    await c.async_reconcile()
+    assert registry.async_get_issue("dynamic_car_charger", "input_error_test") is None
+
+
+async def test_set_session_service_changes_session(rig):
+    hass, c, calls = rig
+    from custom_components.dynamic_car_charger import async_setup
+
+    await async_setup(hass, {})
+    with patch("custom_components.dynamic_car_charger._coordinator_for", return_value=c):
+        await hass.services.async_call(
+            "dynamic_car_charger",
+            "set_session",
+            {
+                "target_percentage": 70,
+                "ready_by": "2030-01-02T07:30:00+01:00",
+                "automatic_charging": True,
+            },
+            blocking=True,
+        )
+    assert c.target == 70
+    assert c.deadline == datetime(2030, 1, 2, 6, 30, tzinfo=UTC)
+    assert c.enabled is True
+
+
+async def test_set_session_service_requires_a_change(rig):
+    hass, c, _ = rig
+    from homeassistant.exceptions import ServiceValidationError
+
+    from custom_components.dynamic_car_charger import async_setup
+
+    await async_setup(hass, {})
+    with (
+        patch("custom_components.dynamic_car_charger._coordinator_for", return_value=c),
+        pytest.raises(ServiceValidationError),
+    ):
+        await hass.services.async_call("dynamic_car_charger", "set_session", {}, blocking=True)
+
+
+async def test_deadline_preset_keeps_local_time_across_dst_change(rig):
+    _, c, _ = rig
+    evening = datetime(2026, 10, 24, 20, 15, tzinfo=ZoneInfo("Europe/Amsterdam"))
+    with patch(
+        "custom_components.dynamic_car_charger.coordinator.dt_util.now",
+        return_value=evening,
+    ):
+        await c.async_set_deadline_preset(1, 7)
+    # Summer time ends on 25 October: 07:00 local is 06:00 UTC.
+    assert c.deadline == datetime(2026, 10, 25, 6, tzinfo=UTC)
+
+
+async def test_options_flow_updates_unique_id_for_new_charger(rig):
+    hass, c, _ = rig
+    hass.states.async_set("switch.other_wallbox", "off")
+    entry = SimpleNamespace(
+        entry_id="test", unique_id="switch.wallbox", data=c.settings, options={}
+    )
+    config_entries = SimpleNamespace(
+        async_entries=lambda domain: [entry], async_update_entry=Mock()
+    )
+
+    class Flow(OptionsFlow):
+        config_entry = entry
+
+    flow = Flow()
+    flow.hass = SimpleNamespace(states=hass.states, config_entries=config_entries)
+    result = await flow.async_step_init({**c.settings, "charger_entity": "switch.other_wallbox"})
+    assert result["type"] == "create_entry"
+    config_entries.async_update_entry.assert_called_once_with(
+        entry, unique_id="switch.other_wallbox"
+    )
+
+
+def test_interval_default_accepts_stored_numbers():
+    assert interval_default({"interval_minutes": 60.0}) == "60"
+    assert interval_default({"interval_minutes": 15}) == "15"
+    assert interval_default({}) == "60"

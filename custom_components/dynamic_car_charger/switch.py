@@ -1,31 +1,37 @@
 """Explicit control ownership; off requests a charger pause."""
 
+from __future__ import annotations
+
+from typing import Any
+
 from homeassistant.components.switch import SwitchEntity
 
 from .entity import ChargerEntity
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
-    async_add_entities([
-        AutomaticCharging(entry.runtime_data),
-        ImmediateCharging(entry.runtime_data),
-    ])
+    async_add_entities(
+        [
+            AutomaticCharging(entry.runtime_data),
+            ImmediateCharging(entry.runtime_data),
+        ]
+    )
 
 
 class AutomaticCharging(ChargerEntity, SwitchEntity):
     _attr_icon = "mdi:ev-station"
 
     def __init__(self, coordinator):
-        super().__init__(coordinator, "automatic", "Automatic charging")
+        super().__init__(coordinator, "automatic")
 
     @property
-    def is_on(self):
+    def is_on(self) -> bool:
         return self.coordinator.enabled
 
-    async def async_turn_on(self, **kwargs):
+    async def async_turn_on(self, **kwargs: Any) -> None:
         await self.coordinator.async_change(enabled=True)
 
-    async def async_turn_off(self, **kwargs):
+    async def async_turn_off(self, **kwargs: Any) -> None:
         await self.coordinator.async_change(enabled=False)
 
 
@@ -35,14 +41,14 @@ class ImmediateCharging(ChargerEntity, SwitchEntity):
     _attr_icon = "mdi:flash"
 
     def __init__(self, coordinator):
-        super().__init__(coordinator, "immediate_charging", "Charge now to target")
+        super().__init__(coordinator, "immediate_charging")
 
     @property
-    def is_on(self):
+    def is_on(self) -> bool:
         return self.coordinator.immediate_charging
 
-    async def async_turn_on(self, **kwargs):
+    async def async_turn_on(self, **kwargs: Any) -> None:
         await self.coordinator.async_change(immediate_charging=True)
 
-    async def async_turn_off(self, **kwargs):
+    async def async_turn_off(self, **kwargs: Any) -> None:
         await self.coordinator.async_change(immediate_charging=False)

@@ -14,12 +14,32 @@ cards:
         name: Plan status
       - entity: sensor.dynamic_car_charger_remaining_charging_cost
         name: Estimated remaining cost
+      - entity: sensor.dynamic_car_charger_session_charging_cost
+        name: Session cost
+      - entity: number.dynamic_car_charger_charging_price_threshold
+        name: Price threshold
+      - entity: switch.dynamic_car_charger_charge_now_to_target
+        name: Charge now
+  - type: horizontal-stack
+    cards:
+      - type: button
+        entity: button.dynamic_car_charger_tomorrow_07_00
+        name: Tomorrow 07:00
+      - type: button
+        entity: button.dynamic_car_charger_tomorrow_09_00
+        name: Tomorrow 09:00
+      - type: button
+        entity: button.dynamic_car_charger_day_after_tomorrow_09_00
+        name: Day after 09:00
   - type: markdown
     title: Charging plan
     content: |-
       {% set plan = 'sensor.dynamic_car_charger_charging_plan' %}
       {% set error = state_attr(plan, 'error') %}
       {% if error %}**Attention:** {{ error }}
+
+      {% endif %}
+      {% if state_attr(plan, 'soc_report_old') %}**Note:** the battery percentage has not been reported recently.
 
       {% endif %}
       {% if state_attr(plan, 'coverage_complete') == false %}

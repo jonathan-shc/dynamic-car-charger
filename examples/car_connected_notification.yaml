@@ -1,6 +1,7 @@
 # Copy this automation into Home Assistant and replace the notify service and
-# dashboard path. The integration fires the trigger when the configured
-# Wallbox switch changes from unavailable to available.
+# dashboard path. The integration fires the trigger when the Wallbox status
+# sensor changes to "Locked, car connected" or, without a status sensor, when
+# the configured Wallbox switch changes from unavailable to available.
 alias: Dynamic Car Charger - car connected
 description: Ask what to do when the car is connected to the Wallbox
 mode: restart
