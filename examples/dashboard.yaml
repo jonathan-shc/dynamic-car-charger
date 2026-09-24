@@ -16,6 +16,8 @@ cards:
         name: Estimated remaining cost
       - entity: sensor.dynamic_car_charger_session_charging_cost
         name: Session cost
+      - entity: switch.dynamic_car_charger_use_price_forecast
+        name: Use price forecast
       - entity: number.dynamic_car_charger_charging_price_threshold
         name: Price threshold
       - entity: switch.dynamic_car_charger_charge_now_to_target
@@ -55,6 +57,9 @@ cards:
       | Start | End | €/kWh | kWh |
       |:--|:--|--:|--:|
       {% for slot in slots %}
-      | {{ as_timestamp(slot.start) | timestamp_custom('%a %d/%m %H:%M') }} | {{ as_timestamp(slot.end) | timestamp_custom('%H:%M') }} | {{ slot.price_eur_kwh | round(3) }} | {{ slot.energy_kwh | round(2) }} |
+      | {{ as_timestamp(slot.start) | timestamp_custom('%a %d/%m %H:%M') }} | {{ as_timestamp(slot.end) | timestamp_custom('%H:%M') }} | {{ slot.price_eur_kwh | round(3) }}{{ ' (estimate)' if slot.estimated }} | {{ slot.energy_kwh | round(2) }} |
       {% endfor %}
+      {% if state_attr(plan, 'planning_method') == 'forecast' %}
+      Estimated hours are used to decide whether to wait; charging only starts in published hours.
+      {% endif %}
       {% else %}No charging intervals are currently scheduled.{% endif %}

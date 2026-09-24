@@ -17,6 +17,9 @@ from custom_components.dynamic_car_charger.config_flow import (
 )
 from custom_components.dynamic_car_charger.const import DEFAULTS, EVENT_CAR_CONNECTED
 from custom_components.dynamic_car_charger.coordinator import ChargerCoordinator
+from custom_components.dynamic_car_charger.forecaster import ForecastUnavailable
+from custom_components.dynamic_car_charger.planner import Slot, make_plan
+from custom_components.dynamic_car_charger.price_forecast import Calibration
 
 
 @pytest.fixture
@@ -741,3 +744,102 @@ def test_interval_default_accepts_stored_numbers():
     assert interval_default({"interval_minutes": 60.0}) == "60"
     assert interval_default({"interval_minutes": 15}) == "15"
     assert interval_default({}) == "60"
+
+
+class FakeForecaster:
+    """Stands in for PriceForecaster without network access."""
+
+    def __init__(self, hass=None, slots=(), error=None):
+        self.status = "ready"
+        self.error = None
+        self.model = None
+        self.estimates = {}
+        self.trained_at = None
+        self.estimated_at = None
+        self.slots = list(slots)
+        self.fail = error
+        self.async_update = AsyncMock()
+
+    def estimate(self, known, deadline):
+        if self.fail:
+            raise ForecastUnavailable(self.fail)
+        return self.slots, Calibration(1.21, 0.1327, 48)
+
+
+def _forecast_rig(c, **kwargs):
+    """Deadline beyond the published prices, with a cheap estimated hour."""
+    now = dt_util.utcnow()
+    c.deadline = now + timedelta(hours=5)
+    published_end = now + timedelta(minutes=119)
+    cheap = Slot(published_end, published_end + timedelta(hours=1), 0.05, True)
+    c.forecaster = FakeForecaster(slots=[cheap], **kwargs)
+    return cheap
+
+
+async def test_forecast_waits_for_cheaper_estimated_hour(rig):
+    _, c, calls = rig
+    cheap = _forecast_rig(c)
+    c.use_forecast = True
+    await c.async_change(enabled=True)
+    assert c.data["planning_method"] == "forecast"
+    assert c.data["charging_requested"] is False
+    assert c.data["status"] == "provisional_plan"
+    assert c.data["plan_is_provisional"] is True
+    assert [s["estimated"] for s in c.data["slots"]] == [True]
+    assert c.data["slots"][0]["start"] == cheap.start.isoformat()
+    assert calls == []
+
+
+async def test_threshold_charges_in_the_same_situation(rig):
+    _, c, calls = rig
+    _forecast_rig(c)
+    await c.async_change(enabled=True)
+    assert c.data["planning_method"] == "threshold"
+    assert c.data["forecast_status"] == "off"
+    assert c.data["charging_requested"] is True
+    assert calls == ["turn_on"]
+
+
+async def test_unavailable_forecast_falls_back_to_threshold(rig):
+    _, c, calls = rig
+    _forecast_rig(c, error="Price forecast is not ready")
+    c.use_forecast = True
+    await c.async_change(enabled=True)
+    assert c.data["planning_method"] == "threshold"
+    assert c.data["forecast_error"] == "Price forecast is not ready"
+    assert calls == ["turn_on"]
+
+
+async def test_published_prices_to_deadline_ignore_forecast(rig):
+    _, c, _ = rig
+    c.forecaster = FakeForecaster()
+    c.use_forecast = True
+    await c.async_reconcile()
+    assert c.data["planning_method"] == "published_prices"
+    assert c.data["plan_is_provisional"] is False
+
+
+async def test_estimated_slot_never_starts_charging(rig):
+    _, c, _ = rig
+    now = dt_util.utcnow()
+    estimated = Slot(now - timedelta(minutes=1), now + timedelta(minutes=59), 0.01, True)
+    plan = make_plan([estimated], now, now + timedelta(hours=1), 20, 30, 50, 10, 1)
+    assert plan.slots and plan.slots[0].estimated
+    assert plan.charging_at(now) is False
+
+
+async def test_forecast_switch_starts_updates_and_survives_restart(rig):
+    hass, c, _ = rig
+    c.forecaster = FakeForecaster()
+    await c.async_change(use_forecast=True)
+    await hass.async_block_till_done()
+    c.forecaster.async_update.assert_awaited()
+    assert c._forecast_unsub is not None
+
+    with patch("custom_components.dynamic_car_charger.coordinator.PriceForecaster", FakeForecaster):
+        restarted = await _restart(hass, c)
+    assert restarted.use_forecast is True
+
+    await c.async_change(use_forecast=False)
+    assert c._forecast_unsub is None
+    assert c.forecaster.status == "off"

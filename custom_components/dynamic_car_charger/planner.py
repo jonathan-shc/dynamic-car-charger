@@ -32,6 +32,9 @@ class Slot:
     start: datetime
     end: datetime
     price: float
+    # A forecast price for an hour that is not published yet. Estimated slots
+    # help decide whether to wait, but never start charging themselves.
+    estimated: bool = False
 
     @property
     def hours(self):
@@ -48,7 +51,7 @@ class Plan:
     shortfall_kwh: float
 
     def charging_at(self, now):
-        return any(s.start <= now < s.end for s in self.slots)
+        return any(s.start <= now < s.end and not s.estimated for s in self.slots)
 
     def as_dict(self, power):
         return {
@@ -63,6 +66,7 @@ class Plan:
                     end=s.end.isoformat(),
                     price_eur_kwh=s.price,
                     energy_kwh=round(max(0.0, s.hours * power), 4),
+                    estimated=s.estimated,
                 )
                 for s in self.slots
             ],
@@ -130,7 +134,9 @@ def _compact_selected_slots(chosen, candidates):
             continue
         next_selected = selected.get(source_index + 1)
         if next_selected is not None and source.end == sources[source_index + 1].start:
-            compacted[chosen_index] = Slot(source.end - duration, source.end, chosen_slot.price)
+            compacted[chosen_index] = Slot(
+                source.end - duration, source.end, chosen_slot.price, chosen_slot.estimated
+            )
 
     return sorted(compacted, key=lambda slot: slot.start)
 
@@ -148,7 +154,7 @@ def make_plan(prices, now, deadline, soc, target, capacity, power, efficiency, m
     efficiency = number(efficiency, 0.1, 1)
     required = max(0, target - soc) / 100 * capacity / efficiency
     all_clipped = [
-        Slot(max(s.start, now), min(s.end, deadline), number(s.price))
+        Slot(max(s.start, now), min(s.end, deadline), number(s.price), s.estimated)
         for s in prices
         if s.end > now and s.start < deadline
     ]
@@ -168,7 +174,8 @@ def make_plan(prices, now, deadline, soc, target, capacity, power, efficiency, m
         if remaining < 1e-8:
             break
         energy = min(remaining, slot.hours * power)
-        chosen.append(Slot(slot.start, slot.start + timedelta(hours=energy / power), slot.price))
+        end = slot.start + timedelta(hours=energy / power)
+        chosen.append(Slot(slot.start, end, slot.price, slot.estimated))
         remaining -= energy
         cost += energy * slot.price
     chosen = _compact_selected_slots(chosen, clipped)

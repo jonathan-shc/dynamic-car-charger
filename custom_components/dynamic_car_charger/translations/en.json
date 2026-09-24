@@ -121,6 +121,9 @@
       },
       "session_cost": {
         "name": "Session charging cost"
+      },
+      "price_forecast_status": {
+        "name": "Price forecast"
       }
     },
     "number": {
@@ -142,6 +145,9 @@
       },
       "immediate_charging": {
         "name": "Charge now to target"
+      },
+      "price_forecast": {
+        "name": "Use price forecast"
       }
     },
     "button": {

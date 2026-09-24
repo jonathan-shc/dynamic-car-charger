@@ -2,7 +2,7 @@
 
 A Home Assistant custom integration for deadline-based EV charging. Set **80% by Friday at 07:30**, inspect the charging plan, and let the integration pause and resume your Wallbox during the cheapest published price intervals.
 
-Designed for a Leapmotor B05, Wallbox Pulsar Max and a NextEnergy dynamic contract. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Hardware compatibility must be checked with your actual devices. Current version: 0.5.1 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
+Designed for a Leapmotor B05, Wallbox Pulsar Max and a NextEnergy dynamic contract. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Hardware compatibility must be checked with your actual devices. Current version: 0.6.0 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
 
 ## What you get
 
@@ -11,6 +11,7 @@ Designed for a Leapmotor B05, Wallbox Pulsar Max and a NextEnergy dynamic contra
 - A plan showing start/end times, EUR/kWh, grid energy and estimated remaining cost.
 - Automatic pause/resume with a 15-second control loop and entity-change updates.
 - A price threshold that limits provisional plans to cheap periods while there is still enough time.
+- An optional **price forecast** that estimates unpublished prices from weather forecasts, switchable with one toggle.
 - **Charge now to target**, ignoring prices, for when you need the car soon.
 - Optional Wallbox unlocking before charging and locking when the car drives away.
 - A `set_session` action to set target, deadline and mode from automations, scripts or iOS Shortcuts.
@@ -82,6 +83,24 @@ Changing options reloads the integration and requests a pause. A completed deadl
 
 A change on the dashboard is kept across restarts. Changing the threshold in the integration options replaces the dashboard value.
 
+### Price forecast
+
+Turn on **Use price forecast** to replace the threshold with estimated prices for the hours that are not published yet. Turn it off to go back to the threshold. You can switch at any time.
+
+With the forecast on, the plan covers published and estimated prices together, until the deadline. Estimated hours **never start charging**. They only decide whether a published hour now is worth using, or whether waiting is likely to be cheaper. When the real prices are published, the plan uses them. Close to the deadline the safety rule applies as before. If the forecast is unavailable, the threshold is used automatically (`planning_method: threshold`, reason in `forecast_error`).
+
+How the estimate works:
+
+- **Model:** a ridge regression per hour, on hour of day, weekday or public holiday, the last published day's prices, and forecast wind (100 m), solar radiation and temperature at four fixed points in the Netherlands and Germany. It is trained daily on the past year of market prices and on the weather forecasts that were available before each of those hours.
+- **Your price:** the estimate is a market price. It is converted to your all-in price with a straight line fitted on the published hours (VAT, energy tax, supplier fee and price adjustment included). If the published prices do not follow the market price, the forecast is not used.
+- **Horizon:** up to 6 days ahead.
+- **Data:** market prices from the [Energy-Charts API](https://api.energy-charts.info/) (Fraunhofer ISE, CC BY 4.0, source Bundesnetzagentur / SMARD.de), and weather forecasts from [Open-Meteo](https://open-meteo.com/). No API keys, and no location of yours is sent. Data is fetched only while the forecast is on: about 10 requests at start and once a day, plus 4 per hour.
+- **Market prices:** these are for the Dutch bidding zone.
+
+Why: a [backtest](tools/backtest/) over 17,715 sessions from June 2024 to September 2026 found the forecast cost 1.8% more than perfect foresight, against 5.1% for a fixed threshold of 0.18–0.20. For about 2,170 kWh a year, mostly charged in windows of several days, that is roughly EUR 16 a year. It saves most with long windows.
+
+The **Price forecast** diagnostic sensor shows `off`, `loading`, `ready` or `unavailable`, with `error`, `trained_at`, `last_market_day`, the fitted `calibration_slope` and `calibration_offset`, and the hourly `estimates` in EUR/kWh.
+
 ### Set a session from an automation
 
 The `dynamic_car_charger.set_session` action changes only the fields you provide:
@@ -152,7 +171,9 @@ The **Charging plan** sensor state is one of:
 
 `plan_status` additionally uses `immediate_charging` while **Charge now to target** is active.
 
-Useful attributes: `slots`, `estimated_cost_eur`, `required_grid_kwh`, `planned_grid_kwh`, `shortfall_kwh`, `coverage_complete`, `measured_soc`, `estimated_soc`, `soc_reported_at`, `soc_report_old`, `charging_requested`, `price_threshold_eur_kwh`, `threshold_safety_mode`, `deadline_extension_until` and `error`. To keep the history database small, `slots`, `estimated_soc` and `active_charge_until` are available on the live state but are not recorded in history.
+`planning_method` shows how the plan was made: `published_prices` (all prices to the deadline are published, or the deadline is close), `forecast` or `threshold`. Slots with `estimated: true` use a forecast price.
+
+Useful attributes: `slots`, `planning_method`, `forecast_status`, `forecast_error`, `estimated_cost_eur`, `required_grid_kwh`, `planned_grid_kwh`, `shortfall_kwh`, `coverage_complete`, `measured_soc`, `estimated_soc`, `soc_reported_at`, `soc_report_old`, `charging_requested`, `price_threshold_eur_kwh`, `threshold_safety_mode`, `deadline_extension_until` and `error`. To keep the history database small, `slots`, `estimated_soc` and `active_charge_until` are available on the live state but are not recorded in history.
 
 ### Compatible price sensor format
 
@@ -187,7 +208,7 @@ Tests cover cost allocation, fractional intervals, losses, negative prices, gaps
 ### Releasing
 
 1. Update `version` in `custom_components/dynamic_car_charger/manifest.json` and in this README.
-2. Merge to `main`, then tag: `git tag v0.5.1 && git push origin v0.5.1`.
+2. Merge to `main`, then tag: `git tag v0.6.0 && git push origin v0.6.0`.
 3. The release workflow checks that the tag matches the manifest version and publishes a GitHub release with generated notes. HACS offers that release to users.
 
 See [VALIDATION.md](VALIDATION.md) for the actual results and remaining hardware checks. No credentials, vehicle identifiers or household consumption data belong in issues. Share only the relevant redacted configuration and plan attributes when reporting a problem.
