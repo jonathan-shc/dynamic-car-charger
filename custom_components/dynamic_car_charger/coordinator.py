@@ -489,6 +489,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 now, prices, data["charging_requested"], control_enabled, plan_status
             )
             self._update_repair_issue(now, data, control_enabled)
+            # The currency is only known once the price sensor has been read.
+            data["currency"] = data["setup"]["currency"] = self.currency
             self.async_set_updated_data(data)
             self.store.async_delay_save(self._save_data, 30)
 

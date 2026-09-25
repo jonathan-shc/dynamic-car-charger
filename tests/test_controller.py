@@ -392,7 +392,10 @@ async def test_config_schema_and_units(rig):
     hass, c, _ = rig
     assert schema(c.settings)(c.settings)["power_kw"] == 10
     assert validate(hass, c.settings) == {}
+    # Cents and other currencies per kWh are accepted; other units are not.
     hass.states.async_set("sensor.nextenergy", "12", {"unit_of_measurement": "ct/kWh"})
+    assert validate(hass, c.settings) == {}
+    hass.states.async_set("sensor.nextenergy", "120", {"unit_of_measurement": "EUR/MWh"})
     assert validate(hass, c.settings) == {"price_entity": "price_unit"}
 
 
@@ -933,6 +936,8 @@ async def test_energy_mode_charges_an_amount_without_a_battery_sensor(rig):
     assert calls == ["turn_on"]
 
     c._delivered_kwh = 5.0
+    await c.async_reconcile()
+    assert c.data["status"] == "stopping_charge"
     await c.async_reconcile()
     assert c.data["status"] == "target_reached"
     assert calls[-1] == "turn_off"
