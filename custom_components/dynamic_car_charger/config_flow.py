@@ -10,6 +10,7 @@ from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from .const import DEFAULTS, DOMAIN, NAME
+from .planner import price_unit
 
 
 def interval_default(values: dict[str, Any]) -> str:
@@ -22,16 +23,22 @@ def interval_default(values: dict[str, Any]) -> str:
 
 def schema(values: dict[str, Any]) -> vol.Schema:
     fields = {}
-    for key in ("charger_entity", "soc_entity", "price_entity", "power_entity"):
+    for key in ("charger_entity", "price_entity", "power_entity"):
         marker = vol.Required(key, default=values[key]) if key in values else vol.Required(key)
         fields[marker] = selector.EntitySelector()
+    # Without a battery sensor the integration charges an amount of energy.
     for key, domain in (
-        ("status_entity", "sensor"),
-        ("lock_entity", "lock"),
-        ("vehicle_state_entity", "sensor"),
+        ("soc_entity", ["sensor", "input_number"]),
+        ("status_entity", ["sensor"]),
+        ("connected_entity", ["sensor", "binary_sensor"]),
+        ("lock_entity", ["lock"]),
+        ("vehicle_state_entity", ["sensor", "binary_sensor"]),
     ):
         marker = vol.Optional(key, default=values[key]) if values.get(key) else vol.Optional(key)
         fields[marker] = selector.EntitySelector(selector.EntitySelectorConfig(domain=domain))
+    for key in ("connected_states", "driving_states"):
+        marker = vol.Optional(key, default=values[key]) if values.get(key) else vol.Optional(key)
+        fields[marker] = selector.TextSelector()
     # Units are part of the field labels; see strings.json.
     for key, lo, hi, step in [
         ("capacity_kwh", 1, 300, 0.1),
@@ -66,11 +73,14 @@ def validate(hass, data: dict[str, Any]) -> dict[str, str]:
         "price_entity": {"sensor"},
         "power_entity": {"sensor"},
         "status_entity": {"sensor"},
+        "connected_entity": {"sensor", "binary_sensor"},
         "lock_entity": {"lock"},
-        "vehicle_state_entity": {"sensor"},
+        "vehicle_state_entity": {"sensor", "binary_sensor"},
     }
     for key in ("charger_entity", "soc_entity", "price_entity", "power_entity"):
         entity_id = data.get(key)
+        if key == "soc_entity" and not entity_id:
+            continue  # energy mode
         state = hass.states.get(entity_id)
         if state is None:
             return {key: "entity_missing"}
@@ -81,9 +91,12 @@ def validate(hass, data: dict[str, Any]) -> dict[str, str]:
             return {key: "soc_unit"}
         if key == "power_entity" and unit not in ("W", "kW"):
             return {key: "power_unit"}
-        if key == "price_entity" and unit not in ("EUR/kWh", "€/kWh"):
-            return {key: "price_unit"}
-    for key in ("status_entity", "lock_entity", "vehicle_state_entity"):
+        if key == "price_entity":
+            try:
+                price_unit(state.attributes)
+            except ValueError:
+                return {key: "price_unit"}
+    for key in ("status_entity", "connected_entity", "lock_entity", "vehicle_state_entity"):
         entity_id = data.get(key)
         if not entity_id:
             continue

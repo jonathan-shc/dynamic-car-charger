@@ -19,7 +19,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, EVENT_CAR_CONNECTED, NAME
 from .forecaster import ForecastUnavailable, PriceForecaster
-from .planner import Plan, Slot, make_plan, number, parse_prices, timestamp
+from .planner import Plan, Slot, make_plan, number, parse_prices, price_unit, timestamp
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -53,6 +53,12 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.enabled = False
         self.immediate_charging = False
         self.target = 80.0
+        # Without a battery sensor the integration charges an amount of energy
+        # instead of up to a battery percentage.
+        self.energy_mode = not self.settings.get("soc_entity")
+        self.energy_goal = 20.0
+        self._delivered_kwh = 0.0
+        self.currency = "EUR"
         self.deadline: datetime | None = None
         self.session: dict[str, Any] | None = None
         self.use_forecast = False
@@ -89,6 +95,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def async_start(self) -> None:
         saved = await self.store.async_load() or {}
         self.target = number(saved.get("target", 80), 0, 100)
+        self.energy_goal = number(saved.get("energy_goal", 20), 0, 200)
+        self._delivered_kwh = number(saved.get("delivered_kwh", 0), 0)
         self.enabled = bool(saved.get("enabled", False))
         self.immediate_charging = bool(saved.get("immediate_charging", False))
         self._pending_stop = bool(saved.get("pending_stop", False))
@@ -109,10 +117,11 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         tracked_entities = [
             self.settings[key]
             for key in ("charger_entity", "soc_entity", "price_entity", "power_entity")
+            if self.settings.get(key)
         ]
         tracked_entities.extend(
             self.settings[key]
-            for key in ("status_entity", "lock_entity", "vehicle_state_entity")
+            for key in ("status_entity", "connected_entity", "lock_entity", "vehicle_state_entity")
             if self.settings.get(key)
         )
         self._stop_unsub = self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, self._shutdown)
@@ -130,31 +139,39 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         entity_id = event.data.get("entity_id")
         old_state = event.data.get("old_state")
         new_state = event.data.get("new_state")
-        status_entity = self.settings.get("status_entity")
-        if entity_id == status_entity:
+        connection_entity = self.settings.get("connected_entity") or self.settings.get(
+            "status_entity"
+        )
+        if entity_id == connection_entity:
             if self._is_car_connected(new_state) and not self._is_car_connected(old_state):
                 self._fire_car_connected(new_state)
-        elif not status_entity and entity_id == self.settings["charger_entity"]:
+        elif not connection_entity and entity_id == self.settings["charger_entity"]:
+            # Without a connection sensor, a charger switch that becomes
+            # available is the best sign that a car was plugged in.
             available = self._is_available(new_state)
             if available and not self._charger_available:
                 self._fire_car_connected(new_state)
             self._charger_available = available
         if (
             entity_id == self.settings.get("vehicle_state_entity")
-            and self._state_text(new_state) == "driving"
-            and self._state_text(old_state) != "driving"
+            and self._is_driving(new_state)
+            and not self._is_driving(old_state)
         ):
             self.hass.async_create_task(self._async_lock_charger())
         if not self._stopping:
             self.hass.async_create_task(self.async_reconcile())
 
     def _fire_car_connected(self, state: State | None) -> None:
+        if self.energy_mode:
+            # A newly connected car starts a new amount of energy to charge.
+            self._delivered_kwh = 0.0
         self.hass.bus.async_fire(
             EVENT_CAR_CONNECTED,
             {
                 "config_entry_id": self.entry.entry_id,
                 "charger_entity": self.settings["charger_entity"],
-                "status_entity": self.settings.get("status_entity"),
+                "status_entity": self.settings.get("connected_entity")
+                or self.settings.get("status_entity"),
                 "status": state.state if state is not None else None,
             },
         )
@@ -163,9 +180,31 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _state_text(state: State | None) -> str:
         return state.state.strip().casefold() if state is not None else ""
 
-    @classmethod
-    def _is_car_connected(cls, state: State | None) -> bool:
-        return cls._state_text(state) == "locked, car connected"
+    @staticmethod
+    def _state_list(text: str | None) -> set[str]:
+        return {part.strip().casefold() for part in (text or "").split(",") if part.strip()}
+
+    def _is_car_connected(self, state: State | None) -> bool:
+        """Whether this state of the connection sensor means a car is plugged in.
+
+        A binary sensor is connected when on. Other sensors use the configured
+        list of states; without a list, the Wallbox's 'Locked, car connected'.
+        """
+        if state is None:
+            return False
+        states = self._state_list(self.settings.get("connected_states"))
+        if not states:
+            states = {"on"} if state.domain == "binary_sensor" else {"locked, car connected"}
+        return self._state_text(state) in states
+
+    def _is_driving(self, state: State | None) -> bool:
+        """Whether this vehicle state means the car drives away (binary sensor: on)."""
+        if state is None:
+            return False
+        states = self._state_list(self.settings.get("driving_states"))
+        if not states:
+            states = {"on"} if state.domain == "binary_sensor" else {"driving"}
+        return self._state_text(state) in states
 
     @staticmethod
     def _is_available(state: State | None) -> bool:
@@ -173,9 +212,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _vehicle_is_driving(self) -> bool:
         vehicle_entity = self.settings.get("vehicle_state_entity")
-        return bool(
-            vehicle_entity and self._state_text(self.hass.states.get(vehicle_entity)) == "driving"
-        )
+        return bool(vehicle_entity and self._is_driving(self.hass.states.get(vehicle_entity)))
 
     async def _tick(self, now: datetime) -> None:
         await self.async_reconcile()
@@ -193,6 +230,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "configured_max_price_eur_kwh": self._configured_max_price,
             "session": self.session,
             "use_forecast": self.use_forecast,
+            "energy_goal": self.energy_goal,
+            "delivered_kwh": self._delivered_kwh,
         }
 
     async def async_set_deadline_preset(self, days: int, hour: int) -> None:
@@ -210,8 +249,22 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self.store.async_save(self._save_data())
         await self.async_reconcile()
 
+    async def async_new_charge(self) -> None:
+        """Energy mode: start counting the energy to charge from zero again."""
+        async with self._lock:
+            self._delivered_kwh = 0.0
+            await self.store.async_save(self._save_data())
+        await self.async_reconcile()
+
     async def async_change(self, **changes: Any) -> None:
         async with self._lock:
+            if (
+                self.energy_mode
+                and "deadline" in changes
+                and (self.deadline is None or self.deadline <= dt_util.utcnow())
+            ):
+                # A new deadline after the previous one passed is a new charge.
+                self._delivered_kwh = 0.0
             if changes.get("enabled") is False:
                 self._pending_stop = True
             elif changes.get("enabled") is True:
@@ -259,12 +312,12 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _prices(self) -> list[Slot]:
         price_state = self._state("price_entity")
-        if price_state.attributes.get("unit_of_measurement") not in ("EUR/kWh", "€/kWh"):
-            raise ValueError("Prices must be EUR/kWh")
+        scale, self.currency = price_unit(price_state.attributes)
         return parse_prices(
             price_state.attributes,
             int(float(self.settings["interval_minutes"])),
             self.settings["price_adjustment"],
+            scale,
         )
 
     def _setup_details(self) -> dict[str, Any]:
@@ -275,10 +328,13 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "price_entity",
             "power_entity",
             "status_entity",
+            "connected_entity",
             "lock_entity",
             "vehicle_state_entity",
         )
         details: dict[str, Any] = {key: self.settings.get(key) for key in keys}
+        details["mode"] = "energy" if self.energy_mode else "battery"
+        details["currency"] = self.currency
         details["power_kw"] = self.settings["power_kw"]
         details["capacity_kwh"] = self.settings["capacity_kwh"]
         return details
@@ -299,12 +355,27 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if s.end > today
         ]
 
+    def _goal_target(self) -> float:
+        """The target in percent: of the battery, or of the energy to charge."""
+        return 100.0 if self.energy_mode else self.target
+
+    def _capacity(self) -> float:
+        """Energy for 100%: the battery, or the energy to charge."""
+        return max(self.energy_goal, 0.1) if self.energy_mode else self.settings["capacity_kwh"]
+
+    def _efficiency(self) -> float:
+        """Energy mode counts grid energy, so no losses apply."""
+        return 1.0 if self.energy_mode else self.settings["efficiency"]
+
     def _read(self, now: datetime, *, include_prices: bool = True):
-        soc_state = self._state("soc_entity")
+        if self.energy_mode:
+            soc = None
+        else:
+            soc_state = self._state("soc_entity")
+            if soc_state.attributes.get("unit_of_measurement") != "%":
+                raise ValueError("Battery sensor must report %")
+            soc = number(soc_state.state, 0, 100)
         power_state = self._state("power_entity")
-        if soc_state.attributes.get("unit_of_measurement") != "%":
-            raise ValueError("Battery sensor must report %")
-        soc = number(soc_state.state, 0, 100)
         power = number(power_state.state, 0, 50_000)
         unit = power_state.attributes.get("unit_of_measurement")
         if unit == "W":
@@ -328,16 +399,30 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             elapsed = (now - self._sample_time).total_seconds()
             if 0 <= elapsed <= 60:
                 self._interval_kwh = self._sample_power * elapsed / 3600
+        self._sample_time, self._sample_power = now, power
+        if self.energy_mode:
+            # Progress is the measured energy as a share of the energy to charge.
+            self._delivered_kwh += self._interval_kwh
+            soc = min(100.0, 100 * self._delivered_kwh / self._capacity())
+            prices = self._prices() if include_prices else []
+            return soc, soc, prices
         if soc != self._observed_soc or not self.enabled:
             self._observed_soc, self._credit_kwh = soc, 0.0
         else:
             self._credit_kwh += self._interval_kwh * self.settings["efficiency"]
-        self._sample_time, self._sample_power = now, power
         effective_soc = min(100.0, soc + 100 * self._credit_kwh / self.settings["capacity_kwh"])
         prices = self._prices() if include_prices else []
         return soc, effective_soc, prices
 
     def _battery_details(self, now: datetime, soc: float, effective: float) -> dict[str, Any]:
+        if self.energy_mode:
+            return {
+                "measured_soc": round(soc, 1),
+                "estimated_soc": round(effective, 2),
+                "energy_goal_kwh": self.energy_goal,
+                "energy_delivered_kwh": round(self._delivered_kwh, 3),
+                "charging_power_report_old": self._power_report_old,
+            }
         reported = self.hass.states.get(self.settings["soc_entity"]).last_reported
         age = now - reported
         # The age is informational only: a battery percentage that does not
@@ -369,7 +454,9 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "slots": [],
                 "enabled": self.enabled,
                 "immediate_charging": self.immediate_charging,
-                "target_percentage": self.target,
+                "target_percentage": self._goal_target(),
+                "mode": "energy" if self.energy_mode else "battery",
+                "currency": self.currency,
                 "deadline": self.deadline.isoformat() if self.deadline else None,
                 "error": None,
                 "estimated_cost_eur": None,
@@ -410,7 +497,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         data.update(self._battery_details(now, soc, effective))
         data["plan_status"] = "immediate_charging"
         data["plan_is_provisional"] = False
-        if soc >= self.target:
+        if soc >= self._goal_target():
             self.immediate_charging = False
             if not self.enabled:
                 self._pending_stop = True
@@ -427,10 +514,10 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             now,
             self.deadline,
             effective,
-            self.target,
-            self.settings["capacity_kwh"],
+            self._goal_target(),
+            self._capacity(),
             self.settings["power_kw"],
-            self.settings["efficiency"],
+            self._efficiency(),
         )
         threshold_plan = make_plan(prices, *args, max_price=threshold)
         full_plan = make_plan(prices, *args)
@@ -445,7 +532,10 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if full_plan.coverage_complete or safety_mode:
             data["planning_method"] = "published_prices"
             return full_plan, full_plan.coverage_complete
-        if self.use_forecast:
+        if self.use_forecast and self.currency != "EUR":
+            # The forecast model is trained on Dutch market prices in euros.
+            data["forecast_error"] = "The price forecast only covers Dutch prices in EUR"
+        elif self.use_forecast:
             # Plan over published and estimated prices together. Estimated
             # hours never start charging; they only show whether waiting for
             # unpublished prices is likely to be cheaper.
@@ -468,10 +558,11 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         extension_until = self.deadline + timedelta(minutes=grace_minutes)
         after_deadline = now >= self.deadline
         soc, effective, prices = self._read(now, include_prices=not after_deadline)
+        target = self._goal_target()
         plan_context = (
             tuple((slot.start, slot.end, slot.price) for slot in prices),
             self.deadline,
-            self.target,
+            target,
             self.settings.get("max_price_eur_kwh", 0.20),
             self.use_forecast,
         )
@@ -485,8 +576,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         planned_now = plan.charging_at(now)
         awaiting_soc_confirmation = (
-            soc < self.target
-            and effective >= self.target
+            soc < target
+            and effective >= target
             and self._credit_kwh > 0
             and self._active_charge_until is not None
         )
@@ -552,18 +643,18 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             after_deadline
             and grace_minutes > 0
             and now < extension_until
-            and soc < self.target
+            and soc < target
             and active_session
             and not self._vehicle_is_driving()
         )
-        desired = ((planned_now and not after_deadline) or extension_active) and soc < self.target
+        desired = ((planned_now and not after_deadline) or extension_active) and soc < target
         data["deadline_extension_active"] = extension_active
         if extension_active:
             self._active_charge_until = extension_until
         data["active_charge_until"] = (
             self._active_charge_until.isoformat() if self._active_charge_until else None
         )
-        if soc >= self.target:
+        if soc >= target:
             self._clear_active_run()
             status = "target_reached"
         elif extension_active:
@@ -571,7 +662,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         elif after_deadline:
             self._clear_active_run()
             status = "deadline_passed"
-        elif effective >= self.target:
+        elif effective >= target:
             status = "awaiting_soc_confirmation"
         elif desired:
             # The car is actively being asked to charge. The underlying price

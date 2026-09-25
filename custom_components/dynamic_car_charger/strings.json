@@ -4,38 +4,44 @@
     "step": {
       "user": {
         "title": "Set up Dynamic Car Charger",
-        "description": "Connect your existing Wallbox, car battery and NextEnergy price entities. Automatic control starts disabled so you can inspect the plan first.",
+        "description": "Connect your charger, price sensor and, if the car reports it, its battery percentage. Without a battery sensor the integration charges an amount of energy. Automatic control starts disabled so you can inspect the plan first.",
         "data": {
-          "charger_entity": "Wallbox pause/resume switch",
-          "soc_entity": "Car battery percentage sensor",
-          "price_entity": "NextEnergy price sensor (EUR/kWh)",
-          "power_entity": "Wallbox actual charging power sensor (W or kW)",
-          "status_entity": "Wallbox status description sensor (optional)",
-          "lock_entity": "Wallbox lock (optional)",
+          "charger_entity": "Charger on/off switch",
+          "soc_entity": "Car battery percentage sensor (optional)",
+          "price_entity": "Electricity price sensor (per kWh)",
+          "power_entity": "Charging power sensor (W or kW)",
+          "status_entity": "Charger status sensor (optional)",
+          "connected_entity": "Car connected sensor (optional)",
+          "connected_states": "States that mean connected (optional)",
+          "lock_entity": "Charger lock (optional)",
           "vehicle_state_entity": "Vehicle state sensor (optional)",
+          "driving_states": "States that mean driving (optional)",
           "capacity_kwh": "Usable car battery capacity (kWh)",
           "power_kw": "Expected charging power from the grid (kW)",
           "efficiency": "Charging efficiency (0.90 means 90%)",
           "interval_minutes": "Price interval in minutes",
-          "price_adjustment": "Contract adjustment to all-in price (EUR/kWh)",
+          "price_adjustment": "Contract adjustment to the price (per kWh)",
           "soc_max_age_minutes": "Battery report age warning (minutes)",
-          "max_price_eur_kwh": "Maximum charging price (EUR/kWh)",
+          "max_price_eur_kwh": "Maximum charging price (per kWh)",
           "deadline_grace_minutes": "Maximum charging extension after deadline (minutes)"
         },
         "data_description": {
-          "charger_entity": "Select the Wallbox charging switch: on resumes, off pauses. Do not select a power relay.",
-          "soc_entity": "Use live battery percentage telemetry. A manual helper is an estimate and must be refreshed each session.",
-          "price_entity": "Use Enever NextEnergy with prices_today/prices_tomorrow, or a compatible prices list. Configure the source integration first.",
-          "power_entity": "Used to estimate energy added between battery percentage changes.",
-          "status_entity": "Select the sensor that reports 'Locked, car connected'. This fires the dynamic_car_charger_car_connected event.",
-          "lock_entity": "Select the Wallbox lock. It is unlocked before charging and locked again when the vehicle reports Driving.",
-          "vehicle_state_entity": "Select the Leapmotor state sensor that reports Driving after the cable has been removed.",
-          "capacity_kwh": "Replace the example with your B05 variant’s usable capacity.",
-          "power_kw": "Use the lower of car AC capability and configured Wallbox power. Allow for load balancing. This integration does not change the current limit.",
-          "price_adjustment": "Enever already includes VAT and levies. Only enter a difference between your contract and the feed.",
-          "interval_minutes": "Choose 60 for current NextEnergy hourly billing. Use 15 only if your contract and source both use quarter-hours.",
+          "charger_entity": "The switch that starts and pauses charging: on charges, off pauses. Do not select a power relay.",
+          "soc_entity": "Live battery percentage from the car. Leave empty to charge an amount of energy (kWh) instead: the integration then counts what the charger delivers.",
+          "price_entity": "A sensor with today's and tomorrow's prices: Enever or ENTSO-e (prices_today / prices_tomorrow), Nord Pool (raw_today / raw_tomorrow), or a prices list with start, end and price. Any currency per kWh, also cents such as c/kWh.",
+          "power_entity": "Measures the energy that is charged. Use the charger's or the car's charging power.",
+          "status_entity": "Optional. With a Wallbox, the status description sensor: 'Locked, car connected' fires the dynamic_car_charger_car_connected event.",
+          "connected_entity": "Optional. A sensor that shows a car is plugged in. A binary sensor counts as connected when on. Fires the dynamic_car_charger_car_connected event and, in energy mode, starts a new charge.",
+          "connected_states": "Comma-separated states of the connected sensor that mean a car is plugged in, such as 'connected, charging'. Leave empty for a binary sensor.",
+          "lock_entity": "Optional. A charger lock that is unlocked before charging and locked again when the car drives away.",
+          "vehicle_state_entity": "Optional. A car sensor that shows the car is driving, used to lock the charger again. A binary sensor counts as driving when on.",
+          "driving_states": "Comma-separated states of the vehicle state sensor that mean driving. Leave empty for 'driving' or a binary sensor.",
+          "capacity_kwh": "The usable capacity of your car's battery. Not used in energy mode.",
+          "power_kw": "Use the lower of car AC capability and configured charger power. Allow for load balancing. This integration does not change the current limit.",
+          "price_adjustment": "Only enter a difference between your contract and the price sensor, in the same currency per kWh.",
+          "interval_minutes": "Choose 60 for hourly prices. Use 15 only if your contract and source both use quarter-hours.",
           "max_price_eur_kwh": "Charge below this price while there is enough time; near the deadline the planner may exceed it to finish.",
-          "deadline_grace_minutes": "If an already-started session has not reached the measured target at the deadline, keep charging for at most this many minutes. This does not extend the planning horizon; 0 disables it.",
+          "deadline_grace_minutes": "If an already-started session has not reached the target at the deadline, keep charging for at most this many minutes. This does not extend the planning horizon; 0 disables it.",
           "soc_max_age_minutes": "Only marks the battery report as old (soc_report_old). It does not pause charging, because a battery percentage that does not change while parked is normal."
         }
       }
@@ -44,9 +50,9 @@
       "entity_missing": "Entity not found. Set up the source integration first.",
       "soc_unit": "Choose a battery sensor with the unit %.",
       "power_unit": "Choose a charging power sensor with the unit W or kW.",
-      "price_unit": "Choose prices in EUR/kWh or €/kWh.",
+      "price_unit": "Choose a price sensor with a unit per kWh, such as EUR/kWh, SEK/kWh or c/kWh.",
       "charger_in_use": "This charger already has a scheduler.",
-      "own_switch": "Select the Wallbox switch, not this integration’s own automatic charging switch.",
+      "own_switch": "Select the charger's switch, not this integration's own automatic charging switch.",
       "wrong_domain": "Select an entity from the correct domain."
     },
     "abort": {
@@ -59,36 +65,42 @@
         "title": "Charger and tariff settings",
         "description": "Changing settings reloads the integration and requests a pause before restarting control.",
         "data": {
-          "charger_entity": "Wallbox pause/resume switch",
-          "soc_entity": "Car battery percentage sensor",
-          "price_entity": "NextEnergy price sensor (EUR/kWh)",
-          "power_entity": "Wallbox actual charging power sensor (W or kW)",
-          "status_entity": "Wallbox status description sensor (optional)",
-          "lock_entity": "Wallbox lock (optional)",
+          "charger_entity": "Charger on/off switch",
+          "soc_entity": "Car battery percentage sensor (optional)",
+          "price_entity": "Electricity price sensor (per kWh)",
+          "power_entity": "Charging power sensor (W or kW)",
+          "status_entity": "Charger status sensor (optional)",
+          "connected_entity": "Car connected sensor (optional)",
+          "connected_states": "States that mean connected (optional)",
+          "lock_entity": "Charger lock (optional)",
           "vehicle_state_entity": "Vehicle state sensor (optional)",
+          "driving_states": "States that mean driving (optional)",
           "capacity_kwh": "Usable car battery capacity (kWh)",
           "power_kw": "Expected charging power from the grid (kW)",
           "efficiency": "Charging efficiency (0.90 means 90%)",
           "interval_minutes": "Price interval in minutes",
-          "price_adjustment": "Contract adjustment to all-in price (EUR/kWh)",
+          "price_adjustment": "Contract adjustment to the price (per kWh)",
           "soc_max_age_minutes": "Battery report age warning (minutes)",
-          "max_price_eur_kwh": "Maximum charging price (EUR/kWh)",
+          "max_price_eur_kwh": "Maximum charging price (per kWh)",
           "deadline_grace_minutes": "Maximum charging extension after deadline (minutes)"
         },
         "data_description": {
-          "charger_entity": "Select the Wallbox charging switch: on resumes, off pauses. Do not select a power relay.",
-          "soc_entity": "Use live battery percentage telemetry. A manual helper is an estimate and must be refreshed each session.",
-          "price_entity": "Use Enever NextEnergy with prices_today/prices_tomorrow, or a compatible prices list. Configure the source integration first.",
-          "power_entity": "Used to estimate energy added between battery percentage changes.",
-          "status_entity": "Select the sensor that reports 'Locked, car connected'. This fires the dynamic_car_charger_car_connected event.",
-          "lock_entity": "Select the Wallbox lock. It is unlocked before charging and locked again when the vehicle reports Driving.",
-          "vehicle_state_entity": "Select the Leapmotor state sensor that reports Driving after the cable has been removed.",
-          "capacity_kwh": "Replace the example with your B05 variant’s usable capacity.",
-          "power_kw": "Use the lower of car AC capability and configured Wallbox power. Allow for load balancing. This integration does not change the current limit.",
-          "price_adjustment": "Enever already includes VAT and levies. Only enter a difference between your contract and the feed.",
-          "interval_minutes": "Choose 60 for current NextEnergy hourly billing. Use 15 only if your contract and source both use quarter-hours.",
+          "charger_entity": "The switch that starts and pauses charging: on charges, off pauses. Do not select a power relay.",
+          "soc_entity": "Live battery percentage from the car. Leave empty to charge an amount of energy (kWh) instead: the integration then counts what the charger delivers.",
+          "price_entity": "A sensor with today's and tomorrow's prices: Enever or ENTSO-e (prices_today / prices_tomorrow), Nord Pool (raw_today / raw_tomorrow), or a prices list with start, end and price. Any currency per kWh, also cents such as c/kWh.",
+          "power_entity": "Measures the energy that is charged. Use the charger's or the car's charging power.",
+          "status_entity": "Optional. With a Wallbox, the status description sensor: 'Locked, car connected' fires the dynamic_car_charger_car_connected event.",
+          "connected_entity": "Optional. A sensor that shows a car is plugged in. A binary sensor counts as connected when on. Fires the dynamic_car_charger_car_connected event and, in energy mode, starts a new charge.",
+          "connected_states": "Comma-separated states of the connected sensor that mean a car is plugged in, such as 'connected, charging'. Leave empty for a binary sensor.",
+          "lock_entity": "Optional. A charger lock that is unlocked before charging and locked again when the car drives away.",
+          "vehicle_state_entity": "Optional. A car sensor that shows the car is driving, used to lock the charger again. A binary sensor counts as driving when on.",
+          "driving_states": "Comma-separated states of the vehicle state sensor that mean driving. Leave empty for 'driving' or a binary sensor.",
+          "capacity_kwh": "The usable capacity of your car's battery. Not used in energy mode.",
+          "power_kw": "Use the lower of car AC capability and configured charger power. Allow for load balancing. This integration does not change the current limit.",
+          "price_adjustment": "Only enter a difference between your contract and the price sensor, in the same currency per kWh.",
+          "interval_minutes": "Choose 60 for hourly prices. Use 15 only if your contract and source both use quarter-hours.",
           "max_price_eur_kwh": "Charge below this price while there is enough time; near the deadline the planner may exceed it to finish.",
-          "deadline_grace_minutes": "If an already-started session has not reached the measured target at the deadline, keep charging for at most this many minutes. This does not extend the planning horizon; 0 disables it.",
+          "deadline_grace_minutes": "If an already-started session has not reached the target at the deadline, keep charging for at most this many minutes. This does not extend the planning horizon; 0 disables it.",
           "soc_max_age_minutes": "Only marks the battery report as old (soc_report_old). It does not pause charging, because a battery percentage that does not change while parked is normal."
         }
       }
@@ -97,9 +109,9 @@
       "entity_missing": "Entity not found. Set up the source integration first.",
       "soc_unit": "Choose a battery sensor with the unit %.",
       "power_unit": "Choose a charging power sensor with the unit W or kW.",
-      "price_unit": "Choose prices in EUR/kWh or €/kWh.",
+      "price_unit": "Choose a price sensor with a unit per kWh, such as EUR/kWh, SEK/kWh or c/kWh.",
       "charger_in_use": "This charger already has a scheduler.",
-      "own_switch": "Select the Wallbox switch, not this integration’s own automatic charging switch.",
+      "own_switch": "Select the charger's switch, not this integration's own automatic charging switch.",
       "wrong_domain": "Select an entity from the correct domain."
     }
   },
@@ -132,6 +144,9 @@
       },
       "price_threshold": {
         "name": "Charging price threshold"
+      },
+      "energy_goal": {
+        "name": "Energy to charge"
       }
     },
     "datetime": {
@@ -159,6 +174,9 @@
       },
       "day_after_tomorrow_0900": {
         "name": "Day after tomorrow 09:00"
+      },
+      "new_charge": {
+        "name": "Start new charge"
       }
     }
   },

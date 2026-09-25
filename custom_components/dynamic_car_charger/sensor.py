@@ -44,11 +44,15 @@ class PlanSensor(ChargerEntity, SensorEntity):
 
 class CostSensor(ChargerEntity, SensorEntity):
     _attr_device_class = SensorDeviceClass.MONETARY
-    _attr_native_unit_of_measurement = "EUR"
     _attr_suggested_display_precision = 2
 
     def __init__(self, coordinator):
         super().__init__(coordinator, "cost")
+
+    @property
+    def native_unit_of_measurement(self) -> str:
+        """The currency of the price sensor."""
+        return self.coordinator.currency
 
     @property
     def native_value(self) -> float | None:
@@ -59,11 +63,15 @@ class SessionCostSensor(ChargerEntity, SensorEntity):
     """Measured cost of the current or last finished charging session."""
 
     _attr_device_class = SensorDeviceClass.MONETARY
-    _attr_native_unit_of_measurement = "EUR"
     _attr_suggested_display_precision = 2
 
     def __init__(self, coordinator):
         super().__init__(coordinator, "session_cost")
+
+    @property
+    def native_unit_of_measurement(self) -> str:
+        """The currency of the price sensor."""
+        return self.coordinator.currency
 
     @property
     def native_value(self) -> float | None:

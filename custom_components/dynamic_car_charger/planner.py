@@ -73,15 +73,54 @@ class Plan:
         }
 
 
-def parse_prices(attributes, interval_minutes=60, adjustment=0):
-    """Read Enever lists or explicit {start,end,price} entries in `prices`.
+# Units given in hundredths of a currency, with the currency they belong to.
+MINOR_UNITS = {"c": "EUR", "ct": "EUR", "cent": "EUR", "cents": "EUR", "p": "GBP"}
+NORDIC_MINOR_UNITS = {"öre", "ore", "øre"}
+SYMBOLS = {"€": "EUR", "£": "GBP", "$": "USD", "kr": "SEK"}
 
-    Never bridge gaps by extending a price to the next available row.
+
+def price_unit(attributes) -> tuple[float, str]:
+    """Return (factor to the main currency, currency) for a price sensor.
+
+    Accepts any currency per kWh, such as EUR/kWh, €/kWh or SEK/kWh, and
+    hundredths such as c/kWh or öre/kWh. A `currency` attribute, as Nord Pool
+    sensors have, names the currency when the unit doesn't.
+    """
+    unit = str(attributes.get("unit_of_measurement") or "").strip()
+    head, _, tail = unit.partition("/")
+    if tail.strip().casefold() != "kwh" or not head.strip():
+        raise ValueError("Prices must be per kWh, such as EUR/kWh or c/kWh")
+    head = head.strip()
+    named = str(attributes.get("currency") or "").strip().upper() or None
+    key = head.casefold()
+    if key in MINOR_UNITS:
+        return 0.01, named or MINOR_UNITS[key]
+    if key in NORDIC_MINOR_UNITS:
+        return 0.01, named or "SEK"
+    if head in SYMBOLS:
+        return 1.0, named or SYMBOLS[head]
+    if len(head) == 3 and head.isalpha():
+        return 1.0, head.upper()
+    raise ValueError(f"Unknown price unit {unit}")
+
+
+def parse_prices(attributes, interval_minutes=60, adjustment=0, scale=1.0):
+    """Read price rows from the layouts common price integrations use.
+
+    - Enever and ENTSO-e: `prices_today` / `prices_tomorrow` with `time` and `price`
+    - Nord Pool: `raw_today` / `raw_tomorrow` with `start`, `end` and `value`
+    - Anything else: a `prices` list with `start` (or `time`), optional `end`, and `price`
+
+    `scale` converts hundredths (c/kWh) to the main currency; the adjustment is
+    in the main currency. Never bridge gaps by extending a price to the next row.
     """
     number(interval_minutes, 1, 60)
     adjustment = number(adjustment)
+    scale = number(scale, 0.0001, 1)
     if "prices" in attributes:
         groups = [attributes["prices"]]
+    elif "raw_today" in attributes or "raw_tomorrow" in attributes:
+        groups = [attributes.get("raw_today"), attributes.get("raw_tomorrow")]
     else:
         groups = [attributes.get("prices_today"), attributes.get("prices_tomorrow")]
     unique = {}
@@ -99,7 +138,16 @@ def parse_prices(attributes, interval_minutes=60, adjustment=0):
                 if "end" in row
                 else start + timedelta(minutes=interval_minutes)
             )
-            price = number(row["price"]) + adjustment
+            if "price" in row:
+                raw = row["price"]
+            elif "value" in row:
+                raw = row["value"]
+                if raw is None:
+                    # Nord Pool leaves tomorrow's values empty until they are published.
+                    continue
+            else:
+                raise ValueError("Price row without a price")
+            price = number(raw) * scale + adjustment
             if end <= start or end - start > timedelta(hours=1):
                 raise ValueError("Price intervals must be positive and at most one hour")
             slot = Slot(start, end, price)

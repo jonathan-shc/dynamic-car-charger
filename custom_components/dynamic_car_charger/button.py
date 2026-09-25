@@ -1,4 +1,4 @@
-"""Smart deadline preset buttons."""
+"""Smart deadline preset buttons, and a new-charge button in energy mode."""
 
 from __future__ import annotations
 
@@ -15,7 +15,22 @@ PRESETS = (
 
 async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = entry.runtime_data
-    async_add_entities(DeadlinePreset(coordinator, key, days, hour) for key, days, hour in PRESETS)
+    buttons = [DeadlinePreset(coordinator, key, days, hour) for key, days, hour in PRESETS]
+    if coordinator.energy_mode:
+        buttons.append(NewCharge(coordinator))
+    async_add_entities(buttons)
+
+
+class NewCharge(ChargerEntity, ButtonEntity):
+    """Energy mode: count the energy to charge from zero again."""
+
+    _attr_icon = "mdi:restart"
+
+    def __init__(self, coordinator) -> None:
+        super().__init__(coordinator, "new_charge")
+
+    async def async_press(self) -> None:
+        await self.coordinator.async_new_charge()
 
 
 class DeadlinePreset(ChargerEntity, ButtonEntity):

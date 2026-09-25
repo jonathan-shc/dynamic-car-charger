@@ -5,7 +5,7 @@ from itertools import combinations
 
 import pytest
 
-from custom_components.dynamic_car_charger.planner import Slot, make_plan, parse_prices
+from custom_components.dynamic_car_charger.planner import Slot, make_plan, parse_prices, price_unit
 
 NOW = datetime(2026, 9, 17, 18, tzinfo=UTC)
 
@@ -203,3 +203,50 @@ def test_end_exclusive():
 
 def test_expired_deadline_never_charges():
     assert not plan([0.1], deadline=NOW - timedelta(hours=1)).slots
+
+
+@pytest.mark.parametrize(
+    ("unit", "extra", "expected"),
+    [
+        ("EUR/kWh", {}, (1.0, "EUR")),
+        ("€/kWh", {}, (1.0, "EUR")),
+        ("SEK/kWh", {}, (1.0, "SEK")),
+        ("c/kWh", {}, (0.01, "EUR")),
+        ("öre/kWh", {"currency": "NOK"}, (0.01, "NOK")),
+        ("kr/kWh", {"currency": "DKK"}, (1.0, "DKK")),
+    ],
+)
+def test_price_unit_accepts_any_currency_per_kwh(unit, extra, expected):
+    assert price_unit({"unit_of_measurement": unit, **extra}) == expected
+
+
+@pytest.mark.parametrize("unit", [None, "EUR", "EUR/MWh", "/kWh", "unknown/kWh"])
+def test_price_unit_rejects_other_units(unit):
+    with pytest.raises(ValueError):
+        price_unit({"unit_of_measurement": unit})
+
+
+def test_nord_pool_rows_with_values_in_cents():
+    hour = timedelta(hours=1)
+    result = parse_prices(
+        {
+            "raw_today": [
+                {"start": NOW.isoformat(), "end": (NOW + hour).isoformat(), "value": 12.5},
+            ],
+            # Tomorrow's values are empty until they are published.
+            "raw_tomorrow": [
+                {
+                    "start": (NOW + hour).isoformat(),
+                    "end": (NOW + 2 * hour).isoformat(),
+                    "value": None,
+                },
+            ],
+        },
+        scale=0.01,
+    )
+    assert [(s.start, s.price) for s in result] == [(NOW, 0.125)]
+
+
+def test_price_row_without_any_price_is_rejected():
+    with pytest.raises(ValueError):
+        parse_prices({"prices": [{"start": NOW.isoformat()}]})

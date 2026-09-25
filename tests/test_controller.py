@@ -912,3 +912,166 @@ async def test_plan_prices_are_empty_when_the_price_sensor_is_unusable(rig):
     await c.async_reconcile()
     assert c.data["prices"] == []
     assert c.data["setup"]["price_entity"] == "sensor.nextenergy"
+
+
+def _energy_mode(c):
+    """Turn the rig into a set-up without a battery sensor."""
+    c.settings.pop("soc_entity")
+    c.energy_mode = True
+    c.energy_goal = 5.0
+
+
+async def test_energy_mode_charges_an_amount_without_a_battery_sensor(rig):
+    hass, c, calls = rig
+    _energy_mode(c)
+    await c.async_change(enabled=True)
+    await c.async_reconcile()
+    assert c.data["mode"] == "energy"
+    assert c.data["required_grid_kwh"] == pytest.approx(5.0)
+    assert c.data["energy_goal_kwh"] == 5.0
+    assert c.data["status"] == "charging"
+    assert calls == ["turn_on"]
+
+    c._delivered_kwh = 5.0
+    await c.async_reconcile()
+    assert c.data["status"] == "target_reached"
+    assert calls[-1] == "turn_off"
+
+
+async def test_energy_mode_counts_delivered_energy_from_the_power_sensor(rig):
+    hass, c, _ = rig
+    _energy_mode(c)
+    hass.states.async_set("sensor.wallbox_power", "7200", {"unit_of_measurement": "W"})
+    start = dt_util.utcnow()
+    with patch(
+        "custom_components.dynamic_car_charger.coordinator.dt_util.utcnow", return_value=start
+    ):
+        await c.async_change(enabled=True)
+    with patch(
+        "custom_components.dynamic_car_charger.coordinator.dt_util.utcnow",
+        return_value=start + timedelta(seconds=30),
+    ):
+        await c.async_reconcile()
+    # 7.2 kW for 30 seconds is 0.06 kWh.
+    assert c.data["energy_delivered_kwh"] == pytest.approx(0.06, abs=0.001)
+
+
+async def test_energy_mode_starts_a_new_charge(rig):
+    hass, c, _ = rig
+    _energy_mode(c)
+    c._delivered_kwh = 3.0
+    await c.async_new_charge()
+    assert c._delivered_kwh == 0
+
+    # A new deadline after the previous one passed is a new charge too.
+    c._delivered_kwh = 3.0
+    c.deadline = dt_util.utcnow() - timedelta(minutes=1)
+    await c.async_change(deadline=dt_util.utcnow() + timedelta(hours=2))
+    assert c._delivered_kwh == 0
+
+    # Moving a deadline that hasn't passed keeps counting.
+    c._delivered_kwh = 3.0
+    await c.async_change(deadline=dt_util.utcnow() + timedelta(hours=3))
+    assert c._delivered_kwh == 3.0
+
+
+async def test_connected_binary_sensor_fires_event_and_starts_new_charge(rig):
+    hass, c, _ = rig
+    _energy_mode(c)
+    c._delivered_kwh = 4.0
+    c.settings["connected_entity"] = "binary_sensor.car_plug"
+    received = []
+    hass.bus.async_listen(EVENT_CAR_CONNECTED, received.append)
+    c._changed(
+        SimpleNamespace(
+            data={
+                "entity_id": "binary_sensor.car_plug",
+                "old_state": State("binary_sensor.car_plug", "off"),
+                "new_state": State("binary_sensor.car_plug", "on"),
+            }
+        )
+    )
+    await hass.async_block_till_done()
+    assert len(received) == 1
+    assert c._delivered_kwh == 0
+
+
+async def test_connected_states_can_be_configured(rig):
+    hass, c, _ = rig
+    c.settings["connected_entity"] = "sensor.charger_state"
+    c.settings["connected_states"] = "Connected, Charging"
+    assert c._is_car_connected(State("sensor.charger_state", "charging"))
+    assert c._is_car_connected(State("sensor.charger_state", "Connected"))
+    assert not c._is_car_connected(State("sensor.charger_state", "Available"))
+
+
+async def test_driving_binary_sensor_locks_the_charger(rig):
+    hass, c, _ = rig
+    c.settings["lock_entity"] = "lock.wallbox"
+    c.settings["vehicle_state_entity"] = "binary_sensor.car_moving"
+    hass.states.async_set("lock.wallbox", "unlocked")
+    lock_calls = []
+
+    async def lock(call):
+        lock_calls.append(call.service)
+        hass.states.async_set("lock.wallbox", "locked")
+
+    hass.services.async_register("lock", "lock", lock)
+    c._changed(
+        SimpleNamespace(
+            data={
+                "entity_id": "binary_sensor.car_moving",
+                "old_state": State("binary_sensor.car_moving", "off"),
+                "new_state": State("binary_sensor.car_moving", "on"),
+            }
+        )
+    )
+    await hass.async_block_till_done()
+    assert lock_calls == ["lock"]
+
+
+async def test_prices_in_cents_and_other_currencies(rig):
+    hass, c, _ = rig
+    now = dt_util.utcnow()
+    hass.states.async_set(
+        "sensor.nextenergy",
+        "10",
+        {
+            "unit_of_measurement": "öre/kWh",
+            "currency": "SEK",
+            "raw_today": [
+                {
+                    "start": (now - timedelta(minutes=1)).isoformat(),
+                    "end": (now + timedelta(minutes=59)).isoformat(),
+                    "value": 10,
+                },
+                {
+                    "start": (now + timedelta(minutes=59)).isoformat(),
+                    "end": (now + timedelta(minutes=119)).isoformat(),
+                    "value": 30,
+                },
+            ],
+        },
+    )
+    await c.async_reconcile()
+    assert c.currency == "SEK"
+    assert c.data["currency"] == "SEK"
+    assert [row["price"] for row in c.data["prices"]] == [0.1, 0.3]
+
+
+async def test_energy_mode_creates_energy_entities(rig):
+    import importlib
+
+    hass, c, _ = rig
+    _energy_mode(c)
+    entry = SimpleNamespace(entry_id="test", runtime_data=c)
+    for platform, expected in (
+        ("number", {"energy_goal", "price_threshold"}),
+        ("button", {"tomorrow_0700", "tomorrow_0900", "day_after_tomorrow_0900", "new_charge"}),
+    ):
+        module = importlib.import_module(f"custom_components.dynamic_car_charger.{platform}")
+        added = []
+        await module.async_setup_entry(
+            hass, entry, lambda entities, added=added: added.extend(entities)
+        )
+        assert {entity.translation_key for entity in added} == expected
