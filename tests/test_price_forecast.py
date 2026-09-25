@@ -24,7 +24,7 @@ from custom_components.dynamic_car_charger.price_forecast import (
     fit_calibration,
     is_day_off,
 )
-from custom_components.dynamic_car_charger.zones import ZONES, zone
+from custom_components.dynamic_car_charger.zones import ZONES, zone, zone_for_location
 
 AMS = ZoneInfo("Europe/Amsterdam")
 HOUR = timedelta(hours=1)
@@ -321,3 +321,20 @@ async def test_forecaster_learns_the_chosen_bidding_zone(hass):
     slots, calibration = forecaster.estimate(known, deadline, "SEK")
     assert calibration.slope == pytest.approx(14.4)
     assert slots
+
+
+def test_default_zone_follows_home_assistants_country_and_home():
+    assert zone_for_location("NL") == "nl"
+    assert zone_for_location("be") == "be"
+    assert zone_for_location("DE") == zone_for_location("LU") == "de-lu"
+    assert zone_for_location("FI") == "fi"
+    # Denmark and Sweden have several zones: the home location decides.
+    assert zone_for_location("DK", 56.2, 10.2) == "dk1"  # Aarhus
+    assert zone_for_location("DK", 55.7, 12.6) == "dk2"  # Copenhagen
+    assert zone_for_location("SE", 55.6, 13.0) == "se4"  # Malmö
+    assert zone_for_location("SE", 59.3, 18.1) == "se3"  # Stockholm
+    assert zone_for_location("SE", 65.6, 22.1) == "se3"  # Luleå: SE1 isn't supported
+    # Without a known country, as before the setting existed.
+    assert zone_for_location(None) == "nl"
+    assert zone_for_location("ES") == "nl"
+    assert all(zone(zone_for_location(c)).code in ZONES for c in ("NL", "DK", "SE", "XX"))

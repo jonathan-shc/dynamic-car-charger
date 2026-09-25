@@ -11,7 +11,7 @@ from homeassistant.helpers import selector
 
 from .const import DEFAULTS, DOMAIN, NAME
 from .planner import price_unit
-from .zones import ZONES
+from .zones import ZONES, zone_for_location
 
 
 def interval_default(values: dict[str, Any]) -> str:
@@ -22,7 +22,7 @@ def interval_default(values: dict[str, Any]) -> str:
     return str(int(float(values.get("interval_minutes", DEFAULTS["interval_minutes"]))))
 
 
-def schema(values: dict[str, Any]) -> vol.Schema:
+def schema(values: dict[str, Any], default_zone: str = "nl") -> vol.Schema:
     fields = {}
     for key in ("charger_entity", "price_entity", "power_entity"):
         marker = vol.Required(key, default=values[key]) if key in values else vol.Required(key)
@@ -72,7 +72,7 @@ def schema(values: dict[str, Any]) -> vol.Schema:
     )
     # The market the price forecast learns from; see zones.py.
     # Option values are lowercase, as Home Assistant's translations require.
-    zone = values.get("bidding_zone", DEFAULTS["bidding_zone"]).lower()
+    zone = (values.get("bidding_zone") or default_zone).lower()
     fields[vol.Required("bidding_zone", default=zone)] = selector.SelectSelector(
         selector.SelectSelectorConfig(
             options=[code.lower() for code in ZONES],
@@ -130,6 +130,12 @@ def validate(hass, data: dict[str, Any]) -> dict[str, str]:
     return {}
 
 
+def home_zone(hass) -> str:
+    """The bidding zone that fits the country and location set in Home Assistant."""
+    config = hass.config
+    return zone_for_location(config.country, config.latitude, config.longitude)
+
+
 def migrate_settings(values: dict[str, Any]) -> dict[str, Any]:
     """Settings from older versions in the current form.
 
@@ -166,7 +172,9 @@ class DynamicCarChargerFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(title=NAME, data=user_input)
         return self.async_show_form(
-            step_id="user", data_schema=schema(user_input or {}), errors=errors
+            step_id="user",
+            data_schema=schema(user_input or {}, home_zone(self.hass)),
+            errors=errors,
         )
 
     @staticmethod
@@ -195,4 +203,6 @@ class OptionsFlow(config_entries.OptionsFlow):
                     )
                 return self.async_create_entry(title="", data=user_input)
         values = user_input or {**self.config_entry.data, **self.config_entry.options}
-        return self.async_show_form(step_id="init", data_schema=schema(values), errors=errors)
+        return self.async_show_form(
+            step_id="init", data_schema=schema(values, home_zone(self.hass)), errors=errors
+        )

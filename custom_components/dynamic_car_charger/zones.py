@@ -171,6 +171,37 @@ ZONES = {
     "FI": _zone("FI", "FI", "Europe/Helsinki", ("fi_south", "fi_west", "fi_north", "se_central")),
 }
 DEFAULT_ZONE = "NL"
+# Countries with a single bidding zone.
+COUNTRY_ZONES = {
+    "NL": "NL",
+    "BE": "BE",
+    "DE": "DE-LU",
+    "LU": "DE-LU",
+    "FR": "FR",
+    "AT": "AT",
+    "CH": "CH",
+    "PL": "PL",
+    "FI": "FI",
+}
+
+
+def zone_for_location(
+    country: str | None, latitude: float | None = None, longitude: float | None = None
+) -> str:
+    """The bidding zone (as stored in the options) for Home Assistant's country and home.
+
+    Denmark and Sweden have several zones; the home location picks one. Northern
+    Sweden (SE1, SE2) isn't supported and gets SE3, the nearest zone. Other
+    countries get the Netherlands, as before this setting existed.
+    """
+    country = (country or "").upper()
+    if country == "DK":
+        # The Great Belt, at about 11° east, separates DK1 and DK2.
+        return "dk2" if longitude is not None and longitude >= 11.0 else "dk1"
+    if country == "SE":
+        # SE4 is the south of Sweden, below about 57° north.
+        return "se4" if latitude is not None and latitude < 57.0 else "se3"
+    return COUNTRY_ZONES.get(country, DEFAULT_ZONE).lower()
 
 
 def zone(code: str | None) -> Zone:

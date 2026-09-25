@@ -14,5 +14,4 @@ DEFAULTS = {
     "max_price_eur_kwh": 0.20,
     "soc_max_age_minutes": 60,
     "deadline_grace_minutes": 60,
-    "bidding_zone": "nl",
 }

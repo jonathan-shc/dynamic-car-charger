@@ -789,6 +789,24 @@ async def test_options_flow_updates_unique_id_for_new_charger(rig):
     )
 
 
+def test_bidding_zone_defaults_to_home_but_keeps_a_choice():
+    fields = {str(key): key for key in schema({}, "be").schema}
+    assert fields["bidding_zone"].default() == "be"
+    fields = {str(key): key for key in schema({"bidding_zone": "fr"}, "be").schema}
+    assert fields["bidding_zone"].default() == "fr"
+
+
+async def test_coordinator_without_zone_setting_uses_home_country(rig):
+    hass, c, _ = rig
+    hass.config.country, hass.config.latitude, hass.config.longitude = "SE", 55.6, 13.0
+    settings = {**c.entry.data}
+    settings.pop("bidding_zone", None)
+    entry = SimpleNamespace(**{**vars(c.entry), "data": settings})
+    assert ChargerCoordinator(hass, entry).forecaster.zone.code == "SE4"
+    entry = SimpleNamespace(**{**vars(c.entry), "data": {**settings, "bidding_zone": "nl"}})
+    assert ChargerCoordinator(hass, entry).forecaster.zone.code == "NL"
+
+
 def test_interval_default_accepts_stored_numbers():
     assert interval_default({"interval_minutes": 60.0}) == "60"
     assert interval_default({"interval_minutes": 15}) == "15"

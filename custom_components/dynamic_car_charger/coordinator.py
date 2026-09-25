@@ -20,6 +20,7 @@ from homeassistant.util import dt as dt_util
 from .const import DOMAIN, EVENT_CAR_CONNECTED, NAME
 from .forecaster import ForecastUnavailable, PriceForecaster
 from .planner import Plan, Slot, make_plan, number, parse_prices, price_unit, timestamp
+from .zones import zone_for_location
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -62,7 +63,11 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.deadline: datetime | None = None
         self.session: dict[str, Any] | None = None
         self.use_forecast = False
-        self.forecaster = PriceForecaster(hass, bidding_zone=self.settings.get("bidding_zone"))
+        # Settings from before the bidding zone existed follow Home Assistant's country.
+        bidding_zone = self.settings.get("bidding_zone") or zone_for_location(
+            hass.config.country, hass.config.latitude, hass.config.longitude
+        )
+        self.forecaster = PriceForecaster(hass, bidding_zone=bidding_zone)
         self.forecast_calibration = None
         self._forecast_unsub = None
         self._lock = asyncio.Lock()

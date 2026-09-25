@@ -2,7 +2,7 @@
 
 A Home Assistant custom integration for deadline-based EV charging. Set **80% by Friday at 07:30** (or **20 kWh by Friday at 07:30**), inspect the charging plan, and let the integration pause and resume your charger during the cheapest published price intervals.
 
-It works with any charger that has an on/off switch in Home Assistant and any dynamic price sensor with today's and tomorrow's prices. With a car that reports its battery percentage it charges to a percentage; without one it charges an amount of energy. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Check compatibility with your own devices. Current version: 0.9.0b3 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
+It works with any charger that has an on/off switch in Home Assistant and any dynamic price sensor with today's and tomorrow's prices. With a car that reports its battery percentage it charges to a percentage; without one it charges an amount of energy. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Check compatibility with your own devices. Current version: 0.9.0b4 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
 
 ## What you get
 
@@ -102,7 +102,7 @@ How the estimate works:
 - **Your price:** the estimate is a market price. It is converted to your all-in price with a straight line fitted on the published hours (VAT, energy tax, supplier fee and price adjustment included, and the exchange rate for prices in another currency than the euro). If the published prices do not follow the market price, the forecast is not used.
 - **Horizon:** up to 6 days ahead.
 - **Data:** market prices from the [Energy-Charts API](https://api.energy-charts.info/) (Fraunhofer ISE, CC BY 4.0, source Bundesnetzagentur / SMARD.de), and weather forecasts from [Open-Meteo](https://open-meteo.com/). No API keys, and no location of yours is sent. Data is fetched only while the forecast is on: about 10 requests at start and once a day, plus 4 per hour.
-- **Bidding zone:** choose the day-ahead market of your electricity price in the options under **Price forecast market**: Netherlands (default), Belgium, Germany and Luxembourg, France, Austria, Switzerland, Poland, Denmark (DK1, DK2), Sweden (SE3, SE4) or Finland. The model was chosen on Dutch prices and then [backtested for every zone](tools/backtest/results/zones.md): in each one it costs 1.2–2.0% more than knowing all prices in advance, against 2.5–5.4% for the 0.20 threshold.
+- **Bidding zone:** the day-ahead market of your electricity price, under **Price forecast market** in the options. It starts from the country and home location set in Home Assistant (so Denmark and Sweden get the zone you live in), and you can change it: Netherlands, Belgium, Germany and Luxembourg, France, Austria, Switzerland, Poland, Denmark (DK1, DK2), Sweden (SE3, SE4) or Finland. The model was chosen on Dutch prices and then [backtested for every zone](tools/backtest/results/zones.md): in each one it costs 1.2–2.0% more than knowing all prices in advance, against 2.5–5.4% for the 0.20 threshold.
 
 Why: a [backtest](tools/backtest/) over 17,715 sessions from June 2024 to September 2026 found the forecast cost 1.8% more than perfect foresight, against 5.1% for a fixed threshold of 0.18–0.20. For about 2,170 kWh a year, mostly charged in windows of several days, that is roughly EUR 16 a year. It saves most with long windows.
 
