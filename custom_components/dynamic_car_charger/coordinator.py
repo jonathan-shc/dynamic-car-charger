@@ -178,8 +178,10 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return state.state.strip().casefold() if state is not None else ""
 
     @staticmethod
-    def _state_list(text: str | None) -> set[str]:
-        return {part.strip().casefold() for part in (text or "").split(",") if part.strip()}
+    def _state_list(value: str | list[str] | None) -> set[str]:
+        """States from the setup: a list, or (0.8) a comma-separated text."""
+        parts = value if isinstance(value, list) else (value or "").split(",")
+        return {str(part).strip().casefold() for part in parts if str(part).strip()}
 
     def _is_car_connected(self, state: State | None) -> bool:
         """Whether this state of the connected sensor means a car is plugged in.

@@ -159,7 +159,7 @@ async def test_immediate_charging_works_without_automatic_mode(rig):
 async def test_charger_status_fires_connected_event(rig):
     hass, c, _ = rig
     c.settings["connected_entity"] = "sensor.charger_status"
-    c.settings["connected_states"] = "Locked, car connected"
+    c.settings["connected_states"] = ["Locked, car connected"]
     received = []
     hass.bus.async_listen(EVENT_CAR_CONNECTED, received.append)
 
@@ -203,7 +203,7 @@ async def test_driving_locks_charger(rig):
     hass, c, _ = rig
     c.settings["lock_entity"] = "lock.charger"
     c.settings["vehicle_state_entity"] = "sensor.car_state"
-    c.settings["driving_states"] = "Driving"
+    c.settings["driving_states"] = ["Driving"]
     hass.states.async_set("lock.charger", "unlocked")
     lock_calls = []
 
@@ -231,7 +231,7 @@ async def test_driving_prevents_charger_from_being_unlocked(rig):
     hass, c, calls = rig
     c.settings["lock_entity"] = "lock.charger"
     c.settings["vehicle_state_entity"] = "sensor.car_state"
-    c.settings["driving_states"] = "Driving"
+    c.settings["driving_states"] = ["Driving"]
     hass.states.async_set("lock.charger", "locked")
     hass.states.async_set("sensor.car_state", "Driving")
     unlock_calls = []
@@ -1097,8 +1097,8 @@ def test_version_1_settings_become_general_fields():
     new = migrate_settings(old)
     assert "status_entity" not in new
     assert new["connected_entity"] == "sensor.charger_status"
-    assert new["connected_states"] == "Locked, car connected"
-    assert new["driving_states"] == "Driving"
+    assert new["connected_states"] == ["Locked, car connected"]
+    assert new["driving_states"] == ["Driving"]
     # A binary sensor needs no states, and existing general settings stay.
     assert "driving_states" not in migrate_settings(
         {"vehicle_state_entity": "binary_sensor.moving"}

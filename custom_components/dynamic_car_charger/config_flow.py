@@ -35,9 +35,15 @@ def schema(values: dict[str, Any]) -> vol.Schema:
     ):
         marker = vol.Optional(key, default=values[key]) if values.get(key) else vol.Optional(key)
         fields[marker] = selector.EntitySelector(selector.EntitySelectorConfig(domain=domain))
+    # One entry per state: states such as "Locked, car connected" contain commas.
     for key in ("connected_states", "driving_states"):
-        marker = vol.Optional(key, default=values[key]) if values.get(key) else vol.Optional(key)
-        fields[marker] = selector.TextSelector()
+        default = values.get(key)
+        if isinstance(default, str):
+            default = [part.strip() for part in default.split(",") if part.strip()]
+        marker = vol.Optional(key, default=default) if default else vol.Optional(key)
+        fields[marker] = selector.SelectSelector(
+            selector.SelectSelectorConfig(options=[], multiple=True, custom_value=True)
+        )
     # Units are part of the field labels; see strings.json.
     for key, lo, hi, step in [
         ("capacity_kwh", 1, 300, 0.1),
@@ -108,11 +114,10 @@ def validate(hass, data: dict[str, Any]) -> dict[str, str]:
         ("vehicle_state_entity", "driving_states"),
     ):
         entity_id = data.get(key)
-        if (
-            entity_id
-            and not entity_id.startswith("binary_sensor.")
-            and not str(data.get(states) or "").strip()
-        ):
+        given = data.get(states) or []
+        if isinstance(given, str):
+            given = [part for part in given.split(",") if part.strip()]
+        if entity_id and not entity_id.startswith("binary_sensor.") and not given:
             return {states: "states_required"}
     return {}
 
@@ -123,10 +128,10 @@ def migrate_settings(values: dict[str, Any]) -> dict[str, Any]:
     status = values.pop("status_entity", None)
     if status and not values.get("connected_entity"):
         values["connected_entity"] = status
-        values.setdefault("connected_states", "Locked, car connected")
+        values.setdefault("connected_states", ["Locked, car connected"])
     vehicle = values.get("vehicle_state_entity")
     if vehicle and not vehicle.startswith("binary_sensor.") and not values.get("driving_states"):
-        values["driving_states"] = "Driving"
+        values["driving_states"] = ["Driving"]
     return values
 
 
