@@ -118,18 +118,18 @@
     },
     "bidding_zone": {
       "options": {
-        "NL": "Netherlands (NL)",
-        "BE": "Belgium (BE)",
-        "DE-LU": "Germany and Luxembourg (DE-LU)",
-        "FR": "France (FR)",
-        "AT": "Austria (AT)",
-        "CH": "Switzerland (CH)",
-        "PL": "Poland (PL)",
-        "DK1": "Denmark west (DK1)",
-        "DK2": "Denmark east (DK2)",
-        "SE3": "Sweden, Stockholm (SE3)",
-        "SE4": "Sweden, Malmö (SE4)",
-        "FI": "Finland (FI)"
+        "nl": "Netherlands (NL)",
+        "be": "Belgium (BE)",
+        "de-lu": "Germany and Luxembourg (DE-LU)",
+        "fr": "France (FR)",
+        "at": "Austria (AT)",
+        "ch": "Switzerland (CH)",
+        "pl": "Poland (PL)",
+        "dk1": "Denmark west (DK1)",
+        "dk2": "Denmark east (DK2)",
+        "se3": "Sweden, Stockholm (SE3)",
+        "se4": "Sweden, Malmö (SE4)",
+        "fi": "Finland (FI)"
       }
     }
   },

@@ -71,10 +71,11 @@ def schema(values: dict[str, Any]) -> vol.Schema:
         )
     )
     # The market the price forecast learns from; see zones.py.
-    zone = values.get("bidding_zone", DEFAULTS["bidding_zone"])
+    # Option values are lowercase, as Home Assistant's translations require.
+    zone = values.get("bidding_zone", DEFAULTS["bidding_zone"]).lower()
     fields[vol.Required("bidding_zone", default=zone)] = selector.SelectSelector(
         selector.SelectSelectorConfig(
-            options=list(ZONES),
+            options=[code.lower() for code in ZONES],
             mode=selector.SelectSelectorMode.DROPDOWN,
             translation_key="bidding_zone",
         )

@@ -174,4 +174,5 @@ DEFAULT_ZONE = "NL"
 
 
 def zone(code: str | None) -> Zone:
-    return ZONES.get(code or DEFAULT_ZONE, ZONES[DEFAULT_ZONE])
+    """The zone for a code in any case, as stored in the options ("de-lu"); NL if unknown."""
+    return ZONES.get((code or DEFAULT_ZONE).upper(), ZONES[DEFAULT_ZONE])

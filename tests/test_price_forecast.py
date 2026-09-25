@@ -271,6 +271,7 @@ def test_every_zone_has_known_weather_points_and_holidays():
         assert not market.is_day_off(date(2026, 3, 11))  # an ordinary Wednesday
     assert zone(None).code == "NL"
     assert zone("XX").code == "NL"
+    assert zone("de-lu").code == "DE-LU"  # as stored by the options
 
 
 def test_holidays_follow_the_bidding_zone():
@@ -299,7 +300,7 @@ async def test_forecaster_learns_the_chosen_bidding_zone(hass):
         calls.append((url, params))
         return api_response(url, params)
 
-    forecaster = PriceForecaster(hass, fetch, bidding_zone="SE3")
+    forecaster = PriceForecaster(hass, fetch, bidding_zone="se3")
     now = datetime(2026, 3, 11, 9, tzinfo=UTC)
     await forecaster.async_update(now)
     assert forecaster.status == "ready"

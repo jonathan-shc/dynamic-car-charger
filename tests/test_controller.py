@@ -798,7 +798,7 @@ def test_interval_default_accepts_stored_numbers():
 class FakeForecaster:
     """Stands in for PriceForecaster without network access."""
 
-    def __init__(self, hass=None, slots=(), error=None):
+    def __init__(self, hass=None, slots=(), error=None, bidding_zone=None):
         self.status = "ready"
         self.error = None
         self.model = None
@@ -809,7 +809,7 @@ class FakeForecaster:
         self.fail = error
         self.async_update = AsyncMock()
 
-    def estimate(self, known, deadline):
+    def estimate(self, known, deadline, currency="EUR"):
         if self.fail:
             raise ForecastUnavailable(self.fail)
         return self.slots, Calibration(1.21, 0.1327, 48)
