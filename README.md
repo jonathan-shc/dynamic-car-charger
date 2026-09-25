@@ -1,8 +1,8 @@
 # Dynamic Car Charger
 
-A Home Assistant custom integration for deadline-based EV charging. Set **80% by Friday at 07:30**, inspect the charging plan, and let the integration pause and resume your Wallbox during the cheapest published price intervals.
+A Home Assistant custom integration for deadline-based EV charging. Set **80% by Friday at 07:30** (or **20 kWh by Friday at 07:30**), inspect the charging plan, and let the integration pause and resume your charger during the cheapest published price intervals.
 
-Designed for a Leapmotor B05, Wallbox Pulsar Max and a NextEnergy dynamic contract. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Hardware compatibility must be checked with your actual devices. Current version: 0.6.1 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
+It works with any charger that has an on/off switch in Home Assistant and any dynamic price sensor with today's and tomorrow's prices. With a car that reports its battery percentage it charges to a percentage; without one it charges an amount of energy. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Developed with a Leapmotor B05, Wallbox Pulsar Max and a NextEnergy dynamic contract; check compatibility with your own devices. Current version: 0.8.0 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
 
 ## What you get
 
@@ -28,13 +28,20 @@ Configure these source integrations in Home Assistant first; their entities are 
 
 | Input | Source and requirement |
 | --- | --- |
-| Pause/resume | Official [Wallbox integration](https://www.home-assistant.io/integrations/wallbox/). Choose the charging switch: **on = resume**, **off = pause**. Do not choose a mains power switch or lock. |
-| Battery percentage | A live B05 state-of-charge entity in `%`. The unofficial [Leapmotor integration](https://github.com/kerniger/leapmotor-ha) is a possible source, but B05 support has not been verified by this project. Its own authentication requirements apply. |
-| Actual charging power | Wallbox power entity, with unit `W` or `kW`. Used to account for energy delivered between battery percentage changes. |
-| NextEnergy prices | [Enever Home Assistant integration](https://github.com/MvRens/ha-enever), with NextEnergy enabled. Select its EUR/kWh electricity sensor. [Enever](https://enever.nl/prijzenfeeds/) requires a personal API token. Alternatively use the documented price format below. |
-| Wallbox status (optional) | The Wallbox status description sensor. When it changes to `Locked, car connected`, the integration fires the car-connected event. Without it, the event fires when the charging switch becomes available. |
-| Wallbox lock (optional) | The Wallbox `lock` entity. It is unlocked before each start request and locked when the car starts driving. |
-| Vehicle state (optional) | A car state sensor that reports `Driving`. Used to lock the Wallbox after you drive away, and to never unlock it while driving. |
+| Charger on/off | A `switch` that starts and pauses charging: **on = charge**, **off = pause**, for example the charging switch of the [Wallbox](https://www.home-assistant.io/integrations/wallbox/), Easee, Alfen, go-e or an OCPP charger. Do not choose a mains power switch or lock. |
+| Charging power | A power sensor from the charger or the car, with unit `W` or `kW`. Measures the energy that is charged. |
+| Prices | A price sensor with today's and tomorrow's prices per kWh, in any currency (also cents such as `c/kWh`): [Enever](https://github.com/MvRens/ha-enever) (NextEnergy and other Dutch suppliers), [ENTSO-e](https://github.com/JaccoR/hass-entso-e), [Nord Pool](https://www.home-assistant.io/integrations/nordpool/) style `raw_today` / `raw_tomorrow`, or the documented `prices` format below. |
+| Battery percentage (optional) | A live state-of-charge entity in `%` from your car's integration. **Leave empty to charge an amount of energy** instead (see *Energy mode*). |
+| Charger status (optional) | With a Wallbox: the status description sensor. When it changes to `Locked, car connected`, the integration fires the car-connected event. |
+| Car connected (optional) | Any sensor that shows a car is plugged in, with the states that mean connected (for example `connected, charging`), or a binary sensor (on = connected). Fires the car-connected event. |
+| Charger lock (optional) | A `lock` entity. It is unlocked before each start request and locked when the car starts driving. |
+| Vehicle state (optional) | A car sensor that shows the car is driving: a sensor with the states that mean driving (default `Driving`), or a binary sensor (on = driving). Used to lock the charger after you drive away, and to never unlock it while driving. |
+
+Without a car connected or status sensor, the car-connected event fires when the charger switch becomes available.
+
+### Energy mode
+
+Not every car reports its battery percentage to Home Assistant. Leave the battery sensor empty and the integration charges an **amount of energy** instead: set **Energy to charge** (kWh) and a deadline. It counts the energy the charger delivers, measured with the power sensor, and plans the cheapest intervals for what is still needed. A new charge starts from zero when a car is connected (with a connected or status sensor), when you set a new deadline after the previous one passed, or with the **Start new charge** button. The plan's `measured_soc` then shows the progress towards the energy to charge in %, with `energy_goal_kwh` and `energy_delivered_kwh`.
 
 An `input_number` helper in `%` is accepted as a manual battery input. Enter the actual percentage at the start of each session and keep it refreshed; this is an estimated fallback, not verified car telemetry.
 
@@ -123,7 +130,7 @@ data:
 
 ### Car connected event
 
-When the car is plugged in, the integration fires `dynamic_car_charger_car_connected` with `config_entry_id`, `charger_entity`, `status_entity` and `status`. With a Wallbox status entity it fires when the status changes to `Locked, car connected`; otherwise when the charging switch becomes available. [This example](examples/car_connected_notification.yaml) sends an actionable phone notification. [This one](examples/iphone_charging_live_activity.yaml) shows progress as an iPhone Live Activity.
+When the car is plugged in, the integration fires `dynamic_car_charger_car_connected` with `config_entry_id`, `charger_entity`, `status_entity` and `status`. With a car connected sensor it fires when that sensor changes to one of the configured states (a binary sensor: on). With a Wallbox status entity it fires when the status changes to `Locked, car connected`. Otherwise it fires when the charging switch becomes available. [This example](examples/car_connected_notification.yaml) sends an actionable phone notification. [This one](examples/iphone_charging_live_activity.yaml) shows progress as an iPhone Live Activity.
 
 ### Session charging cost
 
@@ -181,7 +188,7 @@ To keep the history database small, `slots`, `estimated_soc`, `active_charge_unt
 
 ### Compatible price sensor format
 
-The sensor unit must be `EUR/kWh` or `€/kWh`. Use either Enever `prices_today` / `prices_tomorrow` lists with `time` and `price`, or a `prices` attribute:
+The sensor unit must be a currency per kWh, such as `EUR/kWh`, `€/kWh`, `SEK/kWh`, or hundredths such as `c/kWh` or `öre/kWh` (a `currency` attribute names the currency). The cost sensors and the price threshold use the same currency. The price forecast only covers Dutch prices in euros. Supported layouts: `prices_today` / `prices_tomorrow` lists with `time` and `price` (Enever, ENTSO-e), `raw_today` / `raw_tomorrow` with `start`, `end` and `value` (Nord Pool), or a `prices` attribute:
 
 ```yaml
 prices:
