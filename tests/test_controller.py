@@ -892,3 +892,23 @@ async def test_shutdown_does_not_remove_the_stop_listener_twice(rig, caplog):
     await hass.async_block_till_done()
     assert c._stopping is True
     assert "Unable to remove unknown job listener" not in caplog.text
+
+
+async def test_plan_shows_setup_and_prices_for_apps(rig):
+    hass, c, _ = rig
+    await c.async_reconcile()
+    setup = c.data["setup"]
+    assert setup["charger_entity"] == "switch.wallbox"
+    assert setup["soc_entity"] == "sensor.battery"
+    assert setup["status_entity"] is None
+    assert setup["power_kw"] == 10.0
+    assert [row["price"] for row in c.data["prices"]] == [0.1, 0.3]
+    assert {"start", "end", "price"} <= set(c.data["prices"][0])
+
+
+async def test_plan_prices_are_empty_when_the_price_sensor_is_unusable(rig):
+    hass, c, _ = rig
+    hass.states.async_set("sensor.nextenergy", "unavailable")
+    await c.async_reconcile()
+    assert c.data["prices"] == []
+    assert c.data["setup"]["price_entity"] == "sensor.nextenergy"
