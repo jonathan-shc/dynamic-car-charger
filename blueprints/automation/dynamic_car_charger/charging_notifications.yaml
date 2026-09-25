@@ -1,0 +1,98 @@
+blueprint:
+  name: Dynamic Car Charger notifications
+  description: >-
+    Sends a notification to your phone (Home Assistant Companion app) when a car
+    is plugged in, when charging starts and when the target is reached. Home
+    Assistant is always running, so these arrive even when the Charge Remote app
+    is closed.
+  domain: automation
+  source_url: https://github.com/jonathan-shc/dynamic-car-charger/blob/main/blueprints/automation/dynamic_car_charger/charging_notifications.yaml
+  input:
+    plan_sensor:
+      name: Charging plan
+      description: The charging plan sensor of Dynamic Car Charger.
+      default: sensor.dynamic_car_charger_charging_plan
+      selector:
+        entity:
+          filter:
+            - integration: dynamic_car_charger
+              domain: sensor
+    phone:
+      name: Phone
+      description: The phone with the Home Assistant Companion app.
+      selector:
+        device:
+          filter:
+            - integration: mobile_app
+    on_connected:
+      name: When a car is plugged in
+      default: true
+      selector:
+        boolean: {}
+    on_started:
+      name: When charging starts
+      default: true
+      selector:
+        boolean: {}
+    on_reached:
+      name: When the target is reached
+      default: true
+      selector:
+        boolean: {}
+
+mode: queued
+max: 5
+
+triggers:
+  - trigger: event
+    event_type: dynamic_car_charger_car_connected
+    id: connected
+  - trigger: state
+    entity_id: !input plan_sensor
+    to: charging
+    id: started
+  - trigger: state
+    entity_id: !input plan_sensor
+    to: target_reached
+    id: reached
+
+variables:
+  plan: !input plan_sensor
+  on_connected: !input on_connected
+  on_started: !input on_started
+  on_reached: !input on_reached
+  slots: "{{ state_attr(plan, 'slots') or [] }}"
+  first_start: >-
+    {% set upcoming = slots | rejectattr('estimated') | list %}
+    {{ (upcoming[0].start | as_datetime | as_local).strftime('%a %H:%M') if upcoming else '' }}
+  currency: "{{ state_attr(plan, 'currency') or 'EUR' }}"
+  cost: "{{ state_attr(plan, 'estimated_cost_eur') }}"
+
+conditions:
+  - condition: template
+    value_template: >-
+      {{ (trigger.id == 'connected' and on_connected)
+         or (trigger.id == 'started' and on_started)
+         or (trigger.id == 'reached' and on_reached) }}
+
+actions:
+  - variables:
+      title: >-
+        {{ {'connected': 'Car plugged in', 'started': 'Charging started',
+            'reached': 'Target reached'}[trigger.id] }}
+      message: >-
+        {% if trigger.id == 'connected' %}
+          {% if not is_state_attr(plan, 'enabled', true) %}Automatic charging is off.
+          {% elif first_start %}Charging starts {{ first_start }}{% if cost is number %}, about {{ '%.2f' | format(cost) }} {{ currency }}{% endif %}.
+          {% else %}Waiting for prices to plan the charge.{% endif %}
+        {% elif trigger.id == 'started' %}
+          {% if cost is number %}About {{ '%.2f' | format(cost) }} {{ currency }} to go.{% else %}The car is charging.{% endif %}
+        {% else %}
+          {% set soc = state_attr(plan, 'measured_soc') %}
+          {% if soc is number %}Battery {{ soc | round(0) | int }}%.{% else %}The charge is done.{% endif %}
+        {% endif %}
+  - domain: mobile_app
+    type: notify
+    device_id: !input phone
+    title: "{{ title }}"
+    message: "{{ message | trim }}"

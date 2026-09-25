@@ -338,6 +338,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         details: dict[str, Any] = {key: self.settings.get(key) for key in keys}
         details["mode"] = "energy" if self.energy_mode else "battery"
         details["currency"] = self.currency
+        # The market the price forecast learns from, as stored in the options.
+        details["bidding_zone"] = self.forecaster.zone.code.lower()
         details["power_kw"] = self.settings["power_kw"]
         details["capacity_kwh"] = self.settings["capacity_kwh"]
         return details

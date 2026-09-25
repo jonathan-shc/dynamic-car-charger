@@ -2,7 +2,7 @@
 
 A Home Assistant custom integration for deadline-based EV charging. Set **80% by Friday at 07:30** (or **20 kWh by Friday at 07:30**), inspect the charging plan, and let the integration pause and resume your charger during the cheapest published price intervals.
 
-It works with any charger that has an on/off switch in Home Assistant and any dynamic price sensor with today's and tomorrow's prices. With a car that reports its battery percentage it charges to a percentage; without one it charges an amount of energy. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Check compatibility with your own devices. Current version: 0.9.0b5 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
+It works with any charger that has an on/off switch in Home Assistant and any dynamic price sensor with today's and tomorrow's prices. With a car that reports its battery percentage it charges to a percentage; without one it charges an amount of energy. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Check compatibility with your own devices. Current version: 0.9.0b6 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
 
 ## What you get
 
@@ -132,6 +132,10 @@ data:
 
 When the car is plugged in, the integration fires `dynamic_car_charger_car_connected` with `config_entry_id`, `charger_entity`, `connected_entity` and `status`. With a car connected sensor it fires when that sensor changes to one of the configured states (a binary sensor: on). Otherwise it fires when the charging switch becomes available. [This example](examples/car_connected_notification.yaml) sends an actionable phone notification. [This one](examples/iphone_charging_live_activity.yaml) shows progress as an iPhone Live Activity.
 
+### Notifications
+
+The [notifications blueprint](blueprints/automation/dynamic_car_charger/charging_notifications.yaml) sends a message to your phone through the Home Assistant Companion app when a car is plugged in (with when charging starts and the expected cost), when charging starts and when the target is reached. Import it under **Settings → Automations & scenes → Blueprints → Import blueprint** with its GitHub link, then create an automation from it and pick your phone.
+
 ### Session charging cost
 
 **Session charging cost** adds up the measured charging power × the price of the interval at that moment. A session starts at the first charging request and ends when the target is reached, the deadline passes, or control is turned off. After a session ends, the sensor keeps showing the last session until the next one starts. Attributes: `active`, `started`, `ended`, `energy_kwh`, `average_price_eur_kwh` and `cost_complete` (false when a price was unknown for part of the energy). This is grid energy at the feed price, not your supplier bill.
@@ -182,7 +186,7 @@ The **Charging plan** sensor state is one of:
 
 Useful attributes: `car_connected` (true/false, or null without that sensor), `slots`, `planning_method`, `forecast_status`, `forecast_error`, `estimated_cost_eur`, `required_grid_kwh`, `planned_grid_kwh`, `shortfall_kwh`, `coverage_complete`, `measured_soc`, `estimated_soc`, `soc_reported_at`, `soc_report_old`, `charging_requested`, `price_threshold_eur_kwh`, `threshold_safety_mode`, `deadline_extension_until` and `error`.
 
-For dashboards and apps, `setup` lists the configured entities (`charger_entity`, `soc_entity`, `price_entity`, `power_entity`, `connected_entity`, `lock_entity`) with `power_kw` and `capacity_kwh`, and `prices` lists today's and later prices as `start`, `end` and `price` (adjustment included), whatever layout the price sensor uses.
+For dashboards and apps, `setup` lists the configured entities (`charger_entity`, `soc_entity`, `price_entity`, `power_entity`, `connected_entity`, `lock_entity`) with `power_kw`, `capacity_kwh` and the forecast's `bidding_zone`, and `prices` lists today's and later prices as `start`, `end` and `price` (adjustment included), whatever layout the price sensor uses.
 
 To keep the history database small, `slots`, `estimated_soc`, `active_charge_until`, `setup` and `prices` are available on the live state but are not recorded in history.
 

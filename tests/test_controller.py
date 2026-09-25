@@ -970,6 +970,7 @@ async def test_plan_shows_setup_and_prices_for_apps(rig):
     assert setup["connected_entity"] is None
     assert c.data["car_connected"] is None
     assert setup["power_kw"] == 10.0
+    assert setup["bidding_zone"] == "nl"
     assert [row["price"] for row in c.data["prices"]] == [0.1, 0.3]
     assert {"start", "end", "price"} <= set(c.data["prices"][0])
 
