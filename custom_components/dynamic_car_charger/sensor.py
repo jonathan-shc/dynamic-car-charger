@@ -26,7 +26,9 @@ class PlanSensor(ChargerEntity, SensorEntity):
     _attr_icon = "mdi:calendar-clock"
     # These change on nearly every 15-second update while charging. They stay
     # available on the live state, but are not written to the history database.
-    _unrecorded_attributes = frozenset({"slots", "estimated_soc", "active_charge_until"})
+    _unrecorded_attributes = frozenset(
+        {"slots", "estimated_soc", "active_charge_until", "prices", "setup"}
+    )
 
     def __init__(self, coordinator):
         super().__init__(coordinator, "plan")

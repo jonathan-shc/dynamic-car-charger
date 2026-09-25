@@ -267,6 +267,38 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.settings["price_adjustment"],
         )
 
+    def _setup_details(self) -> dict[str, Any]:
+        """The entities and car details in use, so dashboards and apps can set themselves up."""
+        keys = (
+            "charger_entity",
+            "soc_entity",
+            "price_entity",
+            "power_entity",
+            "status_entity",
+            "lock_entity",
+            "vehicle_state_entity",
+        )
+        details: dict[str, Any] = {key: self.settings.get(key) for key in keys}
+        details["power_kw"] = self.settings["power_kw"]
+        details["capacity_kwh"] = self.settings["capacity_kwh"]
+        return details
+
+    def _price_rows(self, now: datetime) -> list[dict[str, Any]]:
+        """Today's and later prices as the planner reads them, adjustment included.
+
+        Price sensors use different attribute layouts; this gives one layout.
+        """
+        try:
+            slots = self._prices()
+        except (ValueError, TypeError, KeyError, AttributeError):
+            return []
+        today = dt_util.start_of_local_day(dt_util.as_local(now))
+        return [
+            {"start": s.start.isoformat(), "end": s.end.isoformat(), "price": round(s.price, 6)}
+            for s in slots
+            if s.end > today
+        ]
+
     def _read(self, now: datetime, *, include_prices: bool = True):
         soc_state = self._state("soc_entity")
         power_state = self._state("power_entity")
@@ -341,6 +373,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "deadline": self.deadline.isoformat() if self.deadline else None,
                 "error": None,
                 "estimated_cost_eur": None,
+                "setup": self._setup_details(),
+                "prices": self._price_rows(now),
             }
             try:
                 if self.immediate_charging:

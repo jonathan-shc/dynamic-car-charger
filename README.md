@@ -173,7 +173,11 @@ The **Charging plan** sensor state is one of:
 
 `planning_method` shows how the plan was made: `published_prices` (all prices to the deadline are published, or the deadline is close), `forecast` or `threshold`. Slots with `estimated: true` use a forecast price.
 
-Useful attributes: `slots`, `planning_method`, `forecast_status`, `forecast_error`, `estimated_cost_eur`, `required_grid_kwh`, `planned_grid_kwh`, `shortfall_kwh`, `coverage_complete`, `measured_soc`, `estimated_soc`, `soc_reported_at`, `soc_report_old`, `charging_requested`, `price_threshold_eur_kwh`, `threshold_safety_mode`, `deadline_extension_until` and `error`. To keep the history database small, `slots`, `estimated_soc` and `active_charge_until` are available on the live state but are not recorded in history.
+Useful attributes: `slots`, `planning_method`, `forecast_status`, `forecast_error`, `estimated_cost_eur`, `required_grid_kwh`, `planned_grid_kwh`, `shortfall_kwh`, `coverage_complete`, `measured_soc`, `estimated_soc`, `soc_reported_at`, `soc_report_old`, `charging_requested`, `price_threshold_eur_kwh`, `threshold_safety_mode`, `deadline_extension_until` and `error`.
+
+For dashboards and apps, `setup` lists the configured entities (`charger_entity`, `soc_entity`, `price_entity`, `power_entity`, `status_entity`, `lock_entity`, `vehicle_state_entity`) with `power_kw` and `capacity_kwh`, and `prices` lists today's and later prices as `start`, `end` and `price` (adjustment included), whatever layout the price sensor uses.
+
+To keep the history database small, `slots`, `estimated_soc`, `active_charge_until`, `setup` and `prices` are available on the live state but are not recorded in history.
 
 ### Compatible price sensor format
 
