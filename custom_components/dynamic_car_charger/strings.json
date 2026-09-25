@@ -20,7 +20,8 @@
           "price_adjustment": "Contract adjustment to the price (per kWh)",
           "soc_max_age_minutes": "Battery report age warning (minutes)",
           "max_price_eur_kwh": "Maximum charging price (per kWh)",
-          "deadline_grace_minutes": "Maximum charging extension after deadline (minutes)"
+          "deadline_grace_minutes": "Maximum charging extension after deadline (minutes)",
+          "bidding_zone": "Price forecast market"
         },
         "data_description": {
           "charger_entity": "The switch that starts and pauses charging: on charges, off pauses. Do not select a power relay.",
@@ -36,7 +37,8 @@
           "interval_minutes": "Choose 60 for hourly prices. Use 15 only if your contract and source both use quarter-hours.",
           "max_price_eur_kwh": "Charge below this price while there is enough time; near the deadline the planner may exceed it to finish.",
           "deadline_grace_minutes": "If an already-started session has not reached the target at the deadline, keep charging for at most this many minutes. This does not extend the planning horizon; 0 disables it.",
-          "soc_max_age_minutes": "Only marks the battery report as old (soc_report_old). It does not pause charging, because a battery percentage that does not change while parked is normal."
+          "soc_max_age_minutes": "Only marks the battery report as old (soc_report_old). It does not pause charging, because a battery percentage that does not change while parked is normal.",
+          "bidding_zone": "The day-ahead market of your electricity price, used only by the price forecast to learn prices before they are published."
         }
       }
     },
@@ -74,7 +76,8 @@
           "price_adjustment": "Contract adjustment to the price (per kWh)",
           "soc_max_age_minutes": "Battery report age warning (minutes)",
           "max_price_eur_kwh": "Maximum charging price (per kWh)",
-          "deadline_grace_minutes": "Maximum charging extension after deadline (minutes)"
+          "deadline_grace_minutes": "Maximum charging extension after deadline (minutes)",
+          "bidding_zone": "Price forecast market"
         },
         "data_description": {
           "charger_entity": "The switch that starts and pauses charging: on charges, off pauses. Do not select a power relay.",
@@ -90,7 +93,8 @@
           "interval_minutes": "Choose 60 for hourly prices. Use 15 only if your contract and source both use quarter-hours.",
           "max_price_eur_kwh": "Charge below this price while there is enough time; near the deadline the planner may exceed it to finish.",
           "deadline_grace_minutes": "If an already-started session has not reached the target at the deadline, keep charging for at most this many minutes. This does not extend the planning horizon; 0 disables it.",
-          "soc_max_age_minutes": "Only marks the battery report as old (soc_report_old). It does not pause charging, because a battery percentage that does not change while parked is normal."
+          "soc_max_age_minutes": "Only marks the battery report as old (soc_report_old). It does not pause charging, because a battery percentage that does not change while parked is normal.",
+          "bidding_zone": "The day-ahead market of your electricity price, used only by the price forecast to learn prices before they are published."
         }
       }
     },
@@ -110,6 +114,22 @@
       "options": {
         "60": "60 minutes (hourly prices)",
         "15": "15 minutes (quarter-hour prices)"
+      }
+    },
+    "bidding_zone": {
+      "options": {
+        "NL": "Netherlands (NL)",
+        "BE": "Belgium (BE)",
+        "DE-LU": "Germany and Luxembourg (DE-LU)",
+        "FR": "France (FR)",
+        "AT": "Austria (AT)",
+        "CH": "Switzerland (CH)",
+        "PL": "Poland (PL)",
+        "DK1": "Denmark west (DK1)",
+        "DK2": "Denmark east (DK2)",
+        "SE3": "Sweden, Stockholm (SE3)",
+        "SE4": "Sweden, Malmö (SE4)",
+        "FI": "Finland (FI)"
       }
     }
   },

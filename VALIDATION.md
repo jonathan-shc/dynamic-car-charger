@@ -34,7 +34,7 @@ The tests run the real coordinator against Home Assistant's state machine and se
 - Session cost, including missing prices.
 - Repair issues that appear after 30 minutes and clear themselves.
 - `set_session` action.
-- Price forecast: holidays, calibration to all-in prices, estimates on synthetic data with a known weather relation, no training on unpublished days, API parsing, fetch schedule and failure handling, switching between forecast and threshold, fallback, and estimated hours never starting charging.
+- Price forecast: holidays per bidding zone, the chosen zone's market and weather points, calibration in another currency, calibration to all-in prices, estimates on synthetic data with a known weather relation, no training on unpublished days, API parsing, fetch schedule and failure handling, switching between forecast and threshold, fallback, and estimated hours never starting charging.
 - Every platform creates its expected entities, each with a translated name.
 - Configuration validation, the interval selector with stored numeric values, and the options flow unique ID update.
 
@@ -51,5 +51,5 @@ Not verified by this project. Tick these off with your own setup and report resu
 - [ ] A complete overnight session reaches the target by the deadline.
 - [ ] Session charging cost compared with the supplier's invoice for the same session.
 - [ ] Behavior after a Home Assistant restart during a charging session.
-- [ ] Price forecast: estimates for the next days compared with the prices once published.
+- [ ] Price forecast: estimates for the next days compared with the prices once published, per bidding zone (only the Dutch zone was backtested).
 - [ ] Price forecast training time on a Raspberry Pi 4 (about 0.4 s on a laptop).

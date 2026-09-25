@@ -11,6 +11,7 @@ from homeassistant.helpers import selector
 
 from .const import DEFAULTS, DOMAIN, NAME
 from .planner import price_unit
+from .zones import ZONES
 
 
 def interval_default(values: dict[str, Any]) -> str:
@@ -67,6 +68,15 @@ def schema(values: dict[str, Any]) -> vol.Schema:
                 mode=selector.SelectSelectorMode.DROPDOWN,
                 translation_key="interval_minutes",
             )
+        )
+    )
+    # The market the price forecast learns from; see zones.py.
+    zone = values.get("bidding_zone", DEFAULTS["bidding_zone"])
+    fields[vol.Required("bidding_zone", default=zone)] = selector.SelectSelector(
+        selector.SelectSelectorConfig(
+            options=list(ZONES),
+            mode=selector.SelectSelectorMode.DROPDOWN,
+            translation_key="bidding_zone",
         )
     )
     return vol.Schema(fields)

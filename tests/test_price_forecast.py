@@ -24,6 +24,7 @@ from custom_components.dynamic_car_charger.price_forecast import (
     fit_calibration,
     is_day_off,
 )
+from custom_components.dynamic_car_charger.zones import ZONES, zone
 
 AMS = ZoneInfo("Europe/Amsterdam")
 HOUR = timedelta(hours=1)
@@ -169,7 +170,11 @@ def api_response(url, params):
         stamps = [int(h.timestamp()) for h in hours(START, END)]
         prices = [market_price(h) * 1000 for h in hours(START, END)]
         return {"unix_seconds": stamps, "price": prices}
-    point = next(p for p, (lat, _) in WEATHER_POINTS.items() if lat == params["latitude"])
+    point = next(
+        p
+        for p, (lat, lon) in WEATHER_POINTS.items()
+        if (lat, lon) == (params["latitude"], params["longitude"])
+    )
     names = params["hourly"].split(",")
     if "previous-runs" in url:
         span = list(hours(START, END))
@@ -255,3 +260,63 @@ async def test_forecaster_rejects_prices_that_do_not_match_the_market(hass):
     ]
     with pytest.raises(ForecastUnavailable, match="do not match"):
         forecaster.estimate(unrelated, datetime(2026, 3, 13, 6, tzinfo=UTC))
+
+
+def test_every_zone_has_known_weather_points_and_holidays():
+    for code, market in ZONES.items():
+        assert market.code == code
+        assert market.points
+        assert all(point in WEATHER_POINTS for point in market.points)
+        assert market.is_day_off(date(2026, 12, 25))
+        assert not market.is_day_off(date(2026, 3, 11))  # an ordinary Wednesday
+    assert zone(None).code == "NL"
+    assert zone("XX").code == "NL"
+
+
+def test_holidays_follow_the_bidding_zone():
+    good_friday = date(2026, 4, 3)
+    assert zone("DE-LU").is_day_off(good_friday)
+    assert not zone("NL").is_day_off(good_friday)
+    assert zone("BE").is_day_off(date(2026, 7, 21))
+    assert zone("FR").is_day_off(date(2026, 7, 14))
+    assert zone("SE3").is_day_off(date(2026, 6, 19))  # Midsummer Eve
+    assert zone("FI").is_day_off(date(2027, 12, 6))
+    assert not zone("FI").is_day_off(date(2026, 4, 27))  # King's Day is Dutch
+
+
+def test_calibration_in_another_currency_carries_the_exchange_rate():
+    pairs = [(m / 100, 11.5 * 1.25 * m / 100 + 1.4) for m in range(-5, 40)]
+    assert fit_calibration(pairs) is None
+    calibration = fit_calibration(pairs, euro=False)
+    assert calibration.slope == pytest.approx(14.375)
+    assert calibration.offset == pytest.approx(1.4)
+
+
+async def test_forecaster_learns_the_chosen_bidding_zone(hass):
+    calls = []
+
+    async def fetch(url, params):
+        calls.append((url, params))
+        return api_response(url, params)
+
+    forecaster = PriceForecaster(hass, fetch, bidding_zone="SE3")
+    now = datetime(2026, 3, 11, 9, tzinfo=UTC)
+    await forecaster.async_update(now)
+    assert forecaster.status == "ready"
+    market = [params for url, params in calls if "energy-charts" in url]
+    assert [params["bzn"] for params in market] == ["SE3"]
+    places = {
+        (params["latitude"], params["longitude"]) for url, params in calls if "open-meteo" in url
+    }
+    assert places == {WEATHER_POINTS[point] for point in ZONES["SE3"].points}
+
+    known = [
+        Slot(h, h + HOUR, 14.4 * market_price(h) + 1.4)
+        for h in hours(datetime(2026, 3, 10, 23, tzinfo=UTC), datetime(2026, 3, 11, 22, tzinfo=UTC))
+    ]
+    deadline = datetime(2026, 3, 13, 6, tzinfo=UTC)
+    with pytest.raises(ForecastUnavailable):
+        forecaster.estimate(known, deadline)
+    slots, calibration = forecaster.estimate(known, deadline, "SEK")
+    assert calibration.slope == pytest.approx(14.4)
+    assert slots

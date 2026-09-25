@@ -62,7 +62,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.deadline: datetime | None = None
         self.session: dict[str, Any] | None = None
         self.use_forecast = False
-        self.forecaster = PriceForecaster(hass)
+        self.forecaster = PriceForecaster(hass, bidding_zone=self.settings.get("bidding_zone"))
         self.forecast_calibration = None
         self._forecast_unsub = None
         self._lock = asyncio.Lock()
@@ -536,16 +536,13 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if full_plan.coverage_complete or safety_mode:
             data["planning_method"] = "published_prices"
             return full_plan, full_plan.coverage_complete
-        if self.use_forecast and self.currency != "EUR":
-            # The forecast model is trained on Dutch market prices in euros.
-            data["forecast_error"] = "The price forecast only covers Dutch prices in EUR"
-        elif self.use_forecast:
+        if self.use_forecast:
             # Plan over published and estimated prices together. Estimated
             # hours never start charging; they only show whether waiting for
             # unpublished prices is likely to be cheaper.
             try:
                 estimated, self.forecast_calibration = self.forecaster.estimate(
-                    prices, self.deadline
+                    prices, self.deadline, self.currency
                 )
             except ForecastUnavailable as err:
                 data["forecast_error"] = str(err)

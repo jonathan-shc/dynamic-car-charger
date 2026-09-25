@@ -2,7 +2,7 @@
 
 A Home Assistant custom integration for deadline-based EV charging. Set **80% by Friday at 07:30** (or **20 kWh by Friday at 07:30**), inspect the charging plan, and let the integration pause and resume your charger during the cheapest published price intervals.
 
-It works with any charger that has an on/off switch in Home Assistant and any dynamic price sensor with today's and tomorrow's prices. With a car that reports its battery percentage it charges to a percentage; without one it charges an amount of energy. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Check compatibility with your own devices. Current version: 0.9.0b2 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
+It works with any charger that has an on/off switch in Home Assistant and any dynamic price sensor with today's and tomorrow's prices. With a car that reports its battery percentage it charges to a percentage; without one it charges an amount of energy. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Check compatibility with your own devices. Current version: 0.9.0b3 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
 
 ## What you get
 
@@ -98,11 +98,11 @@ With the forecast on, the plan covers published and estimated prices together, u
 
 How the estimate works:
 
-- **Model:** a ridge regression per hour, on hour of day, weekday or public holiday, the last published day's prices, and forecast wind (100 m), solar radiation and temperature at four fixed points in the Netherlands and Germany. It is trained daily on the past year of market prices and on the weather forecasts that were available before each of those hours.
-- **Your price:** the estimate is a market price. It is converted to your all-in price with a straight line fitted on the published hours (VAT, energy tax, supplier fee and price adjustment included). If the published prices do not follow the market price, the forecast is not used.
+- **Model:** a ridge regression per hour, on hour of day, weekday or public holiday, the last published day's prices, and forecast wind (100 m), solar radiation and temperature at four fixed points that drive the market of your bidding zone, and that country's public holidays. It is trained daily on the past year of market prices and on the weather forecasts that were available before each of those hours.
+- **Your price:** the estimate is a market price. It is converted to your all-in price with a straight line fitted on the published hours (VAT, energy tax, supplier fee and price adjustment included, and the exchange rate for prices in another currency than the euro). If the published prices do not follow the market price, the forecast is not used.
 - **Horizon:** up to 6 days ahead.
 - **Data:** market prices from the [Energy-Charts API](https://api.energy-charts.info/) (Fraunhofer ISE, CC BY 4.0, source Bundesnetzagentur / SMARD.de), and weather forecasts from [Open-Meteo](https://open-meteo.com/). No API keys, and no location of yours is sent. Data is fetched only while the forecast is on: about 10 requests at start and once a day, plus 4 per hour.
-- **Market prices:** these are for the Dutch bidding zone.
+- **Bidding zone:** choose the day-ahead market of your electricity price in the options under **Price forecast market**: Netherlands (default), Belgium, Germany and Luxembourg, France, Austria, Switzerland, Poland, Denmark (DK1, DK2), Sweden (SE3, SE4) or Finland. The model was chosen with a backtest on Dutch prices; for other zones it learns the same way from that zone's prices and weather, but its accuracy there has not been measured.
 
 Why: a [backtest](tools/backtest/) over 17,715 sessions from June 2024 to September 2026 found the forecast cost 1.8% more than perfect foresight, against 5.1% for a fixed threshold of 0.18–0.20. For about 2,170 kWh a year, mostly charged in windows of several days, that is roughly EUR 16 a year. It saves most with long windows.
 
@@ -188,7 +188,7 @@ To keep the history database small, `slots`, `estimated_soc`, `active_charge_unt
 
 ### Compatible price sensor format
 
-The sensor unit must be a currency per kWh, such as `EUR/kWh`, `€/kWh`, `SEK/kWh`, or hundredths such as `c/kWh` or `öre/kWh` (a `currency` attribute names the currency). The cost sensors and the price threshold use the same currency. The price forecast only covers Dutch prices in euros. Supported layouts: `prices_today` / `prices_tomorrow` lists with `time` and `price` (for example Enever, ENTSO-e), `raw_today` / `raw_tomorrow` with `start`, `end` and `value` (for example Nord Pool), or a `prices` attribute:
+The sensor unit must be a currency per kWh, such as `EUR/kWh`, `€/kWh`, `SEK/kWh`, or hundredths such as `c/kWh` or `öre/kWh` (a `currency` attribute names the currency). The cost sensors and the price threshold use the same currency. Supported layouts: `prices_today` / `prices_tomorrow` lists with `time` and `price` (for example Enever, ENTSO-e), `raw_today` / `raw_tomorrow` with `start`, `end` and `value` (for example Nord Pool), or a `prices` attribute:
 
 ```yaml
 prices:
