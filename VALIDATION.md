@@ -51,5 +51,5 @@ Not verified by this project. Tick these off with your own setup and report resu
 - [ ] A complete overnight session reaches the target by the deadline.
 - [ ] Session charging cost compared with the supplier's invoice for the same session.
 - [ ] Behavior after a Home Assistant restart during a charging session.
-- [ ] Price forecast: estimates for the next days compared with the prices once published, per bidding zone (only the Dutch zone was backtested).
+- [ ] Price forecast: estimates for the next days compared with the prices once published (every zone is backtested on history; see tools/backtest/results/zones.md).
 - [ ] Price forecast training time on a Raspberry Pi 4 (about 0.4 s on a laptop).

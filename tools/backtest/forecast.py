@@ -1,6 +1,7 @@
 """Price data and forecast models for the backtest.
 
-Everything works in all-in NextEnergy prices (EUR/kWh). Forecasts only use data
+Everything works in all-in prices (EUR/kWh), for one bidding zone at a time:
+call `use_zone` first. Forecasts only use data
 that was available at the decision time: prices published up to `known_until`
 and weather forecasts made `lead` days before the target hour.
 """
@@ -15,13 +16,17 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import numpy as np
+from zone_data import ZONES
 
 DATA = Path(__file__).parent / "data"
+ZONE = ZONES["NL"]
 LOCAL = ZoneInfo("Europe/Amsterdam")
 HOUR = timedelta(hours=1)
 
 # Fitted on 48 hours of Enever NextEnergy prices against Energy-Charts market
 # prices (24-25 September 2026): all-in = (market + 0.10967) x 1.21, exact.
+# Other zones use the same contract, so their results compare with the Dutch
+# ones: only the market prices differ.
 VAT = 1.21
 ALL_IN_OFFSET = 0.1327
 # Next-day prices are available in Enever from about 15:00 local time.
@@ -29,19 +34,12 @@ PUBLICATION_HOUR = 15
 # Archived weather forecasts are available up to this many days ahead.
 MAX_LEAD_DAYS = 6
 
-# Public holidays behave like Sundays on the power market.
-HOLIDAYS = {
-    date(2024, 1, 1), date(2024, 4, 1), date(2024, 4, 27), date(2024, 5, 9),
-    date(2024, 5, 20), date(2024, 12, 25), date(2024, 12, 26),
-    date(2025, 1, 1), date(2025, 4, 21), date(2025, 4, 26), date(2025, 5, 29),
-    date(2025, 6, 9), date(2025, 12, 25), date(2025, 12, 26),
-    date(2026, 1, 1), date(2026, 4, 6), date(2026, 4, 27), date(2026, 5, 14),
-    date(2026, 5, 25), date(2026, 12, 25), date(2026, 12, 26),
-}  # fmt: skip
 
-WIND_POINTS = ("nl_offshore", "nl_onshore", "de_north", "de_central")
-SOLAR_POINTS = ("nl_onshore", "de_central", "de_north")
-TEMPERATURE_POINTS = ("nl_onshore", "de_central")
+def use_zone(code: str) -> None:
+    """Work with this bidding zone's prices, weather points, holidays and market day."""
+    global ZONE, LOCAL
+    ZONE = ZONES[code]
+    LOCAL = ZoneInfo(ZONE.time_zone)
 
 
 def all_in(market: float) -> float:
@@ -64,7 +62,7 @@ def known_until(now: datetime) -> datetime:
 
 
 def is_day_off(day: date) -> bool:
-    return day.weekday() >= 5 or day in HOLIDAYS
+    return ZONE.is_day_off(day)
 
 
 class History:
@@ -72,15 +70,16 @@ class History:
 
     def __init__(self) -> None:
         self.prices: dict[datetime, float] = {}
-        with open(DATA / "prices.csv") as file:
+        with open(DATA / ZONE.code / "prices.csv") as file:
             for row in csv.DictReader(file):
                 hour = datetime.fromisoformat(row["utc_hour"])
                 self.prices[hour] = all_in(float(row["market_eur_kwh"]))
-        self.weather: dict[datetime, dict[str, float]] = {}
-        with open(DATA / "weather.csv") as file:
-            for row in csv.DictReader(file):
-                hour = datetime.fromisoformat(row.pop("utc_hour"))
-                self.weather[hour] = {k: float(v) for k, v in row.items() if v != ""}
+        self.weather: dict[datetime, dict[str, float]] = defaultdict(dict)
+        for point in ZONE.points:
+            with open(DATA / "weather" / f"{point}.csv") as file:
+                for row in csv.DictReader(file):
+                    hour = datetime.fromisoformat(row.pop("utc_hour"))
+                    self.weather[hour].update({k: float(v) for k, v in row.items() if v != ""})
         by_day: dict[date, list[float]] = defaultdict(list)
         for hour, price in self.prices.items():
             by_day[local_date(hour)].append(price)
@@ -162,12 +161,12 @@ class WeatherModel:
         row += [1.0 if is_day_off(day) else 0.0, lag_mean, lag_price]
         suffix = f"_previous_day{lead}"
         try:
-            for point in WIND_POINTS:
+            for point in ZONE.wind:
                 wind = weather[f"{point}.wind_speed_100m{suffix}"] / 10
                 row += [wind, wind * wind]
-            for point in SOLAR_POINTS:
+            for point in ZONE.solar:
                 row.append(weather[f"{point}.shortwave_radiation{suffix}"] / 100)
-            for point in TEMPERATURE_POINTS:
+            for point in ZONE.temperature:
                 row.append(weather[f"{point}.temperature_2m{suffix}"] / 10)
         except KeyError:
             return None
