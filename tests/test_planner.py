@@ -128,7 +128,7 @@ def test_bad_soc(value):
         plan([0.1], soc=value)
 
 
-def test_enever_prices_with_missing_tomorrow():
+def test_today_tomorrow_prices_with_missing_tomorrow():
     result = parse_prices(
         {"prices_today": [{"time": NOW.isoformat(), "price": "0.12"}], "prices_tomorrow": None},
         adjustment=0.01,

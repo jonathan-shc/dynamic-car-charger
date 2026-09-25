@@ -10,7 +10,6 @@
           "soc_entity": "Car battery percentage sensor (optional)",
           "price_entity": "Electricity price sensor (per kWh)",
           "power_entity": "Charging power sensor (W or kW)",
-          "status_entity": "Charger status sensor (optional)",
           "connected_entity": "Car connected sensor (optional)",
           "connected_states": "States that mean connected (optional)",
           "lock_entity": "Charger lock (optional)",
@@ -28,14 +27,13 @@
         "data_description": {
           "charger_entity": "The switch that starts and pauses charging: on charges, off pauses. Do not select a power relay.",
           "soc_entity": "Live battery percentage from the car. Leave empty to charge an amount of energy (kWh) instead: the integration then counts what the charger delivers.",
-          "price_entity": "A sensor with today's and tomorrow's prices: Enever or ENTSO-e (prices_today / prices_tomorrow), Nord Pool (raw_today / raw_tomorrow), or a prices list with start, end and price. Any currency per kWh, also cents such as c/kWh.",
+          "price_entity": "A sensor with today's and tomorrow's prices: prices_today / prices_tomorrow with time and price, raw_today / raw_tomorrow with start, end and value, or a prices list with start, end and price. Any currency per kWh, also cents such as c/kWh.",
           "power_entity": "Measures the energy that is charged. Use the charger's or the car's charging power.",
-          "status_entity": "Optional. With a Wallbox, the status description sensor: 'Locked, car connected' fires the dynamic_car_charger_car_connected event.",
-          "connected_entity": "Optional. A sensor that shows a car is plugged in. A binary sensor counts as connected when on. Fires the dynamic_car_charger_car_connected event and, in energy mode, starts a new charge.",
-          "connected_states": "Comma-separated states of the connected sensor that mean a car is plugged in, such as 'connected, charging'. Leave empty for a binary sensor.",
+          "connected_entity": "Optional. A sensor that shows a car is plugged in, from the charger or the car. A binary sensor counts as connected when on. Fires the dynamic_car_charger_car_connected event and, in energy mode, starts a new charge.",
+          "connected_states": "Comma-separated states of the connected sensor that mean a car is plugged in, such as 'connected, charging'. Required for a sensor, not for a binary sensor.",
           "lock_entity": "Optional. A charger lock that is unlocked before charging and locked again when the car drives away.",
           "vehicle_state_entity": "Optional. A car sensor that shows the car is driving, used to lock the charger again. A binary sensor counts as driving when on.",
-          "driving_states": "Comma-separated states of the vehicle state sensor that mean driving. Leave empty for 'driving' or a binary sensor.",
+          "driving_states": "Comma-separated states of the vehicle state sensor that mean driving, such as 'driving'. Required for a sensor, not for a binary sensor.",
           "capacity_kwh": "The usable capacity of your car's battery. Not used in energy mode.",
           "power_kw": "Use the lower of car AC capability and configured charger power. Allow for load balancing. This integration does not change the current limit.",
           "price_adjustment": "Only enter a difference between your contract and the price sensor, in the same currency per kWh.",
@@ -53,7 +51,8 @@
       "price_unit": "Choose a price sensor with a unit per kWh, such as EUR/kWh, SEK/kWh or c/kWh.",
       "charger_in_use": "This charger already has a scheduler.",
       "own_switch": "Select the charger's switch, not this integration's own automatic charging switch.",
-      "wrong_domain": "Select an entity from the correct domain."
+      "wrong_domain": "Select an entity from the correct domain.",
+      "states_required": "Enter the states that apply, or choose a binary sensor."
     },
     "abort": {
       "already_configured": "This charger is already configured."
@@ -69,7 +68,6 @@
           "soc_entity": "Car battery percentage sensor (optional)",
           "price_entity": "Electricity price sensor (per kWh)",
           "power_entity": "Charging power sensor (W or kW)",
-          "status_entity": "Charger status sensor (optional)",
           "connected_entity": "Car connected sensor (optional)",
           "connected_states": "States that mean connected (optional)",
           "lock_entity": "Charger lock (optional)",
@@ -87,14 +85,13 @@
         "data_description": {
           "charger_entity": "The switch that starts and pauses charging: on charges, off pauses. Do not select a power relay.",
           "soc_entity": "Live battery percentage from the car. Leave empty to charge an amount of energy (kWh) instead: the integration then counts what the charger delivers.",
-          "price_entity": "A sensor with today's and tomorrow's prices: Enever or ENTSO-e (prices_today / prices_tomorrow), Nord Pool (raw_today / raw_tomorrow), or a prices list with start, end and price. Any currency per kWh, also cents such as c/kWh.",
+          "price_entity": "A sensor with today's and tomorrow's prices: prices_today / prices_tomorrow with time and price, raw_today / raw_tomorrow with start, end and value, or a prices list with start, end and price. Any currency per kWh, also cents such as c/kWh.",
           "power_entity": "Measures the energy that is charged. Use the charger's or the car's charging power.",
-          "status_entity": "Optional. With a Wallbox, the status description sensor: 'Locked, car connected' fires the dynamic_car_charger_car_connected event.",
-          "connected_entity": "Optional. A sensor that shows a car is plugged in. A binary sensor counts as connected when on. Fires the dynamic_car_charger_car_connected event and, in energy mode, starts a new charge.",
-          "connected_states": "Comma-separated states of the connected sensor that mean a car is plugged in, such as 'connected, charging'. Leave empty for a binary sensor.",
+          "connected_entity": "Optional. A sensor that shows a car is plugged in, from the charger or the car. A binary sensor counts as connected when on. Fires the dynamic_car_charger_car_connected event and, in energy mode, starts a new charge.",
+          "connected_states": "Comma-separated states of the connected sensor that mean a car is plugged in, such as 'connected, charging'. Required for a sensor, not for a binary sensor.",
           "lock_entity": "Optional. A charger lock that is unlocked before charging and locked again when the car drives away.",
           "vehicle_state_entity": "Optional. A car sensor that shows the car is driving, used to lock the charger again. A binary sensor counts as driving when on.",
-          "driving_states": "Comma-separated states of the vehicle state sensor that mean driving. Leave empty for 'driving' or a binary sensor.",
+          "driving_states": "Comma-separated states of the vehicle state sensor that mean driving, such as 'driving'. Required for a sensor, not for a binary sensor.",
           "capacity_kwh": "The usable capacity of your car's battery. Not used in energy mode.",
           "power_kw": "Use the lower of car AC capability and configured charger power. Allow for load balancing. This integration does not change the current limit.",
           "price_adjustment": "Only enter a difference between your contract and the price sensor, in the same currency per kWh.",
@@ -112,7 +109,8 @@
       "price_unit": "Choose a price sensor with a unit per kWh, such as EUR/kWh, SEK/kWh or c/kWh.",
       "charger_in_use": "This charger already has a scheduler.",
       "own_switch": "Select the charger's switch, not this integration's own automatic charging switch.",
-      "wrong_domain": "Select an entity from the correct domain."
+      "wrong_domain": "Select an entity from the correct domain.",
+      "states_required": "Enter the states that apply, or choose a binary sensor."
     }
   },
   "selector": {
@@ -191,7 +189,11 @@
         },
         "target_percentage": {
           "name": "Target charge",
-          "description": "Battery percentage to reach."
+          "description": "Battery percentage to reach, when a battery sensor is set up."
+        },
+        "energy_to_charge": {
+          "name": "Energy to charge",
+          "description": "Energy to charge in kWh, in energy mode (without a battery sensor)."
         },
         "ready_by": {
           "name": "Ready by",
@@ -226,7 +228,7 @@
     },
     "control_error": {
       "title": "{title}: the charger has not responded for 30 minutes",
-      "description": "The integration keeps retrying, but the charger has not confirmed the requested state: {error}\n\nCheck that the Wallbox is online, unlocked and connected to the car. This issue clears itself when the charger responds."
+      "description": "The integration keeps retrying, but the charger has not confirmed the requested state: {error}\n\nCheck that the charger is online, unlocked and connected to the car. This issue clears itself when the charger responds."
     }
   }
 }

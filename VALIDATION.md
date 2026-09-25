@@ -29,7 +29,7 @@ The tests run the real coordinator against Home Assistant's state machine and se
 - Old battery reports are flagged but do not stop the plan; unavailable inputs pause.
 - Deadline grace (`charging_overtime`).
 - Charge now to target.
-- Wallbox unlock before charging (with retries) and lock when driving.
+- Charger unlock before charging (with retries) and lock when driving.
 - Car connected event.
 - Session cost, including missing prices.
 - Repair issues that appear after 30 minutes and clear themselves.
@@ -42,15 +42,15 @@ The tests run the real coordinator against Home Assistant's state machine and se
 
 Not verified by this project. Tick these off with your own setup and report results in an issue (without credentials or vehicle identifiers).
 
-- [ ] Leapmotor B05 state of charge entity updates while charging, and how often.
-- [ ] Leapmotor vehicle state reports `Driving` after the cable is removed.
-- [ ] Wallbox Pulsar Max pause/resume switch confirms within 5 minutes through the Wallbox cloud.
-- [ ] Wallbox lock and unlock through Home Assistant.
-- [ ] Wallbox status sensor reports `Locked, car connected` when plugged in.
-- [ ] Wallbox power sensor unit (W or kW) and update rate.
-- [ ] Enever NextEnergy prices match the NextEnergy app for a sample day.
+- [ ] The car's state of charge entity updates while charging, and how often.
+- [ ] The vehicle state sensor reports a driving state after the cable is removed.
+- [ ] The charger switch confirms on and off within 5 minutes.
+- [ ] Charger lock and unlock through Home Assistant.
+- [ ] The car connected sensor reports one of the configured states when plugged in.
+- [ ] Charging power sensor unit (W or kW) and update rate.
+- [ ] The price sensor matches the supplier's app for a sample day.
 - [ ] A complete overnight session reaches the target by the deadline.
-- [ ] Session charging cost compared with the NextEnergy invoice for the same session.
+- [ ] Session charging cost compared with the supplier's invoice for the same session.
 - [ ] Behavior after a Home Assistant restart during a charging session.
 - [ ] Price forecast: estimates for the next days compared with the prices once published.
 - [ ] Price forecast training time on a Raspberry Pi 4 (about 0.4 s on a laptop).

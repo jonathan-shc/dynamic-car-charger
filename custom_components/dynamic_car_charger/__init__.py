@@ -10,6 +10,7 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt as dt_util
 
+from .config_flow import migrate_settings
 from .const import DOMAIN, PLATFORMS, SERVICE_SET_SESSION
 from .coordinator import ChargerCoordinator
 
@@ -19,6 +20,7 @@ SET_SESSION_SCHEMA = vol.Schema(
     {
         vol.Optional("config_entry_id"): cv.string,
         vol.Optional("target_percentage"): vol.All(vol.Coerce(float), vol.Range(0, 100)),
+        vol.Optional("energy_to_charge"): vol.All(vol.Coerce(float), vol.Range(0, 200)),
         vol.Optional("ready_by"): cv.datetime,
         vol.Optional("automatic_charging"): cv.boolean,
         vol.Optional("charge_now"): cv.boolean,
@@ -32,6 +34,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         changes = {}
         if "target_percentage" in call.data:
             changes["target"] = call.data["target_percentage"]
+        if "energy_to_charge" in call.data:
+            changes["energy_goal"] = call.data["energy_to_charge"]
         if "ready_by" in call.data:
             ready_by = call.data["ready_by"]
             if ready_by.tzinfo is None:
@@ -88,3 +92,15 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await entry.runtime_data.async_stop()
         return True
     return False
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Version 2 replaces the Wallbox status field with the general connected sensor."""
+    if entry.version == 1:
+        hass.config_entries.async_update_entry(
+            entry,
+            data=migrate_settings(entry.data),
+            options=migrate_settings(entry.options),
+            version=2,
+        )
+    return entry.version <= 2

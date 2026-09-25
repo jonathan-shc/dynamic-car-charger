@@ -121,7 +121,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ]
         tracked_entities.extend(
             self.settings[key]
-            for key in ("status_entity", "connected_entity", "lock_entity", "vehicle_state_entity")
+            for key in ("connected_entity", "lock_entity", "vehicle_state_entity")
             if self.settings.get(key)
         )
         self._stop_unsub = self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, self._shutdown)
@@ -139,9 +139,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         entity_id = event.data.get("entity_id")
         old_state = event.data.get("old_state")
         new_state = event.data.get("new_state")
-        connection_entity = self.settings.get("connected_entity") or self.settings.get(
-            "status_entity"
-        )
+        connection_entity = self.settings.get("connected_entity")
         if entity_id == connection_entity:
             if self._is_car_connected(new_state) and not self._is_car_connected(old_state):
                 self._fire_car_connected(new_state)
@@ -170,8 +168,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             {
                 "config_entry_id": self.entry.entry_id,
                 "charger_entity": self.settings["charger_entity"],
-                "status_entity": self.settings.get("connected_entity")
-                or self.settings.get("status_entity"),
+                "connected_entity": self.settings.get("connected_entity"),
                 "status": state.state if state is not None else None,
             },
         )
@@ -185,26 +182,38 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return {part.strip().casefold() for part in (text or "").split(",") if part.strip()}
 
     def _is_car_connected(self, state: State | None) -> bool:
-        """Whether this state of the connection sensor means a car is plugged in.
+        """Whether this state of the connected sensor means a car is plugged in.
 
-        A binary sensor is connected when on. Other sensors use the configured
-        list of states; without a list, the Wallbox's 'Locked, car connected'.
+        A binary sensor is connected when on; other sensors use the configured states.
         """
         if state is None:
             return False
         states = self._state_list(self.settings.get("connected_states"))
-        if not states:
-            states = {"on"} if state.domain == "binary_sensor" else {"locked, car connected"}
+        if not states and state.domain == "binary_sensor":
+            states = {"on"}
         return self._state_text(state) in states
 
     def _is_driving(self, state: State | None) -> bool:
-        """Whether this vehicle state means the car drives away (binary sensor: on)."""
+        """Whether this vehicle state means the car is driving.
+
+        A binary sensor is driving when on; other sensors use the configured states.
+        """
         if state is None:
             return False
         states = self._state_list(self.settings.get("driving_states"))
-        if not states:
-            states = {"on"} if state.domain == "binary_sensor" else {"driving"}
+        if not states and state.domain == "binary_sensor":
+            states = {"on"}
         return self._state_text(state) in states
+
+    def _car_connected(self) -> bool | None:
+        """Whether a car is plugged in, or None without a connected sensor."""
+        entity_id = self.settings.get("connected_entity")
+        if not entity_id:
+            return None
+        state = self.hass.states.get(entity_id)
+        if not self._is_available(state):
+            return None
+        return self._is_car_connected(state)
 
     @staticmethod
     def _is_available(state: State | None) -> bool:
@@ -327,7 +336,6 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "soc_entity",
             "price_entity",
             "power_entity",
-            "status_entity",
             "connected_entity",
             "lock_entity",
             "vehicle_state_entity",
@@ -461,6 +469,11 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "error": None,
                 "estimated_cost_eur": None,
                 "setup": self._setup_details(),
+                # So dashboards and apps don't need to know charger or car wording.
+                "car_connected": self._car_connected(),
+                "driving": self._vehicle_is_driving()
+                if self.settings.get("vehicle_state_entity")
+                else None,
                 "prices": self._price_rows(now),
             }
             try:
@@ -803,7 +816,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return pending
 
     async def _ensure_unlocked(self, now: datetime) -> str | None:
-        """Unlock the Wallbox before the first resume/start request."""
+        """Unlock the charger before the first start request."""
         entity_id = self.settings.get("lock_entity")
         if not entity_id:
             return None
@@ -835,7 +848,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return pending
 
     async def _async_lock_charger(self) -> None:
-        """Lock the Wallbox when the vehicle reports that it is driving."""
+        """Lock the charger when the vehicle reports that it is driving."""
         entity_id = self.settings.get("lock_entity")
         if not entity_id:
             return
@@ -850,7 +863,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._unlock_command_time = None
             self._unlock_attempt_time = None
         except (HomeAssistantError, TimeoutError):
-            _LOGGER.warning("Wallbox could not be locked after the car disconnected")
+            _LOGGER.warning("The charger could not be locked after the car drove away")
 
     async def _shutdown(self, event: Event) -> None:
         # A one-time listener is already removed once it has fired.

@@ -107,7 +107,7 @@ def price_unit(attributes) -> tuple[float, str]:
 def parse_prices(attributes, interval_minutes=60, adjustment=0, scale=1.0):
     """Read price rows from the layouts common price integrations use.
 
-    - Enever and ENTSO-e: `prices_today` / `prices_tomorrow` with `time` and `price`
+    - `prices_today` / `prices_tomorrow` with `time` and `price` (for example Enever, ENTSO-e)
     - Nord Pool: `raw_today` / `raw_tomorrow` with `start`, `end` and `value`
     - Anything else: a `prices` list with `start` (or `time`), optional `end`, and `price`
 
