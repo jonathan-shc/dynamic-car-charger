@@ -31,19 +31,21 @@ def schema(values: dict[str, Any]) -> vol.Schema:
         ("soc_entity", ["sensor", "input_number"]),
         ("connected_entity", ["sensor", "binary_sensor"]),
         ("lock_entity", ["lock"]),
-        ("vehicle_state_entity", ["sensor", "binary_sensor"]),
     ):
         marker = vol.Optional(key, default=values[key]) if values.get(key) else vol.Optional(key)
         fields[marker] = selector.EntitySelector(selector.EntitySelectorConfig(domain=domain))
     # One entry per state: states such as "Locked, car connected" contain commas.
-    for key in ("connected_states", "driving_states"):
-        default = values.get(key)
-        if isinstance(default, str):
-            default = [part.strip() for part in default.split(",") if part.strip()]
-        marker = vol.Optional(key, default=default) if default else vol.Optional(key)
-        fields[marker] = selector.SelectSelector(
-            selector.SelectSelectorConfig(options=[], multiple=True, custom_value=True)
-        )
+    default = values.get("connected_states")
+    if isinstance(default, str):
+        default = [part.strip() for part in default.split(",") if part.strip()]
+    marker = (
+        vol.Optional("connected_states", default=default)
+        if default
+        else vol.Optional("connected_states")
+    )
+    fields[marker] = selector.SelectSelector(
+        selector.SelectSelectorConfig(options=[], multiple=True, custom_value=True)
+    )
     # Units are part of the field labels; see strings.json.
     for key, lo, hi, step in [
         ("capacity_kwh", 1, 300, 0.1),
@@ -79,7 +81,6 @@ def validate(hass, data: dict[str, Any]) -> dict[str, str]:
         "power_entity": {"sensor"},
         "connected_entity": {"sensor", "binary_sensor"},
         "lock_entity": {"lock"},
-        "vehicle_state_entity": {"sensor", "binary_sensor"},
     }
     for key in ("charger_entity", "soc_entity", "price_entity", "power_entity"):
         entity_id = data.get(key)
@@ -100,7 +101,7 @@ def validate(hass, data: dict[str, Any]) -> dict[str, str]:
                 price_unit(state.attributes)
             except ValueError:
                 return {key: "price_unit"}
-    for key in ("connected_entity", "lock_entity", "vehicle_state_entity"):
+    for key in ("connected_entity", "lock_entity"):
         entity_id = data.get(key)
         if not entity_id:
             continue
@@ -108,37 +109,36 @@ def validate(hass, data: dict[str, Any]) -> dict[str, str]:
             return {key: "entity_missing"}
         if entity_id.split(".", 1)[0] not in expected_domains[key]:
             return {key: "wrong_domain"}
-    # A sensor other than a binary sensor needs the states that mean connected or driving.
-    for key, states in (
-        ("connected_entity", "connected_states"),
-        ("vehicle_state_entity", "driving_states"),
-    ):
-        entity_id = data.get(key)
-        given = data.get(states) or []
-        if isinstance(given, str):
-            given = [part for part in given.split(",") if part.strip()]
-        if entity_id and not entity_id.startswith("binary_sensor.") and not given:
-            return {states: "states_required"}
+    # A sensor other than a binary sensor needs the states that mean connected.
+    entity_id = data.get("connected_entity")
+    given = data.get("connected_states") or []
+    if isinstance(given, str):
+        given = [part for part in given.split(",") if part.strip()]
+    if entity_id and not entity_id.startswith("binary_sensor.") and not given:
+        return {"connected_states": "states_required"}
     return {}
 
 
 def migrate_settings(values: dict[str, Any]) -> dict[str, Any]:
-    """Version 1 had a Wallbox-specific status field; version 2 has general fields."""
+    """Settings from older versions in the current form.
+
+    Version 1 had a Wallbox-specific status field. Version 2 had a vehicle state
+    sensor for locking the charger when driving; the plan now decides the lock.
+    """
     values = dict(values)
     status = values.pop("status_entity", None)
     if status and not values.get("connected_entity"):
         values["connected_entity"] = status
         values.setdefault("connected_states", ["Locked, car connected"])
-    vehicle = values.get("vehicle_state_entity")
-    if vehicle and not vehicle.startswith("binary_sensor.") and not values.get("driving_states"):
-        values["driving_states"] = ["Driving"]
+    values.pop("vehicle_state_entity", None)
+    values.pop("driving_states", None)
     return values
 
 
 class DynamicCarChargerFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """One scheduler per charger."""
 
-    VERSION = 2
+    VERSION = 3
 
     async def async_step_user(self, user_input=None):
         errors = {}

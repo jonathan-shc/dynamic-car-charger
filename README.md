@@ -2,7 +2,7 @@
 
 A Home Assistant custom integration for deadline-based EV charging. Set **80% by Friday at 07:30** (or **20 kWh by Friday at 07:30**), inspect the charging plan, and let the integration pause and resume your charger during the cheapest published price intervals.
 
-It works with any charger that has an on/off switch in Home Assistant and any dynamic price sensor with today's and tomorrow's prices. With a car that reports its battery percentage it charges to a percentage; without one it charges an amount of energy. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Check compatibility with your own devices. Current version: 0.9.0b1 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
+It works with any charger that has an on/off switch in Home Assistant and any dynamic price sensor with today's and tomorrow's prices. With a car that reports its battery percentage it charges to a percentage; without one it charges an amount of energy. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Check compatibility with your own devices. Current version: 0.9.0b2 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
 
 ## What you get
 
@@ -33,12 +33,11 @@ Configure these source integrations in Home Assistant first; their entities are 
 | Prices | A price sensor with today's and tomorrow's prices per kWh, in any currency (also cents such as `c/kWh`): [Enever](https://github.com/MvRens/ha-enever) (Dutch suppliers), [ENTSO-e](https://github.com/JaccoR/hass-entso-e), [Nord Pool](https://www.home-assistant.io/integrations/nordpool/) style `raw_today` / `raw_tomorrow`, or the documented `prices` format below. |
 | Battery percentage (optional) | A live state-of-charge entity in `%` from your car's integration. **Leave empty to charge an amount of energy** instead (see *Energy mode*). |
 | Car connected (optional) | A sensor from the charger or the car that shows a car is plugged in: a binary sensor (on = connected), or a sensor with the states that mean connected, for example `connected, charging`. Fires the car-connected event and reports `car_connected` on the plan. |
-| Charger lock (optional) | A `lock` entity. It is unlocked before each start request and locked when the car starts driving. |
-| Vehicle state (optional) | A car sensor that shows the car is driving: a binary sensor (on = driving), or a sensor with the states that mean driving, for example `driving`. Used to lock the charger after you drive away, and to never unlock it while driving. |
+| Charger lock (optional) | A `lock` entity. It is unlocked when the plan starts charging and locked when the plan stops charging (block over, target reached, deadline passed). Unlocking it by hand while the plan isn't charging is left alone, and switching automatic charging or charge now off by hand doesn't lock it. |
 
 Without a car connected sensor, the car-connected event fires when the charger switch becomes available.
 
-Upgrading from 0.8 or earlier: a configured Wallbox status sensor becomes the car connected sensor with the state `Locked, car connected`, and a vehicle state sensor gets the driving state `Driving`, so nothing changes in behaviour.
+Upgrading from 0.8 or earlier: a configured Wallbox status sensor becomes the car connected sensor with the state `Locked, car connected`, and the vehicle state sensor is removed: the plan now decides when the charger is locked.
 
 ### Energy mode
 
@@ -147,7 +146,7 @@ Prices beyond the published horizon remain unknown. A provisional plan uses avai
 
 The controller checks every 15 seconds and on source state changes. It uses cloud switch feedback and retries unconfirmed commands every 120 seconds; a changed on/off request bypasses this delay. A command that is still not confirmed after 5 minutes is shown as `control_error`, but it keeps being retried, so the charger recovers on its own once it responds. Actual start/stop timing also depends on the charger's (cloud) integration and the vehicle's response; cloud integrations can take a minute or more to confirm. A requested start is not proof the vehicle is drawing power. Low power is reflected in slower estimated progress and eventual shortfall.
 
-If a started session has not reached the measured target at the deadline, charging continues for at most the configured **deadline grace** (default 60 minutes, `charging_overtime`). This never starts a new session after the deadline and stops when the car starts driving. Set it to 0 to stop exactly at the deadline.
+If a started session has not reached the measured target at the deadline, charging continues for at most the configured **deadline grace** (default 60 minutes, `charging_overtime`). This never starts a new session after the deadline. Set it to 0 to stop exactly at the deadline.
 
 Home Assistant must remain running with working network access. Unloading requests a pause, but an outage, lost connectivity or failed cloud command can leave the charger in its last state. This integration cannot guarantee a deadline or an exact percentage during those failures.
 
@@ -170,7 +169,7 @@ The **Charging plan** sensor state is one of:
 | `target_reached` | Measured battery percentage meets the target. |
 | `awaiting_soc_confirmation` | Estimated energy reaches the target; waiting (at most 30 minutes of charging) for measured SOC. |
 | `deadline_passed` | The deadline has expired; charging is paused. |
-| `waiting_for_car` | The charger is unavailable, or the car is driving; charging cannot start yet. |
+| `waiting_for_car` | The charger or its lock is unavailable; charging cannot start yet. |
 | `unlocking_charger` | The charger unlock was requested and is not yet confirmed. |
 | `starting_charge` | Resume was requested and is not yet confirmed. |
 | `stopping_charge` | Pause was requested and is not yet confirmed. |
@@ -181,9 +180,9 @@ The **Charging plan** sensor state is one of:
 
 `planning_method` shows how the plan was made: `published_prices` (all prices to the deadline are published, or the deadline is close), `forecast` or `threshold`. Slots with `estimated: true` use a forecast price.
 
-Useful attributes: `car_connected` and `driving` (true/false, or null without that sensor), `slots`, `planning_method`, `forecast_status`, `forecast_error`, `estimated_cost_eur`, `required_grid_kwh`, `planned_grid_kwh`, `shortfall_kwh`, `coverage_complete`, `measured_soc`, `estimated_soc`, `soc_reported_at`, `soc_report_old`, `charging_requested`, `price_threshold_eur_kwh`, `threshold_safety_mode`, `deadline_extension_until` and `error`.
+Useful attributes: `car_connected` (true/false, or null without that sensor), `slots`, `planning_method`, `forecast_status`, `forecast_error`, `estimated_cost_eur`, `required_grid_kwh`, `planned_grid_kwh`, `shortfall_kwh`, `coverage_complete`, `measured_soc`, `estimated_soc`, `soc_reported_at`, `soc_report_old`, `charging_requested`, `price_threshold_eur_kwh`, `threshold_safety_mode`, `deadline_extension_until` and `error`.
 
-For dashboards and apps, `setup` lists the configured entities (`charger_entity`, `soc_entity`, `price_entity`, `power_entity`, `connected_entity`, `lock_entity`, `vehicle_state_entity`) with `power_kw` and `capacity_kwh`, and `prices` lists today's and later prices as `start`, `end` and `price` (adjustment included), whatever layout the price sensor uses.
+For dashboards and apps, `setup` lists the configured entities (`charger_entity`, `soc_entity`, `price_entity`, `power_entity`, `connected_entity`, `lock_entity`) with `power_kw` and `capacity_kwh`, and `prices` lists today's and later prices as `start`, `end` and `price` (adjustment included), whatever layout the price sensor uses.
 
 To keep the history database small, `slots`, `estimated_soc`, `active_charge_until`, `setup` and `prices` are available on the live state but are not recorded in history.
 

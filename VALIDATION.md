@@ -29,7 +29,7 @@ The tests run the real coordinator against Home Assistant's state machine and se
 - Old battery reports are flagged but do not stop the plan; unavailable inputs pause.
 - Deadline grace (`charging_overtime`).
 - Charge now to target.
-- Charger unlock before charging (with retries) and lock when driving.
+- Charger unlock before charging and lock when the plan stops (with retries); unlocked by hand or switched off by hand is left alone.
 - Car connected event.
 - Session cost, including missing prices.
 - Repair issues that appear after 30 minutes and clear themselves.
@@ -43,7 +43,6 @@ The tests run the real coordinator against Home Assistant's state machine and se
 Not verified by this project. Tick these off with your own setup and report results in an issue (without credentials or vehicle identifiers).
 
 - [ ] The car's state of charge entity updates while charging, and how often.
-- [ ] The vehicle state sensor reports a driving state after the cable is removed.
 - [ ] The charger switch confirms on and off within 5 minutes.
 - [ ] Charger lock and unlock through Home Assistant.
 - [ ] The car connected sensor reports one of the configured states when plugged in.

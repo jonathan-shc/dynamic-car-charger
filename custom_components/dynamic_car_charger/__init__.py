@@ -95,12 +95,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Version 2 replaces the Wallbox status field with the general connected sensor."""
-    if entry.version == 1:
+    """Bring settings from older versions to the current form; see migrate_settings."""
+    if entry.version < 3:
         hass.config_entries.async_update_entry(
             entry,
             data=migrate_settings(entry.data),
             options=migrate_settings(entry.options),
-            version=2,
+            version=3,
         )
-    return entry.version <= 2
+    return entry.version <= 3

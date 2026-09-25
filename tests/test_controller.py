@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from homeassistant.core import HomeAssistant, State
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 
 from custom_components.dynamic_car_charger.config_flow import (
@@ -199,52 +200,94 @@ async def test_charging_unlocks_charger_before_resume(rig):
     assert calls == ["turn_on"]
 
 
-async def test_driving_locks_charger(rig):
-    hass, c, _ = rig
+async def charging_with_lock(rig):
+    """Charging with a charger lock; returns the lock calls."""
+    hass, c, calls = rig
     c.settings["lock_entity"] = "lock.charger"
-    c.settings["vehicle_state_entity"] = "sensor.car_state"
-    c.settings["driving_states"] = ["Driving"]
-    hass.states.async_set("lock.charger", "unlocked")
+    hass.states.async_set("lock.charger", "locked")
     lock_calls = []
 
     async def lock(call):
         lock_calls.append(call.service)
-        hass.states.async_set("lock.charger", "locked")
+        hass.states.async_set("lock.charger", "locked" if call.service == "lock" else "unlocked")
 
     hass.services.async_register("lock", "lock", lock)
-    c._changed(
-        SimpleNamespace(
-            data={
-                "entity_id": "sensor.car_state",
-                "old_state": State("sensor.car_state", "Parked"),
-                "new_state": State("sensor.car_state", "Driving"),
-            }
-        )
-    )
-    await hass.async_block_till_done()
+    hass.services.async_register("lock", "unlock", lock)
+    await c.async_change(enabled=True)
+    await c.async_reconcile()
+    assert calls == ["turn_on"]
+    assert lock_calls == ["unlock"]
+    return lock_calls
 
-    assert lock_calls == ["lock"]
+
+async def test_plan_stop_locks_charger(rig):
+    hass, c, calls = rig
+    lock_calls = await charging_with_lock(rig)
+    hass.states.async_set("sensor.battery", "30", {"unit_of_measurement": "%"})
+    await c.async_reconcile()
+
+    assert calls[-1] == "turn_off"
+    assert lock_calls == ["unlock", "lock"]
     assert hass.states.get("lock.charger").state == "locked"
 
 
-async def test_driving_prevents_charger_from_being_unlocked(rig):
+async def test_charger_unlocked_by_hand_while_idle_stays_unlocked(rig):
+    hass, c, _ = rig
+    lock_calls = await charging_with_lock(rig)
+    hass.states.async_set("sensor.battery", "30", {"unit_of_measurement": "%"})
+    await c.async_reconcile()
+    hass.states.async_set("lock.charger", "unlocked")
+    await c.async_reconcile()
+    await c.async_reconcile()
+
+    assert lock_calls == ["unlock", "lock"]
+    assert hass.states.get("lock.charger").state == "unlocked"
+
+
+async def test_switching_off_by_hand_leaves_the_lock_alone(rig):
     hass, c, calls = rig
-    c.settings["lock_entity"] = "lock.charger"
-    c.settings["vehicle_state_entity"] = "sensor.car_state"
-    c.settings["driving_states"] = ["Driving"]
-    hass.states.async_set("lock.charger", "locked")
-    hass.states.async_set("sensor.car_state", "Driving")
-    unlock_calls = []
+    lock_calls = await charging_with_lock(rig)
+    await c.async_change(enabled=False)
 
-    async def unlock(call):
-        unlock_calls.append(call.service)
+    assert calls[-1] == "turn_off"
+    assert lock_calls == ["unlock"]
+    assert hass.states.get("lock.charger").state == "unlocked"
 
-    hass.services.async_register("lock", "unlock", unlock)
-    await c.async_change(enabled=True)
 
-    assert unlock_calls == []
-    assert calls == []
+async def test_waiting_for_the_car_does_not_lock(rig):
+    hass, c, _ = rig
+    lock_calls = await charging_with_lock(rig)
+    hass.states.async_set("switch.charger", "unavailable")
+    await c.async_reconcile()
+
     assert c.data["status"] == "waiting_for_car"
+    assert lock_calls == ["unlock"]
+
+
+async def test_failed_lock_is_retried(rig):
+    hass, c, _ = rig
+    lock_calls = await charging_with_lock(rig)
+    attempts = []
+
+    async def failing(call):
+        attempts.append(call.service)
+        raise HomeAssistantError("offline")
+
+    hass.services.async_remove("lock", "lock")
+    hass.services.async_register("lock", "lock", failing)
+    hass.states.async_set("sensor.battery", "30", {"unit_of_measurement": "%"})
+    await c.async_reconcile()
+    assert attempts == ["lock"]
+
+    async def working(call):
+        hass.states.async_set("lock.charger", "locked")
+
+    hass.services.async_remove("lock", "lock")
+    hass.services.async_register("lock", "lock", working)
+    c._lock_attempt_time -= timedelta(minutes=10)
+    await c.async_reconcile()
+    assert hass.states.get("lock.charger").state == "locked"
+    assert lock_calls == ["unlock"]
 
 
 async def test_missing_soc_pauses_and_recovers(rig):
@@ -1014,31 +1057,6 @@ async def test_connected_states_can_be_configured(rig):
     assert not c._is_car_connected(State("sensor.charger_state", "Available"))
 
 
-async def test_driving_binary_sensor_locks_the_charger(rig):
-    hass, c, _ = rig
-    c.settings["lock_entity"] = "lock.charger"
-    c.settings["vehicle_state_entity"] = "binary_sensor.car_moving"
-    hass.states.async_set("lock.charger", "unlocked")
-    lock_calls = []
-
-    async def lock(call):
-        lock_calls.append(call.service)
-        hass.states.async_set("lock.charger", "locked")
-
-    hass.services.async_register("lock", "lock", lock)
-    c._changed(
-        SimpleNamespace(
-            data={
-                "entity_id": "binary_sensor.car_moving",
-                "old_state": State("binary_sensor.car_moving", "off"),
-                "new_state": State("binary_sensor.car_moving", "on"),
-            }
-        )
-    )
-    await hass.async_block_till_done()
-    assert lock_calls == ["lock"]
-
-
 async def test_prices_in_cents_and_other_currencies(rig):
     hass, c, _ = rig
     now = dt_util.utcnow()
@@ -1098,11 +1116,12 @@ def test_version_1_settings_become_general_fields():
     assert "status_entity" not in new
     assert new["connected_entity"] == "sensor.charger_status"
     assert new["connected_states"] == ["Locked, car connected"]
-    assert new["driving_states"] == ["Driving"]
-    # A binary sensor needs no states, and existing general settings stay.
+    # The plan decides the lock now: the vehicle state sensor is gone.
+    assert "vehicle_state_entity" not in new
     assert "driving_states" not in migrate_settings(
-        {"vehicle_state_entity": "binary_sensor.moving"}
+        {"vehicle_state_entity": "sensor.car_state", "driving_states": ["Driving"]}
     )
+    # Existing general settings stay.
     kept = migrate_settings({"status_entity": "sensor.a", "connected_entity": "binary_sensor.b"})
     assert kept == {"connected_entity": "binary_sensor.b"}
 

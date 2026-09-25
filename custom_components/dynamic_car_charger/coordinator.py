@@ -77,6 +77,12 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._command_attempt_time: datetime | None = None
         self._unlock_command_time: datetime | None = None
         self._unlock_attempt_time: datetime | None = None
+        # Whether the plan asked for charging at the last check, and whether the
+        # charger still has to be locked because the plan stopped charging.
+        self._charge_requested = False
+        self._lock_pending = False
+        self._lock_attempt_time: datetime | None = None
+        self._stopped_by_user = False
         self._active_charge_until: datetime | None = None
         self._active_plan_context: tuple | None = None
         self._replan_stop_time: datetime | None = None
@@ -100,6 +106,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.enabled = bool(saved.get("enabled", False))
         self.immediate_charging = bool(saved.get("immediate_charging", False))
         self._pending_stop = bool(saved.get("pending_stop", False))
+        self._charge_requested = bool(saved.get("charge_requested", False))
+        self._lock_pending = bool(saved.get("lock_pending", False))
         self.deadline = timestamp(saved["deadline"]) if saved.get("deadline") else None
         self._observed_soc = saved.get("observed_soc")
         self._credit_kwh = number(saved.get("credit_kwh", 0), 0)
@@ -121,7 +129,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ]
         tracked_entities.extend(
             self.settings[key]
-            for key in ("connected_entity", "lock_entity", "vehicle_state_entity")
+            for key in ("connected_entity", "lock_entity")
             if self.settings.get(key)
         )
         self._stop_unsub = self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, self._shutdown)
@@ -129,8 +137,6 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             async_track_state_change_event(self.hass, tracked_entities, self._changed),
             async_track_time_interval(self.hass, self._tick, TICK),
         ]
-        if self._vehicle_is_driving():
-            await self._async_lock_charger()
         self._set_forecast_tracking()
         await self.async_reconcile()
 
@@ -150,12 +156,6 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if available and not self._charger_available:
                 self._fire_car_connected(new_state)
             self._charger_available = available
-        if (
-            entity_id == self.settings.get("vehicle_state_entity")
-            and self._is_driving(new_state)
-            and not self._is_driving(old_state)
-        ):
-            self.hass.async_create_task(self._async_lock_charger())
         if not self._stopping:
             self.hass.async_create_task(self.async_reconcile())
 
@@ -195,18 +195,6 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             states = {"on"}
         return self._state_text(state) in states
 
-    def _is_driving(self, state: State | None) -> bool:
-        """Whether this vehicle state means the car is driving.
-
-        A binary sensor is driving when on; other sensors use the configured states.
-        """
-        if state is None:
-            return False
-        states = self._state_list(self.settings.get("driving_states"))
-        if not states and state.domain == "binary_sensor":
-            states = {"on"}
-        return self._state_text(state) in states
-
     def _car_connected(self) -> bool | None:
         """Whether a car is plugged in, or None without a connected sensor."""
         entity_id = self.settings.get("connected_entity")
@@ -221,10 +209,6 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _is_available(state: State | None) -> bool:
         return state is not None and state.state not in ("unknown", "unavailable")
 
-    def _vehicle_is_driving(self) -> bool:
-        vehicle_entity = self.settings.get("vehicle_state_entity")
-        return bool(vehicle_entity and self._is_driving(self.hass.states.get(vehicle_entity)))
-
     async def _tick(self, now: datetime) -> None:
         await self.async_reconcile()
 
@@ -237,6 +221,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "observed_soc": self._observed_soc,
             "credit_kwh": self._credit_kwh,
             "pending_stop": self._pending_stop,
+            "charge_requested": self._charge_requested,
+            "lock_pending": self._lock_pending,
             "max_price_eur_kwh": self.settings.get("max_price_eur_kwh"),
             "configured_max_price_eur_kwh": self._configured_max_price,
             "session": self.session,
@@ -276,6 +262,9 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ):
                 # A new deadline after the previous one passed is a new charge.
                 self._delivered_kwh = 0.0
+            if changes.get("enabled") is False or changes.get("immediate_charging") is False:
+                # Switched off by hand: the plan didn't stop, so leave the lock alone.
+                self._stopped_by_user = True
             if changes.get("enabled") is False:
                 self._pending_stop = True
             elif changes.get("enabled") is True:
@@ -340,7 +329,6 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "power_entity",
             "connected_entity",
             "lock_entity",
-            "vehicle_state_entity",
         )
         details: dict[str, Any] = {key: self.settings.get(key) for key in keys}
         details["mode"] = "energy" if self.energy_mode else "battery"
@@ -473,9 +461,6 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "setup": self._setup_details(),
                 # So dashboards and apps don't need to know charger or car wording.
                 "car_connected": self._car_connected(),
-                "driving": self._vehicle_is_driving()
-                if self.settings.get("vehicle_state_entity")
-                else None,
                 "prices": self._price_rows(now),
             }
             try:
@@ -500,6 +485,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     data.update(status="control_error", error=error)
                 elif not self.enabled:
                     self._pending_stop = False
+            # What the plan wants, also while waiting for the car or the charger.
+            await self._update_lock(now, desired and control_enabled)
             self._update_session(
                 now, prices, data["charging_requested"], control_enabled, plan_status
             )
@@ -662,7 +649,6 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             and now < extension_until
             and soc < target
             and active_session
-            and not self._vehicle_is_driving()
         )
         desired = ((planned_now and not after_deadline) or extension_active) and soc < target
         data["deadline_extension_active"] = extension_active
@@ -822,8 +808,6 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         entity_id = self.settings.get("lock_entity")
         if not entity_id:
             return None
-        if self._vehicle_is_driving():
-            return "waiting_for_car"
         state = self.hass.states.get(entity_id)
         actual = state.state if state is not None else "unavailable"
         if actual == "unlocked":
@@ -849,23 +833,45 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 return "Charger did not accept unlock; will retry"
         return pending
 
-    async def _async_lock_charger(self) -> None:
-        """Lock the charger when the vehicle reports that it is driving."""
-        entity_id = self.settings.get("lock_entity")
-        if not entity_id:
+    async def _update_lock(self, now: datetime, requested: bool) -> None:
+        """Lock the charger once when the plan stops charging.
+
+        Only the moment the plan stops counts: a charger unlocked by hand while
+        the plan isn't charging stays unlocked. Switching automatic charging or
+        charging now off by hand leaves the lock alone.
+        """
+        stopped = self._charge_requested and not requested and not self._stopped_by_user
+        self._charge_requested = requested
+        self._stopped_by_user = False
+        if requested or not self.settings.get("lock_entity"):
+            self._lock_pending = False
             return
+        if stopped:
+            self._lock_pending = True
+            self._lock_attempt_time = None
+        if not self._lock_pending:
+            return
+        entity_id = self.settings["lock_entity"]
         state = self.hass.states.get(entity_id)
         if state is not None and state.state == "locked":
+            self._lock_pending = False
             return
+        if state is None or state.state in ("unknown", "unavailable"):
+            return  # try again once the lock is back
+        if self._lock_attempt_time is not None and now - self._lock_attempt_time < RETRY_INTERVAL:
+            return
+        self._lock_attempt_time = now
         try:
             async with asyncio.timeout(30):
                 await self.hass.services.async_call(
                     "lock", "lock", {"entity_id": entity_id}, blocking=True
                 )
-            self._unlock_command_time = None
-            self._unlock_attempt_time = None
         except (HomeAssistantError, TimeoutError):
-            _LOGGER.warning("The charger could not be locked after the car drove away")
+            _LOGGER.warning("The charger could not be locked after charging; will retry")
+            return
+        self._lock_pending = False
+        self._unlock_command_time = None
+        self._unlock_attempt_time = None
 
     async def _shutdown(self, event: Event) -> None:
         # A one-time listener is already removed once it has fired.
