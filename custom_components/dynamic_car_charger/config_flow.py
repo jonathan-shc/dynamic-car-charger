@@ -136,17 +136,40 @@ def home_zone(hass) -> str:
     return zone_for_location(config.country, config.latitude, config.longitude)
 
 
+# The Wallbox integration's status descriptions that mean a car is plugged in.
+WALLBOX_CONNECTED_STATES = [
+    "Charging",
+    "Discharging",
+    "Paused",
+    "Scheduled",
+    "Waiting for car demand",
+    "Waiting",
+    "Locked, car connected",
+    "Waiting in queue by Power Sharing",
+    "Waiting in queue by Power Boost",
+    "Waiting in queue by Eco-Smart",
+    "Waiting MID failed",
+    "Waiting MID safety margin exceeded",
+]
+
+
 def migrate_settings(values: dict[str, Any]) -> dict[str, Any]:
     """Settings from older versions in the current form.
 
     Version 1 had a Wallbox-specific status field. Version 2 had a vehicle state
     sensor for locking the charger when driving; the plan now decides the lock.
+    Version 3 turned the Wallbox status into a connected sensor with only
+    'Locked, car connected', so a paused or charging car counted as unplugged.
     """
     values = dict(values)
     status = values.pop("status_entity", None)
     if status and not values.get("connected_entity"):
         values["connected_entity"] = status
-        values.setdefault("connected_states", ["Locked, car connected"])
+        values["connected_states"] = list(WALLBOX_CONNECTED_STATES)
+    states = values.get("connected_states") or []
+    text = states if isinstance(states, str) else ", ".join(str(state) for state in states)
+    if text.strip().casefold() == "locked, car connected":
+        values["connected_states"] = list(WALLBOX_CONNECTED_STATES)
     values.pop("vehicle_state_entity", None)
     values.pop("driving_states", None)
     return values
@@ -155,7 +178,7 @@ def migrate_settings(values: dict[str, Any]) -> dict[str, Any]:
 class DynamicCarChargerFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """One scheduler per charger."""
 
-    VERSION = 3
+    VERSION = 4
 
     async def async_step_user(self, user_input=None):
         errors = {}

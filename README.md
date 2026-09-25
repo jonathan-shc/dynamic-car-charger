@@ -2,7 +2,7 @@
 
 A Home Assistant custom integration for deadline-based EV charging. Set **80% by Friday at 07:30** (or **20 kWh by Friday at 07:30**), inspect the charging plan, and let the integration pause and resume your charger during the cheapest published price intervals.
 
-It works with any charger that has an on/off switch in Home Assistant and any dynamic price sensor with today's and tomorrow's prices. With a car that reports its battery percentage it charges to a percentage; without one it charges an amount of energy. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Check compatibility with your own devices. Current version: 0.9.0b4 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
+It works with any charger that has an on/off switch in Home Assistant and any dynamic price sensor with today's and tomorrow's prices. With a car that reports its battery percentage it charges to a percentage; without one it charges an amount of energy. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Check compatibility with your own devices. Current version: 0.9.0b5 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
 
 ## What you get
 
@@ -37,7 +37,7 @@ Configure these source integrations in Home Assistant first; their entities are 
 
 Without a car connected sensor, the car-connected event fires when the charger switch becomes available.
 
-Upgrading from 0.8 or earlier: a configured Wallbox status sensor becomes the car connected sensor with the state `Locked, car connected`, and the vehicle state sensor is removed: the plan now decides when the charger is locked.
+Upgrading from 0.8 or earlier: a configured Wallbox status sensor becomes the car connected sensor with every Wallbox state that means a car is plugged in (such as `Charging`, `Paused`, `Waiting for car demand` and `Locked, car connected`), and the vehicle state sensor is removed: the plan now decides when the charger is locked.
 
 ### Energy mode
 

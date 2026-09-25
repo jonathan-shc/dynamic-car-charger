@@ -1133,7 +1133,12 @@ def test_version_1_settings_become_general_fields():
     new = migrate_settings(old)
     assert "status_entity" not in new
     assert new["connected_entity"] == "sensor.charger_status"
-    assert new["connected_states"] == ["Locked, car connected"]
+    # Every Wallbox state with a car plugged in, not only the locked one.
+    assert "Paused" in new["connected_states"]
+    assert "Charging" in new["connected_states"]
+    assert "Locked, car connected" in new["connected_states"]
+    assert "Ready" not in new["connected_states"]
+    assert "Locked" not in new["connected_states"]
     # The plan decides the lock now: the vehicle state sensor is gone.
     assert "vehicle_state_entity" not in new
     assert "driving_states" not in migrate_settings(
@@ -1142,6 +1147,17 @@ def test_version_1_settings_become_general_fields():
     # Existing general settings stay.
     kept = migrate_settings({"status_entity": "sensor.a", "connected_entity": "binary_sensor.b"})
     assert kept == {"connected_entity": "binary_sensor.b"}
+
+
+def test_version_3_wallbox_states_are_completed():
+    from custom_components.dynamic_car_charger.config_flow import migrate_settings
+
+    for stored in (["Locked, car connected"], "Locked, car connected", ["locked", "car connected"]):
+        new = migrate_settings({"connected_entity": "sensor.status", "connected_states": stored})
+        assert "Paused" in new["connected_states"]
+    # States chosen by the user stay as they are.
+    own = migrate_settings({"connected_entity": "sensor.s", "connected_states": ["Connected"]})
+    assert own["connected_states"] == ["Connected"]
 
 
 async def test_sensor_needs_its_states_but_binary_sensor_does_not(rig):

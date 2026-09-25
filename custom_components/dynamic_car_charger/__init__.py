@@ -96,11 +96,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Bring settings from older versions to the current form; see migrate_settings."""
-    if entry.version < 3:
+    if entry.version < 4:
         hass.config_entries.async_update_entry(
             entry,
             data=migrate_settings(entry.data),
             options=migrate_settings(entry.options),
-            version=3,
+            version=4,
         )
-    return entry.version <= 3
+    return entry.version <= 4
