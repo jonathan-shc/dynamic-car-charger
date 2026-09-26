@@ -5,6 +5,7 @@ NAME = "Dynamic Car Charger"
 EVENT_CAR_CONNECTED = f"{DOMAIN}_car_connected"
 SERVICE_SET_SESSION = "set_session"
 SERVICE_GET_SESSIONS = "get_sessions"
+SERVICE_ADD_SESSIONS = "add_sessions"
 PLATFORMS = ["sensor", "number", "datetime", "switch", "button"]
 DEFAULTS = {
     "capacity_kwh": 60.0,

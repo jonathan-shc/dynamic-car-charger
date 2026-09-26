@@ -1406,3 +1406,38 @@ def test_imports_finished_sessions_from_recorded_states(rig):
     assert c.session_log[0]["cost"] == 2.1
     # Importing again adds nothing.
     assert c.import_sessions(states) == 0
+
+
+async def test_add_sessions_service_keeps_them_once(rig):
+    hass, c, _ = rig
+    from custom_components.dynamic_car_charger import async_setup
+
+    await async_setup(hass, {})
+    session = {
+        "started": "2026-09-19T00:30:00+02:00",
+        "ended": "2026-09-19T16:47:00+02:00",
+        "energy_kwh": 36.2,
+        "cost": 4.82,
+        "reconstructed": True,
+    }
+    with patch("custom_components.dynamic_car_charger._coordinator_for", return_value=c):
+        answer = await hass.services.async_call(
+            "dynamic_car_charger",
+            "add_sessions",
+            {"sessions": [session]},
+            blocking=True,
+            return_response=True,
+        )
+        again = await hass.services.async_call(
+            "dynamic_car_charger",
+            "add_sessions",
+            {"sessions": [session]},
+            blocking=True,
+            return_response=True,
+        )
+    assert answer == {"added": 1}
+    assert again == {"added": 0}
+    entry = c.session_log[0]
+    assert entry["started"] == "2026-09-18T22:30:00+00:00"
+    assert entry["energy_kwh"] == 36.2
+    assert entry["reconstructed"] is True

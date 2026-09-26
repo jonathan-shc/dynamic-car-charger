@@ -11,7 +11,13 @@ from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt as dt_util
 
 from .config_flow import migrate_settings
-from .const import DOMAIN, PLATFORMS, SERVICE_GET_SESSIONS, SERVICE_SET_SESSION
+from .const import (
+    DOMAIN,
+    PLATFORMS,
+    SERVICE_ADD_SESSIONS,
+    SERVICE_GET_SESSIONS,
+    SERVICE_SET_SESSION,
+)
 from .coordinator import ChargerCoordinator
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
@@ -24,6 +30,26 @@ SET_SESSION_SCHEMA = vol.Schema(
         vol.Optional("ready_by"): cv.datetime,
         vol.Optional("automatic_charging"): cv.boolean,
         vol.Optional("charge_now"): cv.boolean,
+    }
+)
+
+
+SESSION_SCHEMA = vol.Schema(
+    {
+        vol.Required("started"): cv.datetime,
+        vol.Required("ended"): cv.datetime,
+        vol.Required("energy_kwh"): vol.All(vol.Coerce(float), vol.Range(0, 500)),
+        vol.Required("cost"): vol.Coerce(float),
+        vol.Optional("cost_complete", default=True): cv.boolean,
+        vol.Optional("currency"): cv.string,
+        # Rebuilt from hourly statistics rather than measured by the integration.
+        vol.Optional("reconstructed", default=False): cv.boolean,
+    }
+)
+ADD_SESSIONS_SCHEMA = vol.Schema(
+    {
+        vol.Optional("config_entry_id"): cv.string,
+        vol.Required("sessions"): vol.All(cv.ensure_list, [SESSION_SCHEMA]),
     }
 )
 
@@ -62,6 +88,20 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         get_sessions,
         vol.Schema({vol.Optional("config_entry_id"): cv.string}),
         supports_response=SupportsResponse.ONLY,
+    )
+
+    async def add_sessions(call: ServiceCall) -> ServiceResponse:
+        """Add sessions from elsewhere, e.g. reconstructed from older history."""
+        coordinator = _coordinator_for(hass, call.data.get("config_entry_id"))
+        added = coordinator.add_sessions(call.data["sessions"])
+        return {"added": added}
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_ADD_SESSIONS,
+        add_sessions,
+        ADD_SESSIONS_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
     )
     return True
 

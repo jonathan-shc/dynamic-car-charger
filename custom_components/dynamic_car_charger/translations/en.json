@@ -230,6 +230,20 @@
           "description": "The Dynamic Car Charger entry. Can be left out when only one is set up."
         }
       }
+    },
+    "add_sessions": {
+      "name": "Add charging sessions",
+      "description": "Adds charging sessions to the kept list, for example sessions rebuilt from older history. Sessions already in the list are skipped.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Charger",
+          "description": "The Dynamic Car Charger entry. Can be left out when only one is set up."
+        },
+        "sessions": {
+          "name": "Sessions",
+          "description": "A list with started, ended, energy_kwh and cost for each session; optionally cost_complete, currency and reconstructed."
+        }
+      }
     }
   },
   "exceptions": {

@@ -142,6 +142,8 @@ The [notifications blueprint](blueprints/automation/dynamic_car_charger/charging
 
 Every finished session is kept in the integration's own storage (about 150 bytes each, so a session a day is roughly 55 KB a year), independent of how long the recorder keeps history. The `dynamic_car_charger.get_sessions` action returns them, oldest first, with `started`, `ended`, `energy_kwh`, `cost`, `cost_complete` and `currency`, plus the `running` session if one is active. Sessions that charged nothing are left out. On its first start with this log, the integration also imports the finished sessions the recorder still has (its history of **Session charging cost**, normally the last 10 days), so those are kept for good as well.
 
+`dynamic_car_charger.add_sessions` adds sessions from elsewhere, for example rebuilt from older hourly statistics: a list with `started`, `ended`, `energy_kwh` and `cost` per session (optionally `cost_complete`, `currency` and `reconstructed`). Sessions already in the list are skipped.
+
 ## Planning and execution
 
 Required grid energy is `(target - current %) / 100 × usable capacity / efficiency`. The scheduler allocates it to the cheapest known intervals before the deadline, allowing a partial final interval. Equal prices favor earlier charging. This allocation minimizes modeled energy cost at constant power and efficiency over the **published** intervals.

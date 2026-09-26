@@ -912,6 +912,31 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.session_log.sort(key=lambda entry: entry["started"])
         return added
 
+    def add_sessions(self, sessions: list[dict[str, Any]]) -> int:
+        """Add sessions from elsewhere; ones already in the log are skipped."""
+        known = {timestamp(entry["started"]) for entry in self.session_log}
+        added = 0
+        for session in sessions:
+            started = dt_util.as_utc(session["started"])
+            if started in known or session["energy_kwh"] < 0.05:
+                continue
+            entry = {
+                "started": started.isoformat(),
+                "ended": dt_util.as_utc(session["ended"]).isoformat(),
+                "energy_kwh": round(session["energy_kwh"], 3),
+                "cost": round(session["cost"], 4),
+                "cost_complete": session.get("cost_complete", True),
+                "currency": session.get("currency") or self.currency,
+            }
+            if session.get("reconstructed"):
+                entry["reconstructed"] = True
+            self.session_log.append(entry)
+            known.add(started)
+            added += 1
+        self.session_log.sort(key=lambda entry: timestamp(entry["started"]))
+        self.store.async_delay_save(self._save_data, 1)
+        return added
+
     def sessions_response(self) -> dict[str, Any]:
         """For the get_sessions action: the log, and the running session if any."""
         running = None
