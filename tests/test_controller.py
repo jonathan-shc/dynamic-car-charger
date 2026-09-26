@@ -1188,3 +1188,34 @@ async def test_plan_reports_whether_a_car_is_connected(rig):
     hass.states.async_set("sensor.charger_status", "Locked, car connected")
     await c.async_reconcile()
     assert c.data["car_connected"] is False
+
+
+async def test_learns_how_much_slower_the_last_percent_charges(rig):
+    hass, c, _ = rig
+    hass.states.async_set("switch.charger", "on")
+    start = dt_util.utcnow()
+    # 50 kWh at 10 kW and efficiency 1: a % normally takes 3 minutes.
+    c._learn_taper(start, 98.0)  # the first report only sets the mark
+    c._learn_taper(start + timedelta(minutes=9), 99.0)
+    assert dict(c._taper())[98.0] == pytest.approx(3.0)
+    assert dict(c._taper())[0.0] == 1.0  # nothing learned there yet
+    # Saved with the rest, so it survives a restart.
+    assert c._save_data()["taper"]["98.0"][1] == pytest.approx(1.0)
+
+    # A pause in between is not charging time.
+    hass.states.async_set("switch.charger", "off")
+    c._learn_taper(start + timedelta(minutes=30), 99.5)
+    hass.states.async_set("switch.charger", "on")
+    c._learn_taper(start + timedelta(minutes=40), 99.6)
+    c._learn_taper(start + timedelta(minutes=41), 99.9)  # 1 min for 0.3%: faster
+    weighted, points = c._taper_learned[98.0]
+    assert points == pytest.approx(1.3)
+    assert weighted / points < 3.0
+
+
+async def test_plan_reports_the_charging_speed(rig):
+    hass, c, _ = rig
+    await c.async_change(enabled=True)
+    speed = c.data["charging_speed"]
+    assert speed["98"] == 2.0  # the default until learned
+    assert c.data["charging_speed_learned"] == []

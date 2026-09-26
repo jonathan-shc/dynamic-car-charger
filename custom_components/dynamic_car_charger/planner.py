@@ -189,18 +189,61 @@ def _compact_selected_slots(chosen, candidates):
     return sorted(compacted, key=lambda slot: slot.start)
 
 
-def make_plan(prices, now, deadline, soc, target, capacity, power, efficiency, max_price=None):
+# Charging slows down near a full battery. Each band starts at a battery % and
+# says how much longer a % takes there than at full power; the coordinator
+# learns these per car. Until it has, only the last 2% is assumed slower.
+DEFAULT_TAPER = ((0.0, 1.0), (90.0, 1.0), (95.0, 1.0), (98.0, 2.0))
+
+
+def taper_factor(taper, soc):
+    """The slowdown factor for charging at this battery %."""
+    factor = 1.0
+    for start, value in taper or ():
+        if soc >= start:
+            factor = value
+    return factor
+
+
+def _bands(taper, low, high):
+    """(percentage points, factor) for each band between two battery %s."""
+    edges = sorted({low, high, *(start for start, _ in taper or () if low < start < high)})
+    return [(b - a, taper_factor(taper, a)) for a, b in pairwise(edges) if b > a]
+
+
+def full_power_kwh(soc, target, capacity, efficiency, taper=None):
+    """Grid energy to reach the target, counted at full power: a slow band counts
+    for as much as the time it takes, so the plan reserves that time."""
+    per_percent = capacity / 100 / efficiency
+    return sum(points * factor for points, factor in _bands(taper, soc, target)) * per_percent
+
+
+def soc_after(soc, battery_kwh, capacity, taper=None):
+    """Battery % after adding energy to the battery, slower where the car tapers."""
+    left = max(0.0, battery_kwh)
+    for points, factor in _bands(taper, soc, 100.0):
+        needed = points * factor * capacity / 100
+        if left <= needed:
+            return soc + left / (factor * capacity / 100)
+        left -= needed
+        soc += points
+    return 100.0
+
+
+def make_plan(
+    prices, now, deadline, soc, target, capacity, power, efficiency, max_price=None, taper=None
+):
     """Fractional cheapest-first allocation, optimal for fixed power/efficiency.
 
     Unknown periods are never assigned a made-up price. Selected portions of
     consecutive known intervals are shifted within their intervals to avoid a
-    needless pause while preserving the energy and cost of the plan.
+    needless pause while preserving the energy and cost of the plan. With a
+    taper, the slow last part of a charge gets the extra time it needs.
     """
     now, deadline = timestamp(now), timestamp(deadline)
     soc, target = number(soc, 0, 100), number(target, 0, 100)
     capacity, power = number(capacity, 0.1, 300), number(power, 0.1, 50)
     efficiency = number(efficiency, 0.1, 1)
-    required = max(0, target - soc) / 100 * capacity / efficiency
+    required = full_power_kwh(soc, target, capacity, efficiency, taper) if target > soc else 0.0
     all_clipped = [
         Slot(max(s.start, now), min(s.end, deadline), number(s.price), s.estimated)
         for s in prices

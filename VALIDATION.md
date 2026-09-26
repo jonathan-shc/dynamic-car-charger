@@ -25,7 +25,8 @@ The tests run the real coordinator against Home Assistant's state machine and se
 - Price threshold: provisional plans, full coverage, close-to-deadline safety mode, kept across restarts.
 - Pause/resume commands, slow confirmation, retries after failures and after the 5-minute confirmation timeout.
 - Stable continuous runs across hourly price boundaries; replanning after price or deadline changes.
-- Energy estimate between battery reports; waiting for measured SOC for at most 30 minutes.
+- Energy estimate between battery reports (slower near full); waiting for measured SOC for at most 30 minutes.
+- Slower charging near full: the plan reserves the extra time per battery band, and the factors are learned from timed battery reports only while the charger is on.
 - Old battery reports are flagged but do not stop the plan; unavailable inputs pause.
 - Deadline grace (`charging_overtime`).
 - Charge now to target.

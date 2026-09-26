@@ -19,7 +19,17 @@ from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, EVENT_CAR_CONNECTED, NAME
 from .forecaster import ForecastUnavailable, PriceForecaster
-from .planner import Plan, Slot, make_plan, number, parse_prices, price_unit, timestamp
+from .planner import (
+    DEFAULT_TAPER,
+    Plan,
+    Slot,
+    make_plan,
+    number,
+    parse_prices,
+    price_unit,
+    soc_after,
+    timestamp,
+)
 from .zones import zone_for_location
 
 _LOGGER = logging.getLogger(__name__)
@@ -72,6 +82,11 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._forecast_unsub = None
         self._lock = asyncio.Lock()
         self._observed_soc: float | None = None
+        # How much longer a % takes near a full battery, learned per band from
+        # charging sessions: {band start: [sum of factor x points, points]}.
+        self._taper_learned: dict[float, list[float]] = {}
+        # The last battery % report while charging, to time the next one against.
+        self._soc_mark: tuple[datetime, float] | None = None
         self._credit_kwh = 0.0
         self._interval_kwh = 0.0
         self._sample_time: datetime | None = None
@@ -115,6 +130,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._lock_pending = bool(saved.get("lock_pending", False))
         self.deadline = timestamp(saved["deadline"]) if saved.get("deadline") else None
         self._observed_soc = saved.get("observed_soc")
+        for start, (weighted, points) in (saved.get("taper") or {}).items():
+            self._taper_learned[float(start)] = [number(weighted, 0), number(points, 0)]
         self._credit_kwh = number(saved.get("credit_kwh", 0), 0)
         self.session = saved.get("session")
         self.use_forecast = bool(saved.get("use_forecast", False))
@@ -224,6 +241,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "immediate_charging": self.immediate_charging,
             "deadline": self.deadline.isoformat() if self.deadline else None,
             "observed_soc": self._observed_soc,
+            "taper": {str(start): values for start, values in self._taper_learned.items()},
             "credit_kwh": self._credit_kwh,
             "pending_stop": self._pending_stop,
             "charge_requested": self._charge_requested,
@@ -411,13 +429,57 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             soc = min(100.0, 100 * self._delivered_kwh / self._capacity())
             prices = self._prices() if include_prices else []
             return soc, soc, prices
+        if soc != self._observed_soc:
+            self._learn_taper(now, soc)
         if soc != self._observed_soc or not self.enabled:
             self._observed_soc, self._credit_kwh = soc, 0.0
         else:
             self._credit_kwh += self._interval_kwh * self.settings["efficiency"]
-        effective_soc = min(100.0, soc + 100 * self._credit_kwh / self.settings["capacity_kwh"])
+        # Between battery reports, estimate from the energy; slower near full.
+        capacity = self.settings["capacity_kwh"]
+        effective_soc = soc_after(soc, self._credit_kwh, capacity, self._taper())
         prices = self._prices() if include_prices else []
         return soc, effective_soc, prices
+
+    TAPER_MIN_POINTS = 0.5  # battery %-points of evidence before a band's factor is used
+    TAPER_MEMORY_POINTS = 10.0  # older sessions fade once a band has this much
+
+    def _taper(self) -> tuple[tuple[float, float], ...]:
+        """Slowdown per battery band: learned where there is enough evidence."""
+        bands = []
+        for start, default in DEFAULT_TAPER:
+            weighted, points = self._taper_learned.get(start, (0.0, 0.0))
+            learned = weighted / points if points >= self.TAPER_MIN_POINTS else None
+            bands.append((start, learned if learned is not None else default))
+        return tuple(bands)
+
+    def _learn_taper(self, now: datetime, soc: float) -> None:
+        """Time each battery % report against the previous one while charging.
+
+        Only while the charger stays on: the first report after charging starts
+        only sets the mark, since the car's % may be older than the start.
+        """
+        charger = self.hass.states.get(self.settings["charger_entity"])
+        if charger is None or charger.state != "on":
+            self._soc_mark = None
+            return
+        mark, self._soc_mark = self._soc_mark, (now, soc)
+        if mark is None or soc <= mark[1]:
+            return
+        minutes = (now - mark[0]).total_seconds() / 60
+        points = soc - mark[1]
+        if not 0 < minutes <= 45 or points > 10:
+            return
+        per_point = self.settings["capacity_kwh"] / 100 / self.settings["efficiency"]
+        expected = points * per_point / self.settings["power_kw"] * 60
+        factor = min(6.0, max(0.8, minutes / expected))
+        start = max(band for band, _ in DEFAULT_TAPER if band <= mark[1])
+        weighted, total = self._taper_learned.get(start, [0.0, 0.0])
+        weighted, total = weighted + factor * points, total + points
+        if total > self.TAPER_MEMORY_POINTS:
+            scale = self.TAPER_MEMORY_POINTS / total
+            weighted, total = weighted * scale, total * scale
+        self._taper_learned[start] = [round(weighted, 4), round(total, 4)]
 
     def _battery_details(self, now: datetime, soc: float, effective: float) -> dict[str, Any]:
         if self.energy_mode:
@@ -438,6 +500,13 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "measured_soc": soc,
             "estimated_soc": round(effective, 2),
             "charging_power_report_old": self._power_report_old,
+            # How much longer a % takes from each battery %, and which are learned.
+            "charging_speed": {f"{start:g}": round(f, 2) for start, f in self._taper()},
+            "charging_speed_learned": [
+                f"{start:g}"
+                for start, (_, points) in sorted(self._taper_learned.items())
+                if points >= self.TAPER_MIN_POINTS
+            ],
         }
 
     def _clear_active_run(self) -> None:
@@ -530,8 +599,10 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.settings["power_kw"],
             self._efficiency(),
         )
-        threshold_plan = make_plan(prices, *args, max_price=threshold)
-        full_plan = make_plan(prices, *args)
+        # The slow last part of a charge needs extra time (not in energy mode).
+        taper = None if self.energy_mode else self._taper()
+        threshold_plan = make_plan(prices, *args, max_price=threshold, taper=taper)
+        full_plan = make_plan(prices, *args, taper=taper)
         safety_hours = max(1.0, threshold_plan.required_kwh / self.settings["power_kw"] * 1.5)
         safety_mode = (self.deadline - now).total_seconds() / 3600 <= safety_hours
         data["price_threshold_eur_kwh"] = threshold
@@ -555,7 +626,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 data["forecast_error"] = str(err)
             else:
                 data["planning_method"] = "forecast"
-                return make_plan(prices + estimated, *args), False
+                return make_plan(prices + estimated, *args, taper=taper), False
         # The threshold limits provisional planning while future prices are
         # unknown, and is the fallback when the forecast is unavailable.
         data["planning_method"] = "threshold"
