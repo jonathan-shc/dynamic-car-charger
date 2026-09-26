@@ -1359,3 +1359,50 @@ async def test_lock_anyway_when_the_charger_never_stops(rig):
     hass.states.async_set("sensor.charging_power", "7.1", {"unit_of_measurement": "kW"})
     await c.async_reconcile()
     assert lock_calls == ["unlock", "lock"]  # locked, it can't charge either
+
+
+def test_imports_finished_sessions_from_recorded_states(rig):
+    _, c, _ = rig
+
+    def record(started, cost, energy, *, ended=None, active=False):
+        return State(
+            "sensor.dynamic_car_charger_session_charging_cost",
+            str(cost),
+            {
+                "started": started,
+                "ended": ended,
+                "energy_kwh": energy,
+                "active": active,
+                "cost_complete": True,
+                "unit_of_measurement": "EUR",
+            },
+        )
+
+    states = [
+        # 18 September: recorded while running, then its final totals.
+        record("2026-09-18T20:00:00+00:00", 0.5, 3.0, active=True),
+        record("2026-09-18T20:00:00+00:00", 2.1, 12.4, ended="2026-09-19T05:00:00+00:00"),
+        # Charged nothing: left out. Still running: left out.
+        record("2026-09-20T20:00:00+00:00", 0.0, 0.0, ended="2026-09-20T21:00:00+00:00"),
+        record("2026-09-26T20:00:00+00:00", 0.3, 2.0, active=True),
+        State("sensor.dynamic_car_charger_session_charging_cost", "unknown", {}),
+    ]
+    c.session_log = [
+        {
+            "started": "2026-09-25T11:00:00+00:00",
+            "ended": "2026-09-26T11:26:00+00:00",
+            "energy_kwh": 22.0,
+            "cost": 3.9,
+            "cost_complete": True,
+            "currency": "EUR",
+        }
+    ]
+    assert c.import_sessions(states) == 1
+    assert [entry["started"] for entry in c.session_log] == [
+        "2026-09-18T20:00:00+00:00",
+        "2026-09-25T11:00:00+00:00",
+    ]
+    assert c.session_log[0]["energy_kwh"] == 12.4
+    assert c.session_log[0]["cost"] == 2.1
+    # Importing again adds nothing.
+    assert c.import_sessions(states) == 0

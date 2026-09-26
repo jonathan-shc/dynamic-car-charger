@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta
+from functools import partial
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -78,6 +79,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.session: dict[str, Any] | None = None
         # Every finished session, oldest first: about 150 bytes each, kept for good.
         self.session_log: list[dict[str, Any]] = []
+        # Sessions from before the log existed are imported once from the recorder.
+        self._sessions_imported = False
         self.use_forecast = False
         # Settings from before the bidding zone existed follow Home Assistant's country.
         bidding_zone = self.settings.get("bidding_zone") or zone_for_location(
@@ -142,6 +145,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._credit_kwh = number(saved.get("credit_kwh", 0), 0)
         self.session = saved.get("session")
         self.session_log = list(saved.get("session_log") or [])
+        self._sessions_imported = bool(saved.get("sessions_imported", False))
         # The last session from before the log existed isn't lost.
         if self.session and not self.session.get("active") and not self.session_log:
             self._log_session(self.session)
@@ -171,6 +175,9 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             async_track_time_interval(self.hass, self._tick, TICK),
         ]
         self._set_forecast_tracking()
+        self.hass.async_create_task(
+            self._async_import_recorded_sessions(), f"{DOMAIN} import recorded sessions"
+        )
         await self.async_reconcile()
 
     @callback
@@ -261,6 +268,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "configured_max_price_eur_kwh": self._configured_max_price,
             "session": self.session,
             "session_log": self.session_log,
+            "sessions_imported": self._sessions_imported,
             "use_forecast": self.use_forecast,
             "energy_goal": self.energy_goal,
             "delivered_kwh": self._delivered_kwh,
@@ -834,6 +842,75 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "currency": self.currency,
             }
         )
+
+    async def _async_import_recorded_sessions(self) -> None:
+        """Once: add the sessions the recorder still has (its history of the
+        session cost sensor) to the log, so they are kept for good too."""
+        if self._sessions_imported or "recorder" not in self.hass.config.components:
+            return
+        from homeassistant.components.recorder import get_instance, history
+        from homeassistant.helpers import entity_registry as er
+
+        entity_id = er.async_get(self.hass).async_get_entity_id(
+            "sensor", DOMAIN, f"{self.entry.entry_id}_session_cost"
+        )
+        if entity_id is None:
+            return
+        start = dt_util.utcnow() - timedelta(days=366)
+        try:
+            found = await get_instance(self.hass).async_add_executor_job(
+                partial(
+                    history.state_changes_during_period,
+                    self.hass,
+                    start,
+                    entity_id=entity_id,
+                    include_start_time_state=True,
+                )
+            )
+        except Exception:  # noqa: BLE001 - the import is a bonus; never block charging
+            _LOGGER.warning("Could not read earlier charging sessions from the recorder")
+            return
+        added = self.import_sessions(found.get(entity_id, []))
+        self._sessions_imported = True
+        self.store.async_delay_save(self._save_data, 1)
+        _LOGGER.info("Imported %d earlier charging sessions from the recorder", added)
+
+    def import_sessions(self, states: list[State]) -> int:
+        """Finished sessions from recorded states of the session cost sensor.
+
+        A session appears many times while it runs; its last record has the totals.
+        """
+        last: dict[str, State] = {}
+        for state in states:
+            started = state.attributes.get("started")
+            if started:
+                last[started] = state
+        known = {entry["started"] for entry in self.session_log}
+        added = 0
+        for started, state in last.items():
+            attributes = state.attributes
+            if started in known or attributes.get("active") or not attributes.get("ended"):
+                continue
+            try:
+                cost = float(state.state)
+                energy = float(attributes.get("energy_kwh") or 0)
+            except ValueError:
+                continue
+            if energy < 0.05:
+                continue
+            self.session_log.append(
+                {
+                    "started": started,
+                    "ended": attributes["ended"],
+                    "energy_kwh": round(energy, 3),
+                    "cost": round(cost, 4),
+                    "cost_complete": attributes.get("cost_complete", True),
+                    "currency": state.attributes.get("unit_of_measurement") or self.currency,
+                }
+            )
+            added += 1
+        self.session_log.sort(key=lambda entry: entry["started"])
+        return added
 
     def sessions_response(self) -> dict[str, Any]:
         """For the get_sessions action: the log, and the running session if any."""
