@@ -381,11 +381,28 @@ async def test_failed_disable_keeps_retrying(rig):
         raise HomeAssistantError("offline")
 
     hass.services.async_register("switch", "turn_off", broken)
+    # Power still flows, so the pause is retried until the charger accepts it.
+    hass.states.async_set("sensor.charging_power", "7", {"unit_of_measurement": "kW"})
     await c.async_change(enabled=False)
     assert c._pending_stop
     c._command_attempt_time -= timedelta(seconds=121)
     await c.async_reconcile()
     assert calls[-2:] == ["failed_stop", "failed_stop"]
+
+
+async def test_disable_on_an_idle_charger_keeps_watching(rig):
+    hass, c, calls = rig
+    await c.async_change(enabled=True)
+    refuse_turn_off(hass, calls)
+    await c.async_change(enabled=False)
+    await c.async_reconcile()
+    assert c.data["status"] != "control_error"
+    # Still pending: if the car starts drawing power, it is paused then.
+    assert c._pending_stop
+    hass.states.async_set("sensor.charging_power", "7", {"unit_of_measurement": "kW"})
+    c._command_attempt_time -= timedelta(seconds=121)
+    await c.async_reconcile()
+    assert calls.count("refused") == 2
 
 
 async def test_measured_power_credits_energy_between_soc_changes(rig):

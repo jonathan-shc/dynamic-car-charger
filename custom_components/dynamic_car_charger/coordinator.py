@@ -50,6 +50,8 @@ FORECAST_INTERVAL = timedelta(minutes=15)
 SESSION_END_STATUSES = ("set_deadline", "target_reached", "deadline_passed")
 # Below this measured power the charger counts as not charging.
 IDLE_POWER_KW = 0.1
+# The pause isn't confirmed, but nothing flows: no error, and keep watching.
+IDLE_STOP = "idle_stop"
 PENDING_STATUSES = ("unlocking_charger", "starting_charge", "stopping_charge")
 
 
@@ -556,7 +558,9 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             data["charging_requested"] = desired and control_enabled
             if control_enabled or force_stop or self._pending_stop:
                 error = await self._control(desired and control_enabled, now, force_stop)
-                if error == "waiting_for_car":
+                if error == IDLE_STOP:
+                    pass  # not an error; a pending stop stays pending until confirmed
+                elif error == "waiting_for_car":
                     data.update(status="waiting_for_car", error=None, charging_requested=False)
                 elif error in PENDING_STATUSES:
                     data.update(status=error, error=None)
@@ -862,7 +866,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # flows again, the pause is sent (and checked) as usual.
         idle_stop = not desired and not force and self._charger_idle()
         if idle_stop and self._command_attempt_time is not None:
-            return None
+            return IDLE_STOP
 
         pending = "starting_charge" if desired else "stopping_charge"
         # After the confirmation timeout the command is reported as an error,
@@ -885,7 +889,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
         except (HomeAssistantError, TimeoutError):
             if idle_stop:
-                return None
+                return IDLE_STOP
             return f"Charger did not accept {wanted}; will retry"
         return pending
 
