@@ -2,7 +2,7 @@
 
 A Home Assistant custom integration for deadline-based EV charging. Set **80% by Friday at 07:30** (or **20 kWh by Friday at 07:30**), inspect the charging plan, and let the integration pause and resume your charger during the cheapest published price intervals.
 
-It works with any charger that has an on/off switch in Home Assistant and any dynamic price sensor with today's and tomorrow's prices. With a car that reports its battery percentage it charges to a percentage; without one it charges an amount of energy. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Check compatibility with your own devices. Current version: 0.9.0b7 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
+It works with any charger that has an on/off switch in Home Assistant and any dynamic price sensor with today's and tomorrow's prices. With a car that reports its battery percentage it charges to a percentage; without one it charges an amount of energy. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Check compatibility with your own devices. Current version: 0.9.0b8 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
 
 ## What you get
 
@@ -139,6 +139,8 @@ The [notifications blueprint](blueprints/automation/dynamic_car_charger/charging
 ### Session charging cost
 
 **Session charging cost** adds up the measured charging power × the price of the interval at that moment. A session starts at the first charging request and ends when the target is reached, the deadline passes, or control is turned off. After a session ends, the sensor keeps showing the last session until the next one starts. Attributes: `active`, `started`, `ended`, `energy_kwh`, `average_price_eur_kwh` and `cost_complete` (false when a price was unknown for part of the energy). This is grid energy at the feed price, not your supplier bill.
+
+Every finished session is kept in the integration's own storage (about 150 bytes each, so a session a day is roughly 55 KB a year), independent of how long the recorder keeps history. The `dynamic_car_charger.get_sessions` action returns them, oldest first, with `started`, `ended`, `energy_kwh`, `cost`, `cost_complete` and `currency`, plus the `running` session if one is active. Sessions that charged nothing are left out.
 
 ## Planning and execution
 

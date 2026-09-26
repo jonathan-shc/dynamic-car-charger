@@ -220,6 +220,16 @@
           "description": "Charge immediately until the target is reached, ignoring prices."
         }
       }
+    },
+    "get_sessions": {
+      "name": "Get charging sessions",
+      "description": "Returns every finished charging session with its start, end, energy and cost, and the session that is running now.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Charger",
+          "description": "The Dynamic Car Charger entry. Can be left out when only one is set up."
+        }
+      }
     }
   },
   "exceptions": {

@@ -32,3 +32,9 @@ set_session:
     charge_now:
       selector:
         boolean:
+get_sessions:
+  fields:
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: dynamic_car_charger

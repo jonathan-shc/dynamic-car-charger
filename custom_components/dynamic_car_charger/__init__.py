@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt as dt_util
 
 from .config_flow import migrate_settings
-from .const import DOMAIN, PLATFORMS, SERVICE_SET_SESSION
+from .const import DOMAIN, PLATFORMS, SERVICE_GET_SESSIONS, SERVICE_SET_SESSION
 from .coordinator import ChargerCoordinator
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
@@ -50,6 +50,19 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         await coordinator.async_change(**changes)
 
     hass.services.async_register(DOMAIN, SERVICE_SET_SESSION, set_session, SET_SESSION_SCHEMA)
+
+    async def get_sessions(call: ServiceCall) -> ServiceResponse:
+        """Every finished charging session, oldest first, and the running one."""
+        coordinator = _coordinator_for(hass, call.data.get("config_entry_id"))
+        return coordinator.sessions_response()
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_GET_SESSIONS,
+        get_sessions,
+        vol.Schema({vol.Optional("config_entry_id"): cv.string}),
+        supports_response=SupportsResponse.ONLY,
+    )
     return True
 
 

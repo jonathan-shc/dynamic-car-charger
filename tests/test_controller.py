@@ -702,6 +702,46 @@ async def test_session_cost_accounts_measured_energy(rig):
     assert c.session["active"] is False
     assert c.session["ended"] is not None
     assert c.session["energy_kwh"] == pytest.approx(0.1, abs=0.001)
+    # The finished session is kept in the log, once, and saved with the rest.
+    await c.async_reconcile()
+    assert len(c.session_log) == 1
+    logged = c.session_log[0]
+    assert logged["energy_kwh"] == pytest.approx(0.1, abs=0.001)
+    assert logged["cost"] == pytest.approx(0.01, abs=0.0001)
+    assert logged["ended"] == c.session["ended"]
+    assert c._save_data()["session_log"] == c.session_log
+    assert c.sessions_response() == {"sessions": c.session_log, "running": None}
+
+
+async def test_get_sessions_service_returns_the_log(rig):
+    hass, c, _ = rig
+    from custom_components.dynamic_car_charger import async_setup
+
+    c.session_log = [
+        {
+            "started": "2026-09-25T11:00:00+00:00",
+            "ended": "2026-09-26T11:26:00+00:00",
+            "energy_kwh": 22.0,
+            "cost": 3.9,
+            "cost_complete": True,
+            "currency": "EUR",
+        }
+    ]
+    await async_setup(hass, {})
+    with patch("custom_components.dynamic_car_charger._coordinator_for", return_value=c):
+        answer = await hass.services.async_call(
+            "dynamic_car_charger", "get_sessions", {}, blocking=True, return_response=True
+        )
+    assert answer["sessions"][0]["energy_kwh"] == 22.0
+    assert answer["running"] is None
+
+
+async def test_sessions_that_charged_nothing_are_not_logged(rig):
+    _, c, _ = rig
+    c._log_session(
+        {"started": "2026-09-25T11:00:00+00:00", "ended": None, "energy_kwh": 0.0, "cost_eur": 0.0}
+    )
+    assert c.session_log == []
 
 
 async def test_session_without_price_marks_cost_incomplete(rig):

@@ -76,6 +76,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.currency = "EUR"
         self.deadline: datetime | None = None
         self.session: dict[str, Any] | None = None
+        # Every finished session, oldest first: about 150 bytes each, kept for good.
+        self.session_log: list[dict[str, Any]] = []
         self.use_forecast = False
         # Settings from before the bidding zone existed follow Home Assistant's country.
         bidding_zone = self.settings.get("bidding_zone") or zone_for_location(
@@ -139,6 +141,10 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._taper_learned[float(start)] = [number(weighted, 0), number(points, 0)]
         self._credit_kwh = number(saved.get("credit_kwh", 0), 0)
         self.session = saved.get("session")
+        self.session_log = list(saved.get("session_log") or [])
+        # The last session from before the log existed isn't lost.
+        if self.session and not self.session.get("active") and not self.session_log:
+            self._log_session(self.session)
         self.use_forecast = bool(saved.get("use_forecast", False))
         # Keep a live threshold change across restarts, unless the configured
         # threshold was changed in the options since it was saved.
@@ -254,6 +260,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "max_price_eur_kwh": self.settings.get("max_price_eur_kwh"),
             "configured_max_price_eur_kwh": self._configured_max_price,
             "session": self.session,
+            "session_log": self.session_log,
             "use_forecast": self.use_forecast,
             "energy_goal": self.energy_goal,
             "delivered_kwh": self._delivered_kwh,
@@ -809,6 +816,37 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not control_enabled or plan_status in SESSION_END_STATUSES:
             session["active"] = False
             session["ended"] = now.isoformat()
+            self._log_session(session)
+
+    def _log_session(self, session: dict[str, Any]) -> None:
+        """Keep a finished session; one that charged nothing isn't worth keeping."""
+        if session.get("energy_kwh", 0) < 0.05:
+            return
+        if any(entry["started"] == session["started"] for entry in self.session_log):
+            return
+        self.session_log.append(
+            {
+                "started": session["started"],
+                "ended": session.get("ended"),
+                "energy_kwh": round(session["energy_kwh"], 3),
+                "cost": round(session["cost_eur"], 4),
+                "cost_complete": session.get("cost_complete", True),
+                "currency": self.currency,
+            }
+        )
+
+    def sessions_response(self) -> dict[str, Any]:
+        """For the get_sessions action: the log, and the running session if any."""
+        running = None
+        if self.session and self.session.get("active"):
+            running = {
+                "started": self.session["started"],
+                "energy_kwh": round(self.session["energy_kwh"], 3),
+                "cost": round(self.session["cost_eur"], 4),
+                "cost_complete": self.session.get("cost_complete", True),
+                "currency": self.currency,
+            }
+        return {"sessions": list(self.session_log), "running": running}
 
     def _update_repair_issue(
         self, now: datetime, data: dict[str, Any], control_enabled: bool
