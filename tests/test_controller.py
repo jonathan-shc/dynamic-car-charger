@@ -1222,3 +1222,83 @@ async def test_plan_reports_the_charging_speed(rig):
     speed = c.data["charging_speed"]
     assert speed["98"] == 2.0  # the default until learned
     assert c.data["charging_speed_learned"] == []
+
+
+def refuse_turn_off(hass, calls):
+    """A charger that answers every pause with an API error, like a Wallbox
+    that has nothing to pause."""
+
+    async def refuse(call):
+        calls.append("refused")
+        raise HomeAssistantError("Error communicating with Wallbox API")
+
+    hass.services.async_remove("switch", "turn_off")
+    hass.services.async_register("switch", "turn_off", refuse)
+
+
+async def test_idle_charger_refusing_pause_is_not_an_error(rig):
+    hass, c, calls = rig
+    await c.async_change(enabled=True)
+    assert calls == ["turn_on"]
+    refuse_turn_off(hass, calls)
+    # The car is full and draws nothing; the plan stops.
+    hass.states.async_set("sensor.battery", "30", {"unit_of_measurement": "%"})
+    await c.async_reconcile()
+    assert calls == ["turn_on", "refused"]
+    assert c.data["status"] == "target_reached"
+    assert c.data["error"] is None
+    # No retries while nothing flows, and still no error after 5 minutes.
+    c._command_time -= timedelta(minutes=6)
+    c._command_attempt_time -= timedelta(minutes=6)
+    await c.async_reconcile()
+    assert calls == ["turn_on", "refused"]
+    assert c.data["status"] == "target_reached"
+
+
+async def test_refused_pause_while_power_flows_is_an_error(rig):
+    hass, c, calls = rig
+    await c.async_change(enabled=True)
+    refuse_turn_off(hass, calls)
+    hass.states.async_set("sensor.charging_power", "7", {"unit_of_measurement": "kW"})
+    hass.states.async_set("sensor.battery", "30", {"unit_of_measurement": "%"})
+    await c.async_reconcile()
+    assert c.data["status"] == "control_error"
+    assert "did not accept off" in c.data["error"]
+
+
+async def test_lock_waits_until_the_charger_has_stopped(rig):
+    hass, c, calls = rig
+    lock_calls = await charging_with_lock(rig)
+
+    async def ignore(call):
+        calls.append("ignored")  # accepted, but the switch stays on
+
+    hass.services.async_remove("switch", "turn_off")
+    hass.services.async_register("switch", "turn_off", ignore)
+    hass.states.async_set("sensor.charging_power", "7", {"unit_of_measurement": "kW"})
+    hass.states.async_set("sensor.battery", "30", {"unit_of_measurement": "%"})
+    await c.async_reconcile()
+    assert lock_calls == ["unlock"]  # still charging: a lock could block the pause
+
+    hass.states.async_set("sensor.charging_power", "0", {"unit_of_measurement": "kW"})
+    await c.async_reconcile()
+    assert lock_calls == ["unlock", "lock"]
+
+
+async def test_lock_anyway_when_the_charger_never_stops(rig):
+    hass, c, calls = rig
+    lock_calls = await charging_with_lock(rig)
+
+    async def ignore(call):
+        calls.append("ignored")
+
+    hass.services.async_remove("switch", "turn_off")
+    hass.services.async_register("switch", "turn_off", ignore)
+    hass.states.async_set("sensor.charging_power", "7", {"unit_of_measurement": "kW"})
+    hass.states.async_set("sensor.battery", "30", {"unit_of_measurement": "%"})
+    await c.async_reconcile()
+    assert lock_calls == ["unlock"]
+    c._lock_pending_since -= timedelta(minutes=6)
+    hass.states.async_set("sensor.charging_power", "7.1", {"unit_of_measurement": "kW"})
+    await c.async_reconcile()
+    assert lock_calls == ["unlock", "lock"]  # locked, it can't charge either

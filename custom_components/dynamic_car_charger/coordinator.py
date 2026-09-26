@@ -48,6 +48,8 @@ REPAIR_DELAY = timedelta(minutes=30)
 # How often the price forecast checks for new prices and weather forecasts.
 FORECAST_INTERVAL = timedelta(minutes=15)
 SESSION_END_STATUSES = ("set_deadline", "target_reached", "deadline_passed")
+# Below this measured power the charger counts as not charging.
+IDLE_POWER_KW = 0.1
 PENDING_STATUSES = ("unlocking_charger", "starting_charge", "stopping_charge")
 
 
@@ -102,6 +104,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._charge_requested = False
         self._lock_pending = False
         self._lock_attempt_time: datetime | None = None
+        self._lock_pending_since: datetime | None = None
         self._stopped_by_user = False
         self._active_charge_until: datetime | None = None
         self._active_plan_context: tuple | None = None
@@ -849,11 +852,17 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return None
         if actual not in ("on", "off"):
             return "waiting_for_car" if desired else None
-
         if self._command != desired:
             self._command = desired
             self._command_time = now
             self._command_attempt_time = None
+        # Some chargers (Wallbox) refuse to pause while the car draws nothing,
+        # e.g. when it is full, and keep showing the switch as on. After one
+        # attempt, don't insist and don't report it: nothing flows. Once power
+        # flows again, the pause is sent (and checked) as usual.
+        idle_stop = not desired and not force and self._charger_idle()
+        if idle_stop and self._command_attempt_time is not None:
+            return None
 
         pending = "starting_charge" if desired else "stopping_charge"
         # After the confirmation timeout the command is reported as an error,
@@ -875,6 +884,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "switch", f"turn_{wanted}", {"entity_id": entity_id}, blocking=True
                 )
         except (HomeAssistantError, TimeoutError):
+            if idle_stop:
+                return None
             return f"Charger did not accept {wanted}; will retry"
         return pending
 
@@ -908,6 +919,14 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 return "Charger did not accept unlock; will retry"
         return pending
 
+    def _charger_idle(self) -> bool:
+        """The latest fresh power reading shows no charging."""
+        return (
+            not self._power_report_old
+            and self._sample_time is not None
+            and (self._sample_power < IDLE_POWER_KW)
+        )
+
     async def _update_lock(self, now: datetime, requested: bool) -> None:
         """Lock the charger once when the plan stops charging.
 
@@ -923,8 +942,16 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
         if stopped:
             self._lock_pending = True
+            self._lock_pending_since = now
             self._lock_attempt_time = None
         if not self._lock_pending:
+            return
+        # Lock once the charger has stopped: a locked charger may refuse the
+        # pause. If it never confirms, lock anyway: locked, it can't charge.
+        charger = self.hass.states.get(self.settings["charger_entity"])
+        stopped_charging = charger is None or charger.state != "on" or self._charger_idle()
+        waited = now - (self._lock_pending_since or now) >= CONFIRM_TIMEOUT
+        if not stopped_charging and not waited:
             return
         entity_id = self.settings["lock_entity"]
         state = self.hass.states.get(entity_id)
