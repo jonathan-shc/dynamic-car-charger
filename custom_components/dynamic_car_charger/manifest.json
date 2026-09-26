@@ -1,6 +1,7 @@
 {
   "domain": "dynamic_car_charger",
   "name": "Dynamic Car Charger",
+  "after_dependencies": ["recorder"],
   "codeowners": [
     "@jonathan-shc"
   ],
@@ -11,5 +12,5 @@
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/jonathan-shc/dynamic-car-charger/issues",
   "requirements": ["numpy>=1.26.0"],
-  "version": "0.8.0"
+  "version": "0.9.0"
 }

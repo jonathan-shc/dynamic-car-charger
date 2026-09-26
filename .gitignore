@@ -6,4 +6,4 @@ __pycache__/
 .DS_Store
 tools/backtest/data/
 .env
-tools/backtest/results/sessions.csv
+tools/backtest/results/**/sessions.csv

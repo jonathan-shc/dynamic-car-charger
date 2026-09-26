@@ -1,7 +1,7 @@
 # Live Activity for iOS 17.2+ and Home Assistant Core 2026.7+.
 # Replace the notify action if your mobile app uses a different device name.
 alias: Dynamic Car Charger - iPhone Live Activity
-description: Show B05 charging progress on the Lock Screen and Dynamic Island
+description: Show charging progress on the Lock Screen and Dynamic Island
 mode: single
 
 triggers:
@@ -71,31 +71,31 @@ actions:
                   {% endif %}
                 {% endfor %}
                 {% if states(plan) == 'charging_overtime' %}
-                  Uitloop tot {{ as_timestamp(
+                  Extended until {{ as_timestamp(
                   state_attr(plan, 'deadline_extension_until'), 0) |
                   timestamp_custom('%H:%M', true) }}
                 {% elif ns.current_end is not none %}
-                  Nu tot {{ ns.current_end |
+                  Now until {{ ns.current_end |
                   timestamp_custom('%H:%M', true) }}
-                  {%- if ns.next_start is not none %} · daarna {{ ns.next_start |
+                  {%- if ns.next_start is not none %} · then {{ ns.next_start |
                   timestamp_custom('%H:%M', true) }}{% endif %}
                 {% elif ns.next_start is not none %}
-                  Volgende {{ ns.next_start |
+                  Next {{ ns.next_start |
                   timestamp_custom('%d-%m %H:%M', true) }}
                 {% else %}
-                  Laadplan wordt bijgewerkt
+                  Updating the charging plan
                 {% endif %}
-          - action: notify.mobile_app_iphone_van_jonathan_18_pro
+          - action: notify.mobile_app_REPLACE_WITH_YOUR_IPHONE
             data:
-              title: B05 wordt geladen
+              title: Car charging
               message: >-
                 {{ current_soc }}% → {{ target_soc }}% · {{ plan_summary }} ·
                 {% if estimated_cost not in [none, 'None', 'unknown',
-                'unavailable', ''] %}geschat €{{ '%.2f' |
-                format(estimated_cost | float(0)) }}{% else %}kosten worden
-                berekend{% endif %}
+                'unavailable', ''] %}est. €{{ '%.2f' |
+                format(estimated_cost | float(0)) }}{% else %}calculating
+                cost{% endif %}
               data:
-                tag: b05_charging
+                tag: car_charging
                 live_update: true
                 silent: "{{ trigger.id != 'start' }}"
                 alert_once: true
@@ -107,14 +107,14 @@ actions:
                 progress_bar_color: "#03A9F4"
                 background_color: "#101820"
                 text_color: "#FFFFFF"
-                url: /dashboard-dashboard/leapmotor-b05
+                url: /lovelace/REPLACE_WITH_YOUR_DASHBOARD
 
       - conditions:
           - condition: template
             value_template: "{{ trigger.id == 'stop' }}"
         sequence:
-          - action: notify.mobile_app_iphone_van_jonathan_18_pro
+          - action: notify.mobile_app_REPLACE_WITH_YOUR_IPHONE
             data:
               message: clear_notification
               data:
-                tag: b05_charging
+                tag: car_charging

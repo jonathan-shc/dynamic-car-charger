@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from homeassistant.core import HomeAssistant, State
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 
 from custom_components.dynamic_car_charger.config_flow import (
@@ -20,6 +21,7 @@ from custom_components.dynamic_car_charger.coordinator import ChargerCoordinator
 from custom_components.dynamic_car_charger.forecaster import ForecastUnavailable
 from custom_components.dynamic_car_charger.planner import Slot, make_plan
 from custom_components.dynamic_car_charger.price_forecast import Calibration
+from custom_components.dynamic_car_charger.zones import zone
 
 
 @pytest.fixture
@@ -27,10 +29,10 @@ async def rig(tmp_path):
     hass = HomeAssistant(str(tmp_path))
     settings = dict(
         DEFAULTS,
-        charger_entity="switch.wallbox",
+        charger_entity="switch.charger",
         soc_entity="sensor.battery",
-        price_entity="sensor.nextenergy",
-        power_entity="sensor.wallbox_power",
+        price_entity="sensor.electricity_price",
+        power_entity="sensor.charging_power",
         capacity_kwh=50.0,
         power_kw=10.0,
         efficiency=1.0,
@@ -48,16 +50,16 @@ async def rig(tmp_path):
 
     async def command(call):
         calls.append(call.service)
-        hass.states.async_set("switch.wallbox", "on" if call.service == "turn_on" else "off")
+        hass.states.async_set("switch.charger", "on" if call.service == "turn_on" else "off")
 
     hass.services.async_register("switch", "turn_on", command)
     hass.services.async_register("switch", "turn_off", command)
-    hass.states.async_set("switch.wallbox", "off")
+    hass.states.async_set("switch.charger", "off")
     hass.states.async_set("sensor.battery", "20", {"unit_of_measurement": "%"})
-    hass.states.async_set("sensor.wallbox_power", "0", {"unit_of_measurement": "kW"})
+    hass.states.async_set("sensor.charging_power", "0", {"unit_of_measurement": "kW"})
     now = dt_util.utcnow()
     hass.states.async_set(
-        "sensor.nextenergy",
+        "sensor.electricity_price",
         ".1",
         {
             "unit_of_measurement": "EUR/kWh",
@@ -119,8 +121,9 @@ async def test_estimated_target_waits_for_measured_soc(rig):
     assert c._active_charge_until is not None
 
     # The power integration estimates that enough energy has been delivered,
-    # but the car itself still reports 99%. Charging must continue.
-    c._credit_kwh = 0.5
+    # but the car itself still reports 99%. Charging must continue. (The last
+    # 2% counts as twice as slow by default: 1% of 50 kWh takes 1 kWh.)
+    c._credit_kwh = 1.0
     await c.async_reconcile()
     assert c.data["status"] == "awaiting_soc_confirmation"
     assert c.data["charging_requested"] is True
@@ -156,18 +159,19 @@ async def test_immediate_charging_works_without_automatic_mode(rig):
     assert calls[-1] == "turn_off"
 
 
-async def test_wallbox_status_fires_connected_event(rig):
+async def test_charger_status_fires_connected_event(rig):
     hass, c, _ = rig
-    c.settings["status_entity"] = "sensor.wallbox_status"
+    c.settings["connected_entity"] = "sensor.charger_status"
+    c.settings["connected_states"] = ["Locked, car connected"]
     received = []
     hass.bus.async_listen(EVENT_CAR_CONNECTED, received.append)
 
     c._changed(
         SimpleNamespace(
             data={
-                "entity_id": "sensor.wallbox_status",
-                "old_state": State("sensor.wallbox_status", "Locked"),
-                "new_state": State("sensor.wallbox_status", "Locked, car connected"),
+                "entity_id": "sensor.charger_status",
+                "old_state": State("sensor.charger_status", "Locked"),
+                "new_state": State("sensor.charger_status", "Locked, car connected"),
             }
         )
     )
@@ -177,15 +181,15 @@ async def test_wallbox_status_fires_connected_event(rig):
     assert received[0].data["status"] == "Locked, car connected"
 
 
-async def test_charging_unlocks_wallbox_before_resume(rig):
+async def test_charging_unlocks_charger_before_resume(rig):
     hass, c, calls = rig
-    c.settings["lock_entity"] = "lock.wallbox"
-    hass.states.async_set("lock.wallbox", "locked")
+    c.settings["lock_entity"] = "lock.charger"
+    hass.states.async_set("lock.charger", "locked")
     lock_calls = []
 
     async def unlock(call):
         lock_calls.append(call.service)
-        hass.states.async_set("lock.wallbox", "unlocked")
+        hass.states.async_set("lock.charger", "unlocked")
 
     hass.services.async_register("lock", "unlock", unlock)
     await c.async_change(enabled=True)
@@ -198,50 +202,94 @@ async def test_charging_unlocks_wallbox_before_resume(rig):
     assert calls == ["turn_on"]
 
 
-async def test_driving_locks_wallbox(rig):
-    hass, c, _ = rig
-    c.settings["lock_entity"] = "lock.wallbox"
-    c.settings["vehicle_state_entity"] = "sensor.leapmotor_state"
-    hass.states.async_set("lock.wallbox", "unlocked")
+async def charging_with_lock(rig):
+    """Charging with a charger lock; returns the lock calls."""
+    hass, c, calls = rig
+    c.settings["lock_entity"] = "lock.charger"
+    hass.states.async_set("lock.charger", "locked")
     lock_calls = []
 
     async def lock(call):
         lock_calls.append(call.service)
-        hass.states.async_set("lock.wallbox", "locked")
+        hass.states.async_set("lock.charger", "locked" if call.service == "lock" else "unlocked")
 
     hass.services.async_register("lock", "lock", lock)
-    c._changed(
-        SimpleNamespace(
-            data={
-                "entity_id": "sensor.leapmotor_state",
-                "old_state": State("sensor.leapmotor_state", "Parked"),
-                "new_state": State("sensor.leapmotor_state", "Driving"),
-            }
-        )
-    )
-    await hass.async_block_till_done()
-
-    assert lock_calls == ["lock"]
-    assert hass.states.get("lock.wallbox").state == "locked"
-
-
-async def test_driving_prevents_wallbox_from_being_unlocked(rig):
-    hass, c, calls = rig
-    c.settings["lock_entity"] = "lock.wallbox"
-    c.settings["vehicle_state_entity"] = "sensor.leapmotor_state"
-    hass.states.async_set("lock.wallbox", "locked")
-    hass.states.async_set("sensor.leapmotor_state", "Driving")
-    unlock_calls = []
-
-    async def unlock(call):
-        unlock_calls.append(call.service)
-
-    hass.services.async_register("lock", "unlock", unlock)
+    hass.services.async_register("lock", "unlock", lock)
     await c.async_change(enabled=True)
+    await c.async_reconcile()
+    assert calls == ["turn_on"]
+    assert lock_calls == ["unlock"]
+    return lock_calls
 
-    assert unlock_calls == []
-    assert calls == []
+
+async def test_plan_stop_locks_charger(rig):
+    hass, c, calls = rig
+    lock_calls = await charging_with_lock(rig)
+    hass.states.async_set("sensor.battery", "30", {"unit_of_measurement": "%"})
+    await c.async_reconcile()
+
+    assert calls[-1] == "turn_off"
+    assert lock_calls == ["unlock", "lock"]
+    assert hass.states.get("lock.charger").state == "locked"
+
+
+async def test_charger_unlocked_by_hand_while_idle_stays_unlocked(rig):
+    hass, c, _ = rig
+    lock_calls = await charging_with_lock(rig)
+    hass.states.async_set("sensor.battery", "30", {"unit_of_measurement": "%"})
+    await c.async_reconcile()
+    hass.states.async_set("lock.charger", "unlocked")
+    await c.async_reconcile()
+    await c.async_reconcile()
+
+    assert lock_calls == ["unlock", "lock"]
+    assert hass.states.get("lock.charger").state == "unlocked"
+
+
+async def test_switching_off_by_hand_leaves_the_lock_alone(rig):
+    hass, c, calls = rig
+    lock_calls = await charging_with_lock(rig)
+    await c.async_change(enabled=False)
+
+    assert calls[-1] == "turn_off"
+    assert lock_calls == ["unlock"]
+    assert hass.states.get("lock.charger").state == "unlocked"
+
+
+async def test_waiting_for_the_car_does_not_lock(rig):
+    hass, c, _ = rig
+    lock_calls = await charging_with_lock(rig)
+    hass.states.async_set("switch.charger", "unavailable")
+    await c.async_reconcile()
+
     assert c.data["status"] == "waiting_for_car"
+    assert lock_calls == ["unlock"]
+
+
+async def test_failed_lock_is_retried(rig):
+    hass, c, _ = rig
+    lock_calls = await charging_with_lock(rig)
+    attempts = []
+
+    async def failing(call):
+        attempts.append(call.service)
+        raise HomeAssistantError("offline")
+
+    hass.services.async_remove("lock", "lock")
+    hass.services.async_register("lock", "lock", failing)
+    hass.states.async_set("sensor.battery", "30", {"unit_of_measurement": "%"})
+    await c.async_reconcile()
+    assert attempts == ["lock"]
+
+    async def working(call):
+        hass.states.async_set("lock.charger", "locked")
+
+    hass.services.async_remove("lock", "lock")
+    hass.services.async_register("lock", "lock", working)
+    c._lock_attempt_time -= timedelta(minutes=10)
+    await c.async_reconcile()
+    assert hass.states.get("lock.charger").state == "locked"
+    assert lock_calls == ["unlock"]
 
 
 async def test_missing_soc_pauses_and_recovers(rig):
@@ -333,11 +381,28 @@ async def test_failed_disable_keeps_retrying(rig):
         raise HomeAssistantError("offline")
 
     hass.services.async_register("switch", "turn_off", broken)
+    # Power still flows, so the pause is retried until the charger accepts it.
+    hass.states.async_set("sensor.charging_power", "7", {"unit_of_measurement": "kW"})
     await c.async_change(enabled=False)
     assert c._pending_stop
     c._command_attempt_time -= timedelta(seconds=121)
     await c.async_reconcile()
     assert calls[-2:] == ["failed_stop", "failed_stop"]
+
+
+async def test_disable_on_an_idle_charger_keeps_watching(rig):
+    hass, c, calls = rig
+    await c.async_change(enabled=True)
+    refuse_turn_off(hass, calls)
+    await c.async_change(enabled=False)
+    await c.async_reconcile()
+    assert c.data["status"] != "control_error"
+    # Still pending: if the car starts drawing power, it is paused then.
+    assert c._pending_stop
+    hass.states.async_set("sensor.charging_power", "7", {"unit_of_measurement": "kW"})
+    c._command_attempt_time -= timedelta(seconds=121)
+    await c.async_reconcile()
+    assert calls.count("refused") == 2
 
 
 async def test_measured_power_credits_energy_between_soc_changes(rig):
@@ -393,9 +458,9 @@ async def test_config_schema_and_units(rig):
     assert schema(c.settings)(c.settings)["power_kw"] == 10
     assert validate(hass, c.settings) == {}
     # Cents and other currencies per kWh are accepted; other units are not.
-    hass.states.async_set("sensor.nextenergy", "12", {"unit_of_measurement": "ct/kWh"})
+    hass.states.async_set("sensor.electricity_price", "12", {"unit_of_measurement": "ct/kWh"})
     assert validate(hass, c.settings) == {}
-    hass.states.async_set("sensor.nextenergy", "120", {"unit_of_measurement": "EUR/MWh"})
+    hass.states.async_set("sensor.electricity_price", "120", {"unit_of_measurement": "EUR/MWh"})
     assert validate(hass, c.settings) == {"price_entity": "price_unit"}
 
 
@@ -417,7 +482,7 @@ async def test_delayed_start_is_pending_before_it_is_an_error(rig):
     assert c.data["status"] == "starting_charge"
     assert calls == ["turn_on"]
 
-    hass.states.async_set("switch.wallbox", "on")
+    hass.states.async_set("switch.charger", "on")
     await c.async_reconcile()
     assert c.data["status"] == "charging"
 
@@ -441,7 +506,7 @@ async def test_unconfirmed_start_becomes_error_but_keeps_retrying(rig):
     assert calls == ["turn_on", "turn_on"]
     assert c.data["status"] == "control_error"
 
-    hass.states.async_set("switch.wallbox", "on")
+    hass.states.async_set("switch.charger", "on")
     await c.async_reconcile()
     assert c.data["status"] == "charging"
     assert c.data["error"] is None
@@ -455,7 +520,7 @@ async def test_new_prices_may_interrupt_active_run(rig):
 
     now = dt_util.utcnow()
     hass.states.async_set(
-        "sensor.nextenergy",
+        "sensor.electricity_price",
         ".1",
         {
             "unit_of_measurement": "EUR/kWh",
@@ -487,7 +552,7 @@ async def test_adjacent_price_slots_do_not_restart_charging(rig):
     boundary = before + timedelta(minutes=1)
     c.deadline = boundary + timedelta(hours=1)
     hass.states.async_set(
-        "sensor.nextenergy",
+        "sensor.electricity_price",
         ".1",
         {
             "unit_of_measurement": "EUR/kWh",
@@ -526,7 +591,7 @@ async def test_deadline_change_may_interrupt_active_run(rig):
     hass, c, calls = rig
     now = dt_util.utcnow()
     hass.states.async_set(
-        "sensor.nextenergy",
+        "sensor.electricity_price",
         ".1",
         {
             "unit_of_measurement": "EUR/kWh",
@@ -565,7 +630,7 @@ async def test_soc_confirmation_charges_at_most_30_minutes_past_estimate(rig):
     c.target = 100
     hass.states.async_set("sensor.battery", "99", {"unit_of_measurement": "%"})
     await c.async_change(enabled=True)
-    c._credit_kwh = 0.5
+    c._credit_kwh = 1.0
     await c.async_reconcile()
     assert c.data["status"] == "awaiting_soc_confirmation"
     assert c.data["charging_requested"] is True
@@ -598,8 +663,8 @@ async def test_old_battery_report_is_flagged_but_does_not_stop_the_plan(rig):
 
 async def test_unconfirmed_unlock_becomes_error_but_keeps_retrying(rig):
     hass, c, calls = rig
-    c.settings["lock_entity"] = "lock.wallbox"
-    hass.states.async_set("lock.wallbox", "locked")
+    c.settings["lock_entity"] = "lock.charger"
+    hass.states.async_set("lock.charger", "locked")
     unlock_calls = []
 
     async def unlock(call):
@@ -615,7 +680,7 @@ async def test_unconfirmed_unlock_becomes_error_but_keeps_retrying(rig):
     assert unlock_calls == ["unlock", "unlock"]
     assert c.data["status"] == "control_error"
 
-    hass.states.async_set("lock.wallbox", "unlocked")
+    hass.states.async_set("lock.charger", "unlocked")
     await c.async_reconcile()
     assert calls == ["turn_on"]
 
@@ -637,12 +702,52 @@ async def test_session_cost_accounts_measured_energy(rig):
     assert c.session["active"] is False
     assert c.session["ended"] is not None
     assert c.session["energy_kwh"] == pytest.approx(0.1, abs=0.001)
+    # The finished session is kept in the log, once, and saved with the rest.
+    await c.async_reconcile()
+    assert len(c.session_log) == 1
+    logged = c.session_log[0]
+    assert logged["energy_kwh"] == pytest.approx(0.1, abs=0.001)
+    assert logged["cost"] == pytest.approx(0.01, abs=0.0001)
+    assert logged["ended"] == c.session["ended"]
+    assert c._save_data()["session_log"] == c.session_log
+    assert c.sessions_response() == {"sessions": c.session_log, "running": None}
+
+
+async def test_get_sessions_service_returns_the_log(rig):
+    hass, c, _ = rig
+    from custom_components.dynamic_car_charger import async_setup
+
+    c.session_log = [
+        {
+            "started": "2026-09-25T11:00:00+00:00",
+            "ended": "2026-09-26T11:26:00+00:00",
+            "energy_kwh": 22.0,
+            "cost": 3.9,
+            "cost_complete": True,
+            "currency": "EUR",
+        }
+    ]
+    await async_setup(hass, {})
+    with patch("custom_components.dynamic_car_charger._coordinator_for", return_value=c):
+        answer = await hass.services.async_call(
+            "dynamic_car_charger", "get_sessions", {}, blocking=True, return_response=True
+        )
+    assert answer["sessions"][0]["energy_kwh"] == 22.0
+    assert answer["running"] is None
+
+
+async def test_sessions_that_charged_nothing_are_not_logged(rig):
+    _, c, _ = rig
+    c._log_session(
+        {"started": "2026-09-25T11:00:00+00:00", "ended": None, "energy_kwh": 0.0, "cost_eur": 0.0}
+    )
+    assert c.session_log == []
 
 
 async def test_session_without_price_marks_cost_incomplete(rig):
     hass, c, _ = rig
     await c.async_change(immediate_charging=True)
-    hass.states.async_set("sensor.nextenergy", "unavailable")
+    hass.states.async_set("sensor.electricity_price", "unavailable")
     c._sample_time = dt_util.utcnow() - timedelta(seconds=36)
     c._sample_power = 10
     await c.async_reconcile()
@@ -723,9 +828,9 @@ async def test_deadline_preset_keeps_local_time_across_dst_change(rig):
 
 async def test_options_flow_updates_unique_id_for_new_charger(rig):
     hass, c, _ = rig
-    hass.states.async_set("switch.other_wallbox", "off")
+    hass.states.async_set("switch.other_charger", "off")
     entry = SimpleNamespace(
-        entry_id="test", unique_id="switch.wallbox", data=c.settings, options={}
+        entry_id="test", unique_id="switch.charger", data=c.settings, options={}
     )
     config_entries = SimpleNamespace(
         async_entries=lambda domain: [entry], async_update_entry=Mock()
@@ -736,11 +841,29 @@ async def test_options_flow_updates_unique_id_for_new_charger(rig):
 
     flow = Flow()
     flow.hass = SimpleNamespace(states=hass.states, config_entries=config_entries)
-    result = await flow.async_step_init({**c.settings, "charger_entity": "switch.other_wallbox"})
+    result = await flow.async_step_init({**c.settings, "charger_entity": "switch.other_charger"})
     assert result["type"] == "create_entry"
     config_entries.async_update_entry.assert_called_once_with(
-        entry, unique_id="switch.other_wallbox"
+        entry, unique_id="switch.other_charger"
     )
+
+
+def test_bidding_zone_defaults_to_home_but_keeps_a_choice():
+    fields = {str(key): key for key in schema({}, "be").schema}
+    assert fields["bidding_zone"].default() == "be"
+    fields = {str(key): key for key in schema({"bidding_zone": "fr"}, "be").schema}
+    assert fields["bidding_zone"].default() == "fr"
+
+
+async def test_coordinator_without_zone_setting_uses_home_country(rig):
+    hass, c, _ = rig
+    hass.config.country, hass.config.latitude, hass.config.longitude = "SE", 55.6, 13.0
+    settings = {**c.entry.data}
+    settings.pop("bidding_zone", None)
+    entry = SimpleNamespace(**{**vars(c.entry), "data": settings})
+    assert ChargerCoordinator(hass, entry).forecaster.zone.code == "SE4"
+    entry = SimpleNamespace(**{**vars(c.entry), "data": {**settings, "bidding_zone": "nl"}})
+    assert ChargerCoordinator(hass, entry).forecaster.zone.code == "NL"
 
 
 def test_interval_default_accepts_stored_numbers():
@@ -752,7 +875,8 @@ def test_interval_default_accepts_stored_numbers():
 class FakeForecaster:
     """Stands in for PriceForecaster without network access."""
 
-    def __init__(self, hass=None, slots=(), error=None):
+    def __init__(self, hass=None, slots=(), error=None, bidding_zone=None):
+        self.zone = zone(bidding_zone)
         self.status = "ready"
         self.error = None
         self.model = None
@@ -763,7 +887,7 @@ class FakeForecaster:
         self.fail = error
         self.async_update = AsyncMock()
 
-    def estimate(self, known, deadline):
+    def estimate(self, known, deadline, currency="EUR"):
         if self.fail:
             raise ForecastUnavailable(self.fail)
         return self.slots, Calibration(1.21, 0.1327, 48)
@@ -901,20 +1025,22 @@ async def test_plan_shows_setup_and_prices_for_apps(rig):
     hass, c, _ = rig
     await c.async_reconcile()
     setup = c.data["setup"]
-    assert setup["charger_entity"] == "switch.wallbox"
+    assert setup["charger_entity"] == "switch.charger"
     assert setup["soc_entity"] == "sensor.battery"
-    assert setup["status_entity"] is None
+    assert setup["connected_entity"] is None
+    assert c.data["car_connected"] is None
     assert setup["power_kw"] == 10.0
+    assert setup["bidding_zone"] == "nl"
     assert [row["price"] for row in c.data["prices"]] == [0.1, 0.3]
     assert {"start", "end", "price"} <= set(c.data["prices"][0])
 
 
 async def test_plan_prices_are_empty_when_the_price_sensor_is_unusable(rig):
     hass, c, _ = rig
-    hass.states.async_set("sensor.nextenergy", "unavailable")
+    hass.states.async_set("sensor.electricity_price", "unavailable")
     await c.async_reconcile()
     assert c.data["prices"] == []
-    assert c.data["setup"]["price_entity"] == "sensor.nextenergy"
+    assert c.data["setup"]["price_entity"] == "sensor.electricity_price"
 
 
 def _energy_mode(c):
@@ -946,7 +1072,7 @@ async def test_energy_mode_charges_an_amount_without_a_battery_sensor(rig):
 async def test_energy_mode_counts_delivered_energy_from_the_power_sensor(rig):
     hass, c, _ = rig
     _energy_mode(c)
-    hass.states.async_set("sensor.wallbox_power", "7200", {"unit_of_measurement": "W"})
+    hass.states.async_set("sensor.charging_power", "7200", {"unit_of_measurement": "W"})
     start = dt_util.utcnow()
     with patch(
         "custom_components.dynamic_car_charger.coordinator.dt_util.utcnow", return_value=start
@@ -1010,36 +1136,11 @@ async def test_connected_states_can_be_configured(rig):
     assert not c._is_car_connected(State("sensor.charger_state", "Available"))
 
 
-async def test_driving_binary_sensor_locks_the_charger(rig):
-    hass, c, _ = rig
-    c.settings["lock_entity"] = "lock.wallbox"
-    c.settings["vehicle_state_entity"] = "binary_sensor.car_moving"
-    hass.states.async_set("lock.wallbox", "unlocked")
-    lock_calls = []
-
-    async def lock(call):
-        lock_calls.append(call.service)
-        hass.states.async_set("lock.wallbox", "locked")
-
-    hass.services.async_register("lock", "lock", lock)
-    c._changed(
-        SimpleNamespace(
-            data={
-                "entity_id": "binary_sensor.car_moving",
-                "old_state": State("binary_sensor.car_moving", "off"),
-                "new_state": State("binary_sensor.car_moving", "on"),
-            }
-        )
-    )
-    await hass.async_block_till_done()
-    assert lock_calls == ["lock"]
-
-
 async def test_prices_in_cents_and_other_currencies(rig):
     hass, c, _ = rig
     now = dt_util.utcnow()
     hass.states.async_set(
-        "sensor.nextenergy",
+        "sensor.electricity_price",
         "10",
         {
             "unit_of_measurement": "öre/kWh",
@@ -1080,3 +1181,263 @@ async def test_energy_mode_creates_energy_entities(rig):
             hass, entry, lambda entities, added=added: added.extend(entities)
         )
         assert {entity.translation_key for entity in added} == expected
+
+
+def test_version_1_settings_become_general_fields():
+    from custom_components.dynamic_car_charger.config_flow import migrate_settings
+
+    old = {
+        "charger_entity": "switch.charger",
+        "status_entity": "sensor.charger_status",
+        "vehicle_state_entity": "sensor.car_state",
+    }
+    new = migrate_settings(old)
+    assert "status_entity" not in new
+    assert new["connected_entity"] == "sensor.charger_status"
+    # Every Wallbox state with a car plugged in, not only the locked one.
+    assert "Paused" in new["connected_states"]
+    assert "Charging" in new["connected_states"]
+    assert "Locked, car connected" in new["connected_states"]
+    assert "Ready" not in new["connected_states"]
+    assert "Locked" not in new["connected_states"]
+    # The plan decides the lock now: the vehicle state sensor is gone.
+    assert "vehicle_state_entity" not in new
+    assert "driving_states" not in migrate_settings(
+        {"vehicle_state_entity": "sensor.car_state", "driving_states": ["Driving"]}
+    )
+    # Existing general settings stay.
+    kept = migrate_settings({"status_entity": "sensor.a", "connected_entity": "binary_sensor.b"})
+    assert kept == {"connected_entity": "binary_sensor.b"}
+
+
+def test_version_3_wallbox_states_are_completed():
+    from custom_components.dynamic_car_charger.config_flow import migrate_settings
+
+    for stored in (["Locked, car connected"], "Locked, car connected", ["locked", "car connected"]):
+        new = migrate_settings({"connected_entity": "sensor.status", "connected_states": stored})
+        assert "Paused" in new["connected_states"]
+    # States chosen by the user stay as they are.
+    own = migrate_settings({"connected_entity": "sensor.s", "connected_states": ["Connected"]})
+    assert own["connected_states"] == ["Connected"]
+
+
+async def test_sensor_needs_its_states_but_binary_sensor_does_not(rig):
+    hass, c, _ = rig
+    hass.states.async_set("sensor.charger_status", "Charging")
+    hass.states.async_set("binary_sensor.car_plug", "on")
+    settings = dict(c.settings, connected_entity="sensor.charger_status")
+    assert validate(hass, settings) == {"connected_states": "states_required"}
+    settings["connected_states"] = "Charging"
+    assert validate(hass, settings) == {}
+    settings = dict(c.settings, connected_entity="binary_sensor.car_plug")
+    assert validate(hass, settings) == {}
+
+
+async def test_plan_reports_whether_a_car_is_connected(rig):
+    hass, c, _ = rig
+    c.settings["connected_entity"] = "sensor.charger_status"
+    c.settings["connected_states"] = "Charging, Paused"
+    hass.states.async_set("sensor.charger_status", "Paused")
+    await c.async_reconcile()
+    assert c.data["car_connected"] is True
+    hass.states.async_set("sensor.charger_status", "Ready")
+    await c.async_reconcile()
+    assert c.data["car_connected"] is False
+    # Without configured states a regular sensor never counts as connected.
+    c.settings["connected_states"] = ""
+    hass.states.async_set("sensor.charger_status", "Locked, car connected")
+    await c.async_reconcile()
+    assert c.data["car_connected"] is False
+
+
+async def test_learns_how_much_slower_the_last_percent_charges(rig):
+    hass, c, _ = rig
+    hass.states.async_set("switch.charger", "on")
+    start = dt_util.utcnow()
+    # 50 kWh at 10 kW and efficiency 1: a % normally takes 3 minutes.
+    c._learn_taper(start, 98.0)  # the first report only sets the mark
+    c._learn_taper(start + timedelta(minutes=9), 99.0)
+    assert dict(c._taper())[98.0] == pytest.approx(3.0)
+    assert dict(c._taper())[0.0] == 1.0  # nothing learned there yet
+    # Saved with the rest, so it survives a restart.
+    assert c._save_data()["taper"]["98.0"][1] == pytest.approx(1.0)
+
+    # A pause in between is not charging time.
+    hass.states.async_set("switch.charger", "off")
+    c._learn_taper(start + timedelta(minutes=30), 99.5)
+    hass.states.async_set("switch.charger", "on")
+    c._learn_taper(start + timedelta(minutes=40), 99.6)
+    c._learn_taper(start + timedelta(minutes=41), 99.9)  # 1 min for 0.3%: faster
+    weighted, points = c._taper_learned[98.0]
+    assert points == pytest.approx(1.3)
+    assert weighted / points < 3.0
+
+
+async def test_plan_reports_the_charging_speed(rig):
+    hass, c, _ = rig
+    await c.async_change(enabled=True)
+    speed = c.data["charging_speed"]
+    assert speed["98"] == 2.0  # the default until learned
+    assert c.data["charging_speed_learned"] == []
+
+
+def refuse_turn_off(hass, calls):
+    """A charger that answers every pause with an API error, like a Wallbox
+    that has nothing to pause."""
+
+    async def refuse(call):
+        calls.append("refused")
+        raise HomeAssistantError("Error communicating with Wallbox API")
+
+    hass.services.async_remove("switch", "turn_off")
+    hass.services.async_register("switch", "turn_off", refuse)
+
+
+async def test_idle_charger_refusing_pause_is_not_an_error(rig):
+    hass, c, calls = rig
+    await c.async_change(enabled=True)
+    assert calls == ["turn_on"]
+    refuse_turn_off(hass, calls)
+    # The car is full and draws nothing; the plan stops.
+    hass.states.async_set("sensor.battery", "30", {"unit_of_measurement": "%"})
+    await c.async_reconcile()
+    assert calls == ["turn_on", "refused"]
+    assert c.data["status"] == "target_reached"
+    assert c.data["error"] is None
+    # No retries while nothing flows, and still no error after 5 minutes.
+    c._command_time -= timedelta(minutes=6)
+    c._command_attempt_time -= timedelta(minutes=6)
+    await c.async_reconcile()
+    assert calls == ["turn_on", "refused"]
+    assert c.data["status"] == "target_reached"
+
+
+async def test_refused_pause_while_power_flows_is_an_error(rig):
+    hass, c, calls = rig
+    await c.async_change(enabled=True)
+    refuse_turn_off(hass, calls)
+    hass.states.async_set("sensor.charging_power", "7", {"unit_of_measurement": "kW"})
+    hass.states.async_set("sensor.battery", "30", {"unit_of_measurement": "%"})
+    await c.async_reconcile()
+    assert c.data["status"] == "control_error"
+    assert "did not accept off" in c.data["error"]
+
+
+async def test_lock_waits_until_the_charger_has_stopped(rig):
+    hass, c, calls = rig
+    lock_calls = await charging_with_lock(rig)
+
+    async def ignore(call):
+        calls.append("ignored")  # accepted, but the switch stays on
+
+    hass.services.async_remove("switch", "turn_off")
+    hass.services.async_register("switch", "turn_off", ignore)
+    hass.states.async_set("sensor.charging_power", "7", {"unit_of_measurement": "kW"})
+    hass.states.async_set("sensor.battery", "30", {"unit_of_measurement": "%"})
+    await c.async_reconcile()
+    assert lock_calls == ["unlock"]  # still charging: a lock could block the pause
+
+    hass.states.async_set("sensor.charging_power", "0", {"unit_of_measurement": "kW"})
+    await c.async_reconcile()
+    assert lock_calls == ["unlock", "lock"]
+
+
+async def test_lock_anyway_when_the_charger_never_stops(rig):
+    hass, c, calls = rig
+    lock_calls = await charging_with_lock(rig)
+
+    async def ignore(call):
+        calls.append("ignored")
+
+    hass.services.async_remove("switch", "turn_off")
+    hass.services.async_register("switch", "turn_off", ignore)
+    hass.states.async_set("sensor.charging_power", "7", {"unit_of_measurement": "kW"})
+    hass.states.async_set("sensor.battery", "30", {"unit_of_measurement": "%"})
+    await c.async_reconcile()
+    assert lock_calls == ["unlock"]
+    c._lock_pending_since -= timedelta(minutes=6)
+    hass.states.async_set("sensor.charging_power", "7.1", {"unit_of_measurement": "kW"})
+    await c.async_reconcile()
+    assert lock_calls == ["unlock", "lock"]  # locked, it can't charge either
+
+
+def test_imports_finished_sessions_from_recorded_states(rig):
+    _, c, _ = rig
+
+    def record(started, cost, energy, *, ended=None, active=False):
+        return State(
+            "sensor.dynamic_car_charger_session_charging_cost",
+            str(cost),
+            {
+                "started": started,
+                "ended": ended,
+                "energy_kwh": energy,
+                "active": active,
+                "cost_complete": True,
+                "unit_of_measurement": "EUR",
+            },
+        )
+
+    states = [
+        # 18 September: recorded while running, then its final totals.
+        record("2026-09-18T20:00:00+00:00", 0.5, 3.0, active=True),
+        record("2026-09-18T20:00:00+00:00", 2.1, 12.4, ended="2026-09-19T05:00:00+00:00"),
+        # Charged nothing: left out. Still running: left out.
+        record("2026-09-20T20:00:00+00:00", 0.0, 0.0, ended="2026-09-20T21:00:00+00:00"),
+        record("2026-09-26T20:00:00+00:00", 0.3, 2.0, active=True),
+        State("sensor.dynamic_car_charger_session_charging_cost", "unknown", {}),
+    ]
+    c.session_log = [
+        {
+            "started": "2026-09-25T11:00:00+00:00",
+            "ended": "2026-09-26T11:26:00+00:00",
+            "energy_kwh": 22.0,
+            "cost": 3.9,
+            "cost_complete": True,
+            "currency": "EUR",
+        }
+    ]
+    assert c.import_sessions(states) == 1
+    assert [entry["started"] for entry in c.session_log] == [
+        "2026-09-18T20:00:00+00:00",
+        "2026-09-25T11:00:00+00:00",
+    ]
+    assert c.session_log[0]["energy_kwh"] == 12.4
+    assert c.session_log[0]["cost"] == 2.1
+    # Importing again adds nothing.
+    assert c.import_sessions(states) == 0
+
+
+async def test_add_sessions_service_keeps_them_once(rig):
+    hass, c, _ = rig
+    from custom_components.dynamic_car_charger import async_setup
+
+    await async_setup(hass, {})
+    session = {
+        "started": "2026-09-19T00:30:00+02:00",
+        "ended": "2026-09-19T16:47:00+02:00",
+        "energy_kwh": 36.2,
+        "cost": 4.82,
+        "reconstructed": True,
+    }
+    with patch("custom_components.dynamic_car_charger._coordinator_for", return_value=c):
+        answer = await hass.services.async_call(
+            "dynamic_car_charger",
+            "add_sessions",
+            {"sessions": [session]},
+            blocking=True,
+            return_response=True,
+        )
+        again = await hass.services.async_call(
+            "dynamic_car_charger",
+            "add_sessions",
+            {"sessions": [session]},
+            blocking=True,
+            return_response=True,
+        )
+    assert answer == {"added": 1}
+    assert again == {"added": 0}
+    entry = c.session_log[0]
+    assert entry["started"] == "2026-09-18T22:30:00+00:00"
+    assert entry["energy_kwh"] == 36.2
+    assert entry["reconstructed"] is True

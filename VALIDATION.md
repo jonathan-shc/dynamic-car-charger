@@ -25,16 +25,17 @@ The tests run the real coordinator against Home Assistant's state machine and se
 - Price threshold: provisional plans, full coverage, close-to-deadline safety mode, kept across restarts.
 - Pause/resume commands, slow confirmation, retries after failures and after the 5-minute confirmation timeout.
 - Stable continuous runs across hourly price boundaries; replanning after price or deadline changes.
-- Energy estimate between battery reports; waiting for measured SOC for at most 30 minutes.
+- Energy estimate between battery reports (slower near full); waiting for measured SOC for at most 30 minutes.
+- Slower charging near full: the plan reserves the extra time per battery band, and the factors are learned from timed battery reports only while the charger is on.
 - Old battery reports are flagged but do not stop the plan; unavailable inputs pause.
 - Deadline grace (`charging_overtime`).
 - Charge now to target.
-- Wallbox unlock before charging (with retries) and lock when driving.
+- Charger unlock before charging and lock when the plan stops (with retries); unlocked by hand or switched off by hand is left alone.
 - Car connected event.
 - Session cost, including missing prices.
 - Repair issues that appear after 30 minutes and clear themselves.
 - `set_session` action.
-- Price forecast: holidays, calibration to all-in prices, estimates on synthetic data with a known weather relation, no training on unpublished days, API parsing, fetch schedule and failure handling, switching between forecast and threshold, fallback, and estimated hours never starting charging.
+- Price forecast: holidays per bidding zone, the chosen zone's market and weather points, calibration in another currency, calibration to all-in prices, estimates on synthetic data with a known weather relation, no training on unpublished days, API parsing, fetch schedule and failure handling, switching between forecast and threshold, fallback, and estimated hours never starting charging.
 - Every platform creates its expected entities, each with a translated name.
 - Configuration validation, the interval selector with stored numeric values, and the options flow unique ID update.
 
@@ -42,15 +43,14 @@ The tests run the real coordinator against Home Assistant's state machine and se
 
 Not verified by this project. Tick these off with your own setup and report results in an issue (without credentials or vehicle identifiers).
 
-- [ ] Leapmotor B05 state of charge entity updates while charging, and how often.
-- [ ] Leapmotor vehicle state reports `Driving` after the cable is removed.
-- [ ] Wallbox Pulsar Max pause/resume switch confirms within 5 minutes through the Wallbox cloud.
-- [ ] Wallbox lock and unlock through Home Assistant.
-- [ ] Wallbox status sensor reports `Locked, car connected` when plugged in.
-- [ ] Wallbox power sensor unit (W or kW) and update rate.
-- [ ] Enever NextEnergy prices match the NextEnergy app for a sample day.
+- [ ] The car's state of charge entity updates while charging, and how often.
+- [ ] The charger switch confirms on and off within 5 minutes.
+- [ ] Charger lock and unlock through Home Assistant.
+- [ ] The car connected sensor reports one of the configured states when plugged in.
+- [ ] Charging power sensor unit (W or kW) and update rate.
+- [ ] The price sensor matches the supplier's app for a sample day.
 - [ ] A complete overnight session reaches the target by the deadline.
-- [ ] Session charging cost compared with the NextEnergy invoice for the same session.
+- [ ] Session charging cost compared with the supplier's invoice for the same session.
 - [ ] Behavior after a Home Assistant restart during a charging session.
-- [ ] Price forecast: estimates for the next days compared with the prices once published.
+- [ ] Price forecast: estimates for the next days compared with the prices once published (every zone is backtested on history; see tools/backtest/results/zones.md).
 - [ ] Price forecast training time on a Raspberry Pi 4 (about 0.4 s on a laptop).

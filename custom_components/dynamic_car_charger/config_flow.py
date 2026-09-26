@@ -11,6 +11,7 @@ from homeassistant.helpers import selector
 
 from .const import DEFAULTS, DOMAIN, NAME
 from .planner import price_unit
+from .zones import ZONES, zone_for_location
 
 
 def interval_default(values: dict[str, Any]) -> str:
@@ -21,7 +22,7 @@ def interval_default(values: dict[str, Any]) -> str:
     return str(int(float(values.get("interval_minutes", DEFAULTS["interval_minutes"]))))
 
 
-def schema(values: dict[str, Any]) -> vol.Schema:
+def schema(values: dict[str, Any], default_zone: str = "nl") -> vol.Schema:
     fields = {}
     for key in ("charger_entity", "price_entity", "power_entity"):
         marker = vol.Required(key, default=values[key]) if key in values else vol.Required(key)
@@ -29,16 +30,23 @@ def schema(values: dict[str, Any]) -> vol.Schema:
     # Without a battery sensor the integration charges an amount of energy.
     for key, domain in (
         ("soc_entity", ["sensor", "input_number"]),
-        ("status_entity", ["sensor"]),
         ("connected_entity", ["sensor", "binary_sensor"]),
         ("lock_entity", ["lock"]),
-        ("vehicle_state_entity", ["sensor", "binary_sensor"]),
     ):
         marker = vol.Optional(key, default=values[key]) if values.get(key) else vol.Optional(key)
         fields[marker] = selector.EntitySelector(selector.EntitySelectorConfig(domain=domain))
-    for key in ("connected_states", "driving_states"):
-        marker = vol.Optional(key, default=values[key]) if values.get(key) else vol.Optional(key)
-        fields[marker] = selector.TextSelector()
+    # One entry per state: states such as "Locked, car connected" contain commas.
+    default = values.get("connected_states")
+    if isinstance(default, str):
+        default = [part.strip() for part in default.split(",") if part.strip()]
+    marker = (
+        vol.Optional("connected_states", default=default)
+        if default
+        else vol.Optional("connected_states")
+    )
+    fields[marker] = selector.SelectSelector(
+        selector.SelectSelectorConfig(options=[], multiple=True, custom_value=True)
+    )
     # Units are part of the field labels; see strings.json.
     for key, lo, hi, step in [
         ("capacity_kwh", 1, 300, 0.1),
@@ -62,6 +70,16 @@ def schema(values: dict[str, Any]) -> vol.Schema:
             )
         )
     )
+    # The market the price forecast learns from; see zones.py.
+    # Option values are lowercase, as Home Assistant's translations require.
+    zone = (values.get("bidding_zone") or default_zone).lower()
+    fields[vol.Required("bidding_zone", default=zone)] = selector.SelectSelector(
+        selector.SelectSelectorConfig(
+            options=[code.lower() for code in ZONES],
+            mode=selector.SelectSelectorMode.DROPDOWN,
+            translation_key="bidding_zone",
+        )
+    )
     return vol.Schema(fields)
 
 
@@ -72,10 +90,8 @@ def validate(hass, data: dict[str, Any]) -> dict[str, str]:
         "soc_entity": {"sensor", "input_number"},
         "price_entity": {"sensor"},
         "power_entity": {"sensor"},
-        "status_entity": {"sensor"},
         "connected_entity": {"sensor", "binary_sensor"},
         "lock_entity": {"lock"},
-        "vehicle_state_entity": {"sensor", "binary_sensor"},
     }
     for key in ("charger_entity", "soc_entity", "price_entity", "power_entity"):
         entity_id = data.get(key)
@@ -96,7 +112,7 @@ def validate(hass, data: dict[str, Any]) -> dict[str, str]:
                 price_unit(state.attributes)
             except ValueError:
                 return {key: "price_unit"}
-    for key in ("status_entity", "connected_entity", "lock_entity", "vehicle_state_entity"):
+    for key in ("connected_entity", "lock_entity"):
         entity_id = data.get(key)
         if not entity_id:
             continue
@@ -104,13 +120,65 @@ def validate(hass, data: dict[str, Any]) -> dict[str, str]:
             return {key: "entity_missing"}
         if entity_id.split(".", 1)[0] not in expected_domains[key]:
             return {key: "wrong_domain"}
+    # A sensor other than a binary sensor needs the states that mean connected.
+    entity_id = data.get("connected_entity")
+    given = data.get("connected_states") or []
+    if isinstance(given, str):
+        given = [part for part in given.split(",") if part.strip()]
+    if entity_id and not entity_id.startswith("binary_sensor.") and not given:
+        return {"connected_states": "states_required"}
     return {}
+
+
+def home_zone(hass) -> str:
+    """The bidding zone that fits the country and location set in Home Assistant."""
+    config = hass.config
+    return zone_for_location(config.country, config.latitude, config.longitude)
+
+
+# The Wallbox integration's status descriptions that mean a car is plugged in.
+WALLBOX_CONNECTED_STATES = [
+    "Charging",
+    "Discharging",
+    "Paused",
+    "Scheduled",
+    "Waiting for car demand",
+    "Waiting",
+    "Locked, car connected",
+    "Waiting in queue by Power Sharing",
+    "Waiting in queue by Power Boost",
+    "Waiting in queue by Eco-Smart",
+    "Waiting MID failed",
+    "Waiting MID safety margin exceeded",
+]
+
+
+def migrate_settings(values: dict[str, Any]) -> dict[str, Any]:
+    """Settings from older versions in the current form.
+
+    Version 1 had a Wallbox-specific status field. Version 2 had a vehicle state
+    sensor for locking the charger when driving; the plan now decides the lock.
+    Version 3 turned the Wallbox status into a connected sensor with only
+    'Locked, car connected', so a paused or charging car counted as unplugged.
+    """
+    values = dict(values)
+    status = values.pop("status_entity", None)
+    if status and not values.get("connected_entity"):
+        values["connected_entity"] = status
+        values["connected_states"] = list(WALLBOX_CONNECTED_STATES)
+    states = values.get("connected_states") or []
+    text = states if isinstance(states, str) else ", ".join(str(state) for state in states)
+    if text.strip().casefold() == "locked, car connected":
+        values["connected_states"] = list(WALLBOX_CONNECTED_STATES)
+    values.pop("vehicle_state_entity", None)
+    values.pop("driving_states", None)
+    return values
 
 
 class DynamicCarChargerFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """One scheduler per charger."""
 
-    VERSION = 1
+    VERSION = 4
 
     async def async_step_user(self, user_input=None):
         errors = {}
@@ -127,7 +195,9 @@ class DynamicCarChargerFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(title=NAME, data=user_input)
         return self.async_show_form(
-            step_id="user", data_schema=schema(user_input or {}), errors=errors
+            step_id="user",
+            data_schema=schema(user_input or {}, home_zone(self.hass)),
+            errors=errors,
         )
 
     @staticmethod
@@ -156,4 +226,6 @@ class OptionsFlow(config_entries.OptionsFlow):
                     )
                 return self.async_create_entry(title="", data=user_input)
         values = user_input or {**self.config_entry.data, **self.config_entry.options}
-        return self.async_show_form(step_id="init", data_schema=schema(values), errors=errors)
+        return self.async_show_form(
+            step_id="init", data_schema=schema(values, home_zone(self.hass)), errors=errors
+        )

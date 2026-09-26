@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta
+from functools import partial
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -19,7 +20,18 @@ from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, EVENT_CAR_CONNECTED, NAME
 from .forecaster import ForecastUnavailable, PriceForecaster
-from .planner import Plan, Slot, make_plan, number, parse_prices, price_unit, timestamp
+from .planner import (
+    DEFAULT_TAPER,
+    Plan,
+    Slot,
+    make_plan,
+    number,
+    parse_prices,
+    price_unit,
+    soc_after,
+    timestamp,
+)
+from .zones import zone_for_location
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -37,6 +49,10 @@ REPAIR_DELAY = timedelta(minutes=30)
 # How often the price forecast checks for new prices and weather forecasts.
 FORECAST_INTERVAL = timedelta(minutes=15)
 SESSION_END_STATUSES = ("set_deadline", "target_reached", "deadline_passed")
+# Below this measured power the charger counts as not charging.
+IDLE_POWER_KW = 0.1
+# The pause isn't confirmed, but nothing flows: no error, and keep watching.
+IDLE_STOP = "idle_stop"
 PENDING_STATUSES = ("unlocking_charger", "starting_charge", "stopping_charge")
 
 
@@ -61,12 +77,25 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.currency = "EUR"
         self.deadline: datetime | None = None
         self.session: dict[str, Any] | None = None
+        # Every finished session, oldest first: about 150 bytes each, kept for good.
+        self.session_log: list[dict[str, Any]] = []
+        # Sessions from before the log existed are imported once from the recorder.
+        self._sessions_imported = False
         self.use_forecast = False
-        self.forecaster = PriceForecaster(hass)
+        # Settings from before the bidding zone existed follow Home Assistant's country.
+        bidding_zone = self.settings.get("bidding_zone") or zone_for_location(
+            hass.config.country, hass.config.latitude, hass.config.longitude
+        )
+        self.forecaster = PriceForecaster(hass, bidding_zone=bidding_zone)
         self.forecast_calibration = None
         self._forecast_unsub = None
         self._lock = asyncio.Lock()
         self._observed_soc: float | None = None
+        # How much longer a % takes near a full battery, learned per band from
+        # charging sessions: {band start: [sum of factor x points, points]}.
+        self._taper_learned: dict[float, list[float]] = {}
+        # The last battery % report while charging, to time the next one against.
+        self._soc_mark: tuple[datetime, float] | None = None
         self._credit_kwh = 0.0
         self._interval_kwh = 0.0
         self._sample_time: datetime | None = None
@@ -77,6 +106,13 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._command_attempt_time: datetime | None = None
         self._unlock_command_time: datetime | None = None
         self._unlock_attempt_time: datetime | None = None
+        # Whether the plan asked for charging at the last check, and whether the
+        # charger still has to be locked because the plan stopped charging.
+        self._charge_requested = False
+        self._lock_pending = False
+        self._lock_attempt_time: datetime | None = None
+        self._lock_pending_since: datetime | None = None
+        self._stopped_by_user = False
         self._active_charge_until: datetime | None = None
         self._active_plan_context: tuple | None = None
         self._replan_stop_time: datetime | None = None
@@ -100,10 +136,19 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.enabled = bool(saved.get("enabled", False))
         self.immediate_charging = bool(saved.get("immediate_charging", False))
         self._pending_stop = bool(saved.get("pending_stop", False))
+        self._charge_requested = bool(saved.get("charge_requested", False))
+        self._lock_pending = bool(saved.get("lock_pending", False))
         self.deadline = timestamp(saved["deadline"]) if saved.get("deadline") else None
         self._observed_soc = saved.get("observed_soc")
+        for start, (weighted, points) in (saved.get("taper") or {}).items():
+            self._taper_learned[float(start)] = [number(weighted, 0), number(points, 0)]
         self._credit_kwh = number(saved.get("credit_kwh", 0), 0)
         self.session = saved.get("session")
+        self.session_log = list(saved.get("session_log") or [])
+        self._sessions_imported = bool(saved.get("sessions_imported", False))
+        # The last session from before the log existed isn't lost.
+        if self.session and not self.session.get("active") and not self.session_log:
+            self._log_session(self.session)
         self.use_forecast = bool(saved.get("use_forecast", False))
         # Keep a live threshold change across restarts, unless the configured
         # threshold was changed in the options since it was saved.
@@ -121,7 +166,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ]
         tracked_entities.extend(
             self.settings[key]
-            for key in ("status_entity", "connected_entity", "lock_entity", "vehicle_state_entity")
+            for key in ("connected_entity", "lock_entity")
             if self.settings.get(key)
         )
         self._stop_unsub = self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, self._shutdown)
@@ -129,9 +174,10 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             async_track_state_change_event(self.hass, tracked_entities, self._changed),
             async_track_time_interval(self.hass, self._tick, TICK),
         ]
-        if self._vehicle_is_driving():
-            await self._async_lock_charger()
         self._set_forecast_tracking()
+        self.hass.async_create_task(
+            self._async_import_recorded_sessions(), f"{DOMAIN} import recorded sessions"
+        )
         await self.async_reconcile()
 
     @callback
@@ -139,9 +185,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         entity_id = event.data.get("entity_id")
         old_state = event.data.get("old_state")
         new_state = event.data.get("new_state")
-        connection_entity = self.settings.get("connected_entity") or self.settings.get(
-            "status_entity"
-        )
+        connection_entity = self.settings.get("connected_entity")
         if entity_id == connection_entity:
             if self._is_car_connected(new_state) and not self._is_car_connected(old_state):
                 self._fire_car_connected(new_state)
@@ -152,12 +196,6 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if available and not self._charger_available:
                 self._fire_car_connected(new_state)
             self._charger_available = available
-        if (
-            entity_id == self.settings.get("vehicle_state_entity")
-            and self._is_driving(new_state)
-            and not self._is_driving(old_state)
-        ):
-            self.hass.async_create_task(self._async_lock_charger())
         if not self._stopping:
             self.hass.async_create_task(self.async_reconcile())
 
@@ -170,8 +208,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             {
                 "config_entry_id": self.entry.entry_id,
                 "charger_entity": self.settings["charger_entity"],
-                "status_entity": self.settings.get("connected_entity")
-                or self.settings.get("status_entity"),
+                "connected_entity": self.settings.get("connected_entity"),
                 "status": state.state if state is not None else None,
             },
         )
@@ -181,38 +218,36 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return state.state.strip().casefold() if state is not None else ""
 
     @staticmethod
-    def _state_list(text: str | None) -> set[str]:
-        return {part.strip().casefold() for part in (text or "").split(",") if part.strip()}
+    def _state_list(value: str | list[str] | None) -> set[str]:
+        """States from the setup: a list, or (0.8) a comma-separated text."""
+        parts = value if isinstance(value, list) else (value or "").split(",")
+        return {str(part).strip().casefold() for part in parts if str(part).strip()}
 
     def _is_car_connected(self, state: State | None) -> bool:
-        """Whether this state of the connection sensor means a car is plugged in.
+        """Whether this state of the connected sensor means a car is plugged in.
 
-        A binary sensor is connected when on. Other sensors use the configured
-        list of states; without a list, the Wallbox's 'Locked, car connected'.
+        A binary sensor is connected when on; other sensors use the configured states.
         """
         if state is None:
             return False
         states = self._state_list(self.settings.get("connected_states"))
-        if not states:
-            states = {"on"} if state.domain == "binary_sensor" else {"locked, car connected"}
+        if not states and state.domain == "binary_sensor":
+            states = {"on"}
         return self._state_text(state) in states
 
-    def _is_driving(self, state: State | None) -> bool:
-        """Whether this vehicle state means the car drives away (binary sensor: on)."""
-        if state is None:
-            return False
-        states = self._state_list(self.settings.get("driving_states"))
-        if not states:
-            states = {"on"} if state.domain == "binary_sensor" else {"driving"}
-        return self._state_text(state) in states
+    def _car_connected(self) -> bool | None:
+        """Whether a car is plugged in, or None without a connected sensor."""
+        entity_id = self.settings.get("connected_entity")
+        if not entity_id:
+            return None
+        state = self.hass.states.get(entity_id)
+        if not self._is_available(state):
+            return None
+        return self._is_car_connected(state)
 
     @staticmethod
     def _is_available(state: State | None) -> bool:
         return state is not None and state.state not in ("unknown", "unavailable")
-
-    def _vehicle_is_driving(self) -> bool:
-        vehicle_entity = self.settings.get("vehicle_state_entity")
-        return bool(vehicle_entity and self._is_driving(self.hass.states.get(vehicle_entity)))
 
     async def _tick(self, now: datetime) -> None:
         await self.async_reconcile()
@@ -224,11 +259,16 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "immediate_charging": self.immediate_charging,
             "deadline": self.deadline.isoformat() if self.deadline else None,
             "observed_soc": self._observed_soc,
+            "taper": {str(start): values for start, values in self._taper_learned.items()},
             "credit_kwh": self._credit_kwh,
             "pending_stop": self._pending_stop,
+            "charge_requested": self._charge_requested,
+            "lock_pending": self._lock_pending,
             "max_price_eur_kwh": self.settings.get("max_price_eur_kwh"),
             "configured_max_price_eur_kwh": self._configured_max_price,
             "session": self.session,
+            "session_log": self.session_log,
+            "sessions_imported": self._sessions_imported,
             "use_forecast": self.use_forecast,
             "energy_goal": self.energy_goal,
             "delivered_kwh": self._delivered_kwh,
@@ -265,6 +305,9 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ):
                 # A new deadline after the previous one passed is a new charge.
                 self._delivered_kwh = 0.0
+            if changes.get("enabled") is False or changes.get("immediate_charging") is False:
+                # Switched off by hand: the plan didn't stop, so leave the lock alone.
+                self._stopped_by_user = True
             if changes.get("enabled") is False:
                 self._pending_stop = True
             elif changes.get("enabled") is True:
@@ -327,14 +370,14 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "soc_entity",
             "price_entity",
             "power_entity",
-            "status_entity",
             "connected_entity",
             "lock_entity",
-            "vehicle_state_entity",
         )
         details: dict[str, Any] = {key: self.settings.get(key) for key in keys}
         details["mode"] = "energy" if self.energy_mode else "battery"
         details["currency"] = self.currency
+        # The market the price forecast learns from, as stored in the options.
+        details["bidding_zone"] = self.forecaster.zone.code.lower()
         details["power_kw"] = self.settings["power_kw"]
         details["capacity_kwh"] = self.settings["capacity_kwh"]
         return details
@@ -406,13 +449,57 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             soc = min(100.0, 100 * self._delivered_kwh / self._capacity())
             prices = self._prices() if include_prices else []
             return soc, soc, prices
+        if soc != self._observed_soc:
+            self._learn_taper(now, soc)
         if soc != self._observed_soc or not self.enabled:
             self._observed_soc, self._credit_kwh = soc, 0.0
         else:
             self._credit_kwh += self._interval_kwh * self.settings["efficiency"]
-        effective_soc = min(100.0, soc + 100 * self._credit_kwh / self.settings["capacity_kwh"])
+        # Between battery reports, estimate from the energy; slower near full.
+        capacity = self.settings["capacity_kwh"]
+        effective_soc = soc_after(soc, self._credit_kwh, capacity, self._taper())
         prices = self._prices() if include_prices else []
         return soc, effective_soc, prices
+
+    TAPER_MIN_POINTS = 0.5  # battery %-points of evidence before a band's factor is used
+    TAPER_MEMORY_POINTS = 10.0  # older sessions fade once a band has this much
+
+    def _taper(self) -> tuple[tuple[float, float], ...]:
+        """Slowdown per battery band: learned where there is enough evidence."""
+        bands = []
+        for start, default in DEFAULT_TAPER:
+            weighted, points = self._taper_learned.get(start, (0.0, 0.0))
+            learned = weighted / points if points >= self.TAPER_MIN_POINTS else None
+            bands.append((start, learned if learned is not None else default))
+        return tuple(bands)
+
+    def _learn_taper(self, now: datetime, soc: float) -> None:
+        """Time each battery % report against the previous one while charging.
+
+        Only while the charger stays on: the first report after charging starts
+        only sets the mark, since the car's % may be older than the start.
+        """
+        charger = self.hass.states.get(self.settings["charger_entity"])
+        if charger is None or charger.state != "on":
+            self._soc_mark = None
+            return
+        mark, self._soc_mark = self._soc_mark, (now, soc)
+        if mark is None or soc <= mark[1]:
+            return
+        minutes = (now - mark[0]).total_seconds() / 60
+        points = soc - mark[1]
+        if not 0 < minutes <= 45 or points > 10:
+            return
+        per_point = self.settings["capacity_kwh"] / 100 / self.settings["efficiency"]
+        expected = points * per_point / self.settings["power_kw"] * 60
+        factor = min(6.0, max(0.8, minutes / expected))
+        start = max(band for band, _ in DEFAULT_TAPER if band <= mark[1])
+        weighted, total = self._taper_learned.get(start, [0.0, 0.0])
+        weighted, total = weighted + factor * points, total + points
+        if total > self.TAPER_MEMORY_POINTS:
+            scale = self.TAPER_MEMORY_POINTS / total
+            weighted, total = weighted * scale, total * scale
+        self._taper_learned[start] = [round(weighted, 4), round(total, 4)]
 
     def _battery_details(self, now: datetime, soc: float, effective: float) -> dict[str, Any]:
         if self.energy_mode:
@@ -433,6 +520,13 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "measured_soc": soc,
             "estimated_soc": round(effective, 2),
             "charging_power_report_old": self._power_report_old,
+            # How much longer a % takes from each battery %, and which are learned.
+            "charging_speed": {f"{start:g}": round(f, 2) for start, f in self._taper()},
+            "charging_speed_learned": [
+                f"{start:g}"
+                for start, (_, points) in sorted(self._taper_learned.items())
+                if points >= self.TAPER_MIN_POINTS
+            ],
         }
 
     def _clear_active_run(self) -> None:
@@ -461,6 +555,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "error": None,
                 "estimated_cost_eur": None,
                 "setup": self._setup_details(),
+                # So dashboards and apps don't need to know charger or car wording.
+                "car_connected": self._car_connected(),
                 "prices": self._price_rows(now),
             }
             try:
@@ -477,7 +573,9 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             data["charging_requested"] = desired and control_enabled
             if control_enabled or force_stop or self._pending_stop:
                 error = await self._control(desired and control_enabled, now, force_stop)
-                if error == "waiting_for_car":
+                if error == IDLE_STOP:
+                    pass  # not an error; a pending stop stays pending until confirmed
+                elif error == "waiting_for_car":
                     data.update(status="waiting_for_car", error=None, charging_requested=False)
                 elif error in PENDING_STATUSES:
                     data.update(status=error, error=None)
@@ -485,6 +583,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     data.update(status="control_error", error=error)
                 elif not self.enabled:
                     self._pending_stop = False
+            # What the plan wants, also while waiting for the car or the charger.
+            await self._update_lock(now, desired and control_enabled)
             self._update_session(
                 now, prices, data["charging_requested"], control_enabled, plan_status
             )
@@ -521,8 +621,10 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.settings["power_kw"],
             self._efficiency(),
         )
-        threshold_plan = make_plan(prices, *args, max_price=threshold)
-        full_plan = make_plan(prices, *args)
+        # The slow last part of a charge needs extra time (not in energy mode).
+        taper = None if self.energy_mode else self._taper()
+        threshold_plan = make_plan(prices, *args, max_price=threshold, taper=taper)
+        full_plan = make_plan(prices, *args, taper=taper)
         safety_hours = max(1.0, threshold_plan.required_kwh / self.settings["power_kw"] * 1.5)
         safety_mode = (self.deadline - now).total_seconds() / 3600 <= safety_hours
         data["price_threshold_eur_kwh"] = threshold
@@ -534,22 +636,19 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if full_plan.coverage_complete or safety_mode:
             data["planning_method"] = "published_prices"
             return full_plan, full_plan.coverage_complete
-        if self.use_forecast and self.currency != "EUR":
-            # The forecast model is trained on Dutch market prices in euros.
-            data["forecast_error"] = "The price forecast only covers Dutch prices in EUR"
-        elif self.use_forecast:
+        if self.use_forecast:
             # Plan over published and estimated prices together. Estimated
             # hours never start charging; they only show whether waiting for
             # unpublished prices is likely to be cheaper.
             try:
                 estimated, self.forecast_calibration = self.forecaster.estimate(
-                    prices, self.deadline
+                    prices, self.deadline, self.currency
                 )
             except ForecastUnavailable as err:
                 data["forecast_error"] = str(err)
             else:
                 data["planning_method"] = "forecast"
-                return make_plan(prices + estimated, *args), False
+                return make_plan(prices + estimated, *args, taper=taper), False
         # The threshold limits provisional planning while future prices are
         # unknown, and is the fallback when the forecast is unavailable.
         data["planning_method"] = "threshold"
@@ -647,7 +746,6 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             and now < extension_until
             and soc < target
             and active_session
-            and not self._vehicle_is_driving()
         )
         desired = ((planned_now and not after_deadline) or extension_active) and soc < target
         data["deadline_extension_active"] = extension_active
@@ -726,6 +824,131 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not control_enabled or plan_status in SESSION_END_STATUSES:
             session["active"] = False
             session["ended"] = now.isoformat()
+            self._log_session(session)
+
+    def _log_session(self, session: dict[str, Any]) -> None:
+        """Keep a finished session; one that charged nothing isn't worth keeping."""
+        if session.get("energy_kwh", 0) < 0.05:
+            return
+        if any(entry["started"] == session["started"] for entry in self.session_log):
+            return
+        self.session_log.append(
+            {
+                "started": session["started"],
+                "ended": session.get("ended"),
+                "energy_kwh": round(session["energy_kwh"], 3),
+                "cost": round(session["cost_eur"], 4),
+                "cost_complete": session.get("cost_complete", True),
+                "currency": self.currency,
+            }
+        )
+
+    async def _async_import_recorded_sessions(self) -> None:
+        """Once: add the sessions the recorder still has (its history of the
+        session cost sensor) to the log, so they are kept for good too."""
+        if self._sessions_imported or "recorder" not in self.hass.config.components:
+            return
+        from homeassistant.components.recorder import get_instance, history
+        from homeassistant.helpers import entity_registry as er
+
+        entity_id = er.async_get(self.hass).async_get_entity_id(
+            "sensor", DOMAIN, f"{self.entry.entry_id}_session_cost"
+        )
+        if entity_id is None:
+            return
+        start = dt_util.utcnow() - timedelta(days=366)
+        try:
+            found = await get_instance(self.hass).async_add_executor_job(
+                partial(
+                    history.state_changes_during_period,
+                    self.hass,
+                    start,
+                    entity_id=entity_id,
+                    include_start_time_state=True,
+                )
+            )
+        except Exception:  # noqa: BLE001 - the import is a bonus; never block charging
+            _LOGGER.warning("Could not read earlier charging sessions from the recorder")
+            return
+        added = self.import_sessions(found.get(entity_id, []))
+        self._sessions_imported = True
+        self.store.async_delay_save(self._save_data, 1)
+        _LOGGER.info("Imported %d earlier charging sessions from the recorder", added)
+
+    def import_sessions(self, states: list[State]) -> int:
+        """Finished sessions from recorded states of the session cost sensor.
+
+        A session appears many times while it runs; its last record has the totals.
+        """
+        last: dict[str, State] = {}
+        for state in states:
+            started = state.attributes.get("started")
+            if started:
+                last[started] = state
+        known = {entry["started"] for entry in self.session_log}
+        added = 0
+        for started, state in last.items():
+            attributes = state.attributes
+            if started in known or attributes.get("active") or not attributes.get("ended"):
+                continue
+            try:
+                cost = float(state.state)
+                energy = float(attributes.get("energy_kwh") or 0)
+            except ValueError:
+                continue
+            if energy < 0.05:
+                continue
+            self.session_log.append(
+                {
+                    "started": started,
+                    "ended": attributes["ended"],
+                    "energy_kwh": round(energy, 3),
+                    "cost": round(cost, 4),
+                    "cost_complete": attributes.get("cost_complete", True),
+                    "currency": state.attributes.get("unit_of_measurement") or self.currency,
+                }
+            )
+            added += 1
+        self.session_log.sort(key=lambda entry: entry["started"])
+        return added
+
+    def add_sessions(self, sessions: list[dict[str, Any]]) -> int:
+        """Add sessions from elsewhere; ones already in the log are skipped."""
+        known = {timestamp(entry["started"]) for entry in self.session_log}
+        added = 0
+        for session in sessions:
+            started = dt_util.as_utc(session["started"])
+            if started in known or session["energy_kwh"] < 0.05:
+                continue
+            entry = {
+                "started": started.isoformat(),
+                "ended": dt_util.as_utc(session["ended"]).isoformat(),
+                "energy_kwh": round(session["energy_kwh"], 3),
+                "cost": round(session["cost"], 4),
+                "cost_complete": session.get("cost_complete", True),
+                "currency": session.get("currency") or self.currency,
+            }
+            if session.get("reconstructed"):
+                entry["reconstructed"] = True
+            self.session_log.append(entry)
+            known.add(started)
+            added += 1
+        self.session_log.sort(key=lambda entry: timestamp(entry["started"]))
+        self.store.async_delay_save(self._save_data, 1)
+        return added
+
+    def sessions_response(self) -> dict[str, Any]:
+        """For the get_sessions action: the log, and the running session if any."""
+        running = None
+        if self.session and self.session.get("active"):
+            running = {
+                "started": self.session["started"],
+                "energy_kwh": round(self.session["energy_kwh"], 3),
+                "cost": round(self.session["cost_eur"], 4),
+                "cost_complete": self.session.get("cost_complete", True),
+                "currency": self.currency,
+            }
+        return {"sessions": list(self.session_log), "running": running}
 
     def _update_repair_issue(
         self, now: datetime, data: dict[str, Any], control_enabled: bool
@@ -773,11 +996,17 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return None
         if actual not in ("on", "off"):
             return "waiting_for_car" if desired else None
-
         if self._command != desired:
             self._command = desired
             self._command_time = now
             self._command_attempt_time = None
+        # Some chargers (Wallbox) refuse to pause while the car draws nothing,
+        # e.g. when it is full, and keep showing the switch as on. After one
+        # attempt, don't insist and don't report it: nothing flows. Once power
+        # flows again, the pause is sent (and checked) as usual.
+        idle_stop = not desired and not force and self._charger_idle()
+        if idle_stop and self._command_attempt_time is not None:
+            return IDLE_STOP
 
         pending = "starting_charge" if desired else "stopping_charge"
         # After the confirmation timeout the command is reported as an error,
@@ -799,16 +1028,16 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "switch", f"turn_{wanted}", {"entity_id": entity_id}, blocking=True
                 )
         except (HomeAssistantError, TimeoutError):
+            if idle_stop:
+                return IDLE_STOP
             return f"Charger did not accept {wanted}; will retry"
         return pending
 
     async def _ensure_unlocked(self, now: datetime) -> str | None:
-        """Unlock the Wallbox before the first resume/start request."""
+        """Unlock the charger before the first start request."""
         entity_id = self.settings.get("lock_entity")
         if not entity_id:
             return None
-        if self._vehicle_is_driving():
-            return "waiting_for_car"
         state = self.hass.states.get(entity_id)
         actual = state.state if state is not None else "unavailable"
         if actual == "unlocked":
@@ -834,23 +1063,61 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 return "Charger did not accept unlock; will retry"
         return pending
 
-    async def _async_lock_charger(self) -> None:
-        """Lock the Wallbox when the vehicle reports that it is driving."""
-        entity_id = self.settings.get("lock_entity")
-        if not entity_id:
+    def _charger_idle(self) -> bool:
+        """The latest fresh power reading shows no charging."""
+        return (
+            not self._power_report_old
+            and self._sample_time is not None
+            and (self._sample_power < IDLE_POWER_KW)
+        )
+
+    async def _update_lock(self, now: datetime, requested: bool) -> None:
+        """Lock the charger once when the plan stops charging.
+
+        Only the moment the plan stops counts: a charger unlocked by hand while
+        the plan isn't charging stays unlocked. Switching automatic charging or
+        charging now off by hand leaves the lock alone.
+        """
+        stopped = self._charge_requested and not requested and not self._stopped_by_user
+        self._charge_requested = requested
+        self._stopped_by_user = False
+        if requested or not self.settings.get("lock_entity"):
+            self._lock_pending = False
             return
+        if stopped:
+            self._lock_pending = True
+            self._lock_pending_since = now
+            self._lock_attempt_time = None
+        if not self._lock_pending:
+            return
+        # Lock once the charger has stopped: a locked charger may refuse the
+        # pause. If it never confirms, lock anyway: locked, it can't charge.
+        charger = self.hass.states.get(self.settings["charger_entity"])
+        stopped_charging = charger is None or charger.state != "on" or self._charger_idle()
+        waited = now - (self._lock_pending_since or now) >= CONFIRM_TIMEOUT
+        if not stopped_charging and not waited:
+            return
+        entity_id = self.settings["lock_entity"]
         state = self.hass.states.get(entity_id)
         if state is not None and state.state == "locked":
+            self._lock_pending = False
             return
+        if state is None or state.state in ("unknown", "unavailable"):
+            return  # try again once the lock is back
+        if self._lock_attempt_time is not None and now - self._lock_attempt_time < RETRY_INTERVAL:
+            return
+        self._lock_attempt_time = now
         try:
             async with asyncio.timeout(30):
                 await self.hass.services.async_call(
                     "lock", "lock", {"entity_id": entity_id}, blocking=True
                 )
-            self._unlock_command_time = None
-            self._unlock_attempt_time = None
         except (HomeAssistantError, TimeoutError):
-            _LOGGER.warning("Wallbox could not be locked after the car disconnected")
+            _LOGGER.warning("The charger could not be locked after charging; will retry")
+            return
+        self._lock_pending = False
+        self._unlock_command_time = None
+        self._unlock_attempt_time = None
 
     async def _shutdown(self, event: Event) -> None:
         # A one-time listener is already removed once it has fired.

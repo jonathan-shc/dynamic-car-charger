@@ -2,7 +2,7 @@
 
 A Home Assistant custom integration for deadline-based EV charging. Set **80% by Friday at 07:30** (or **20 kWh by Friday at 07:30**), inspect the charging plan, and let the integration pause and resume your charger during the cheapest published price intervals.
 
-It works with any charger that has an on/off switch in Home Assistant and any dynamic price sensor with today's and tomorrow's prices. With a car that reports its battery percentage it charges to a percentage; without one it charges an amount of energy. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Developed with a Leapmotor B05, Wallbox Pulsar Max and a NextEnergy dynamic contract; check compatibility with your own devices. Current version: 0.8.0 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
+It works with any charger that has an on/off switch in Home Assistant and any dynamic price sensor with today's and tomorrow's prices. With a car that reports its battery percentage it charges to a percentage; without one it charges an amount of energy. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Check compatibility with your own devices. Current version: 0.9.0 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
 
 ## What you get
 
@@ -13,9 +13,9 @@ It works with any charger that has an on/off switch in Home Assistant and any dy
 - A price threshold that limits provisional plans to cheap periods while there is still enough time.
 - An optional **price forecast** that estimates unpublished prices from weather forecasts, switchable with one toggle.
 - **Charge now to target**, ignoring prices, for when you need the car soon.
-- Optional Wallbox unlocking before charging and locking when the car drives away.
+- Optional charger unlocking before charging and locking when the car drives away.
 - A `set_session` action to set target, deadline and mode from automations, scripts or iOS Shortcuts.
-- A measured **Session charging cost** from the actual Wallbox power and the price at the time.
+- A measured **Session charging cost** from the measured charging power and the price at the time.
 - Repair issues in **Settings → System → Repairs** when inputs or the charger stay broken for 30 minutes.
 - Replanning as prices, battery telemetry and measured charging power change.
 - Negative prices, fractional charging intervals, hourly or quarter-hourly prices and timezone-aware daylight-saving handling.
@@ -30,14 +30,14 @@ Configure these source integrations in Home Assistant first; their entities are 
 | --- | --- |
 | Charger on/off | A `switch` that starts and pauses charging: **on = charge**, **off = pause**, for example the charging switch of the [Wallbox](https://www.home-assistant.io/integrations/wallbox/), Easee, Alfen, go-e or an OCPP charger. Do not choose a mains power switch or lock. |
 | Charging power | A power sensor from the charger or the car, with unit `W` or `kW`. Measures the energy that is charged. |
-| Prices | A price sensor with today's and tomorrow's prices per kWh, in any currency (also cents such as `c/kWh`): [Enever](https://github.com/MvRens/ha-enever) (NextEnergy and other Dutch suppliers), [ENTSO-e](https://github.com/JaccoR/hass-entso-e), [Nord Pool](https://www.home-assistant.io/integrations/nordpool/) style `raw_today` / `raw_tomorrow`, or the documented `prices` format below. |
+| Prices | A price sensor with today's and tomorrow's prices per kWh, in any currency (also cents such as `c/kWh`): [Enever](https://github.com/MvRens/ha-enever) (Dutch suppliers), [ENTSO-e](https://github.com/JaccoR/hass-entso-e), [Nord Pool](https://www.home-assistant.io/integrations/nordpool/) style `raw_today` / `raw_tomorrow`, or the documented `prices` format below. |
 | Battery percentage (optional) | A live state-of-charge entity in `%` from your car's integration. **Leave empty to charge an amount of energy** instead (see *Energy mode*). |
-| Charger status (optional) | With a Wallbox: the status description sensor. When it changes to `Locked, car connected`, the integration fires the car-connected event. |
-| Car connected (optional) | Any sensor that shows a car is plugged in, with the states that mean connected (for example `connected, charging`), or a binary sensor (on = connected). Fires the car-connected event. |
-| Charger lock (optional) | A `lock` entity. It is unlocked before each start request and locked when the car starts driving. |
-| Vehicle state (optional) | A car sensor that shows the car is driving: a sensor with the states that mean driving (default `Driving`), or a binary sensor (on = driving). Used to lock the charger after you drive away, and to never unlock it while driving. |
+| Car connected (optional) | A sensor from the charger or the car that shows a car is plugged in: a binary sensor (on = connected), or a sensor with the states that mean connected, for example `connected, charging`. Fires the car-connected event and reports `car_connected` on the plan. |
+| Charger lock (optional) | A `lock` entity. It is unlocked when the plan starts charging and locked once the charger has stopped after the plan stops charging (block over, target reached, deadline passed), or after 5 minutes if it never confirms. Unlocking it by hand while the plan isn't charging is left alone, and switching automatic charging or charge now off by hand doesn't lock it. |
 
-Without a car connected or status sensor, the car-connected event fires when the charger switch becomes available.
+Without a car connected sensor, the car-connected event fires when the charger switch becomes available.
+
+Upgrading from 0.8 or earlier: a configured Wallbox status sensor becomes the car connected sensor with every Wallbox state that means a car is plugged in (such as `Charging`, `Paused`, `Waiting for car demand` and `Locked, car connected`), and the vehicle state sensor is removed: the plan now decides when the charger is locked.
 
 ### Energy mode
 
@@ -47,7 +47,7 @@ An `input_number` helper in `%` is accepted as a manual battery input. Enter the
 
 A battery percentage that does not change for a long time is normal while the car is parked, so an old battery report **does not stop the plan**. When the last report is older than the configured age (60 minutes by default), the plan sensor sets `soc_report_old: true` so you can warn about it on a dashboard. A battery entity that is `unavailable` or `unknown` does stop scheduling. Power reports older than five minutes are treated as 0 kW: they are not used to estimate added energy, but they do not stop the plan either. A source must mark outdated cloud data unavailable: a fresh HA report does not prove the car supplied a fresh reading.
 
-NextEnergy [currently describes hourly prices](https://www.nextenergy.nl/actuele-energieprijzen), based on underlying quarter-hour market prices. Select **60 minutes** unless your actual contract and source both use quarter-hour billing. Enever supplier prices include VAT and levies; do not add them again. The optional price adjustment is only for a known difference between your contract and the feed. Compare a sample day with your NextEnergy app: contract-specific purchase fees may differ.
+Select the **price interval** your contract bills: 60 minutes for hourly prices, 15 only if your contract and source both use quarter-hours. Use all-in prices where the source offers them (supplier prices with VAT and levies); the optional price adjustment is only for a known difference between your contract and the feed. Compare a sample day with your supplier's app: contract-specific fees may differ.
 
 ## Install through HACS
 
@@ -55,17 +55,17 @@ NextEnergy [currently describes hourly prices](https://www.nextenergy.nl/actuele
 2. Add `https://github.com/jonathan-shc/dynamic-car-charger`, category **Integration**.
 3. Download **Dynamic Car Charger** and restart Home Assistant.
 4. Open **Settings → Devices & services → Add integration → Dynamic Car Charger**.
-5. Select the four required source entities, and optionally the Wallbox status, lock and vehicle state entities. Enter your usable battery capacity, expected grid charging power and efficiency.
+5. Select the three required source entities (charger switch, price and power), and optionally the battery, car connected, lock and vehicle state entities. Enter your usable battery capacity, expected grid charging power and efficiency.
 
 This is a HACS **custom repository**, not a listing in the default HACS catalog. The repository follows the [HACS integration structure](https://hacs.dev/docs/publish/integration/). A default-catalog submission and Home Assistant brands artwork are separate work.
 
 Manual installation: copy `custom_components/dynamic_car_charger` into `/config/custom_components/`, then restart Home Assistant. Minimum declared Home Assistant version: 2025.3; see [VALIDATION.md](VALIDATION.md) for the tested version.
 
-## Configure your B05 and Pulsar Max
+## Configure your car and charger
 
-The example capacity and power are placeholders, **not verified B05 specifications**. Set the usable capacity for your exact battery variant and expected charging power to the lower of the car's AC limit and the configured Wallbox supply. A conservative power assumption helps when load balancing reduces the available power. Efficiency defaults to 0.90.
+The default capacity and power are placeholders. Set the usable capacity of your car's battery and the expected charging power: the lower of the car's AC limit and the charger's configured supply. A conservative power assumption helps when load balancing reduces the available power. Efficiency defaults to 0.90.
 
-Keep the charger connected, with permission to pause/resume. Keep it unlocked, or select the Wallbox lock entity so the integration unlocks it before charging. Disable competing Wallbox, car or NextEnergy smart-charging schedules while this integration owns charging. Configure the car's charge limit at or above the requested target. This integration leaves electrical limits, load balancing, charger locks and the car's own protection systems in place and does not change the maximum current.
+Keep the charger connected, with permission to pause/resume. Keep it unlocked, or select the charger's lock entity so the integration unlocks it before charging. Disable competing charger, car or supplier smart-charging schedules while this integration owns charging. Configure the car's charge limit at or above the requested target. This integration leaves electrical limits, load balancing, charger locks and the car's own protection systems in place and does not change the maximum current.
 
 ## Daily use
 
@@ -98,11 +98,11 @@ With the forecast on, the plan covers published and estimated prices together, u
 
 How the estimate works:
 
-- **Model:** a ridge regression per hour, on hour of day, weekday or public holiday, the last published day's prices, and forecast wind (100 m), solar radiation and temperature at four fixed points in the Netherlands and Germany. It is trained daily on the past year of market prices and on the weather forecasts that were available before each of those hours.
-- **Your price:** the estimate is a market price. It is converted to your all-in price with a straight line fitted on the published hours (VAT, energy tax, supplier fee and price adjustment included). If the published prices do not follow the market price, the forecast is not used.
+- **Model:** a ridge regression per hour, on hour of day, weekday or public holiday, the last published day's prices, and forecast wind (100 m), solar radiation and temperature at four fixed points that drive the market of your bidding zone, and that country's public holidays. It is trained daily on the past year of market prices and on the weather forecasts that were available before each of those hours.
+- **Your price:** the estimate is a market price. It is converted to your all-in price with a straight line fitted on the published hours (VAT, energy tax, supplier fee and price adjustment included, and the exchange rate for prices in another currency than the euro). If the published prices do not follow the market price, the forecast is not used.
 - **Horizon:** up to 6 days ahead.
 - **Data:** market prices from the [Energy-Charts API](https://api.energy-charts.info/) (Fraunhofer ISE, CC BY 4.0, source Bundesnetzagentur / SMARD.de), and weather forecasts from [Open-Meteo](https://open-meteo.com/). No API keys, and no location of yours is sent. Data is fetched only while the forecast is on: about 10 requests at start and once a day, plus 4 per hour.
-- **Market prices:** these are for the Dutch bidding zone.
+- **Bidding zone:** the day-ahead market of your electricity price, under **Price forecast market** in the options. It starts from the country and home location set in Home Assistant (so Denmark and Sweden get the zone you live in), and you can change it: Netherlands, Belgium, Germany and Luxembourg, France, Austria, Switzerland, Poland, Denmark (DK1, DK2), Sweden (SE3, SE4) or Finland. The model was chosen on Dutch prices and then [backtested for every zone](tools/backtest/results/zones.md): in each one it costs 1.2–2.0% more than knowing all prices in advance, against 2.5–5.4% for the 0.20 threshold.
 
 Why: a [backtest](tools/backtest/) over 17,715 sessions from June 2024 to September 2026 found the forecast cost 1.8% more than perfect foresight, against 5.1% for a fixed threshold of 0.18–0.20. For about 2,170 kWh a year, mostly charged in windows of several days, that is roughly EUR 16 a year. It saves most with long windows.
 
@@ -130,23 +130,33 @@ data:
 
 ### Car connected event
 
-When the car is plugged in, the integration fires `dynamic_car_charger_car_connected` with `config_entry_id`, `charger_entity`, `status_entity` and `status`. With a car connected sensor it fires when that sensor changes to one of the configured states (a binary sensor: on). With a Wallbox status entity it fires when the status changes to `Locked, car connected`. Otherwise it fires when the charging switch becomes available. [This example](examples/car_connected_notification.yaml) sends an actionable phone notification. [This one](examples/iphone_charging_live_activity.yaml) shows progress as an iPhone Live Activity.
+When the car is plugged in, the integration fires `dynamic_car_charger_car_connected` with `config_entry_id`, `charger_entity`, `connected_entity` and `status`. With a car connected sensor it fires when that sensor changes to one of the configured states (a binary sensor: on). Otherwise it fires when the charging switch becomes available. [This example](examples/car_connected_notification.yaml) sends an actionable phone notification. [This one](examples/iphone_charging_live_activity.yaml) shows progress as an iPhone Live Activity.
+
+### Notifications
+
+The [notifications blueprint](blueprints/automation/dynamic_car_charger/charging_notifications.yaml) sends a message to your phone through the Home Assistant Companion app when a car is plugged in (with when charging starts and the expected cost), when charging starts and when the target is reached. Import it under **Settings → Automations & scenes → Blueprints → Import blueprint** with its GitHub link, then create an automation from it and pick your phone.
 
 ### Session charging cost
 
-**Session charging cost** adds up the measured Wallbox power × the price of the interval at that moment. A session starts at the first charging request and ends when the target is reached, the deadline passes, or control is turned off. After a session ends, the sensor keeps showing the last session until the next one starts. Attributes: `active`, `started`, `ended`, `energy_kwh`, `average_price_eur_kwh` and `cost_complete` (false when a price was unknown for part of the energy). This is grid energy at the feed price, not your supplier bill.
+**Session charging cost** adds up the measured charging power × the price of the interval at that moment. A session starts at the first charging request and ends when the target is reached, the deadline passes, or control is turned off. After a session ends, the sensor keeps showing the last session until the next one starts. Attributes: `active`, `started`, `ended`, `energy_kwh`, `average_price_eur_kwh` and `cost_complete` (false when a price was unknown for part of the energy). This is grid energy at the feed price, not your supplier bill.
+
+Every finished session is kept in the integration's own storage (about 150 bytes each, so a session a day is roughly 55 KB a year), independent of how long the recorder keeps history. The `dynamic_car_charger.get_sessions` action returns them, oldest first, with `started`, `ended`, `energy_kwh`, `cost`, `cost_complete` and `currency`, plus the `running` session if one is active. Sessions that charged nothing are left out. On its first start with this log, the integration also imports the finished sessions the recorder still has (its history of **Session charging cost**, normally the last 10 days), so those are kept for good as well.
+
+`dynamic_car_charger.add_sessions` adds sessions from elsewhere, for example rebuilt from older hourly statistics: a list with `started`, `ended`, `energy_kwh` and `cost` per session (optionally `cost_complete`, `currency` and `reconstructed`). Sessions already in the list are skipped.
 
 ## Planning and execution
 
-Required grid energy is `(target - current %) / 100 × usable capacity / efficiency`. The scheduler allocates it to the cheapest known intervals before the deadline, allowing a partial final interval. Equal prices favor earlier charging. This allocation minimizes modeled energy cost at constant power and efficiency over the **published** intervals. It does not promise the globally cheapest price when future days are unknown, nor does it model solar export, demand charges or variable efficiency.
+Required grid energy is `(target - current %) / 100 × usable capacity / efficiency`. The scheduler allocates it to the cheapest known intervals before the deadline, allowing a partial final interval. Equal prices favor earlier charging. This allocation minimizes modeled energy cost at constant power and efficiency over the **published** intervals.
 
-Between changes in the reported battery percentage, measured Wallbox power is integrated to estimate added battery energy. A changed percentage resets that estimate. Once the estimate reaches the target, charging continues until the car reports the target percentage, for **at most 30 minutes** (`soc_confirmation_until`). This covers a sensor that rounds down, without charging outside the plan until the deadline when the car's own limit is below the target. Integer-rounded or stale battery readings and power polling can introduce error. Set a suitable charge limit in the car and check the first real session. The cost sensor reports **remaining planned cost**, not the final bill or a historical total.
+**Slower near full.** Most cars charge the last percent or two much more slowly: the power drops and a % takes more energy. The plan counts each battery band (from 0, 90, 95 and 98%) with a speed factor, so it reserves that extra time and energy. The integration learns the factors from your own sessions: while the charger is on, it times each change in the reported battery % against the power setting. Until a band has at least half a percentage point of evidence, only 98–100% is assumed twice as slow. The plan shows the factors in `charging_speed` and the learned bands in `charging_speed_learned`; they are kept across restarts and newer sessions gradually replace older ones. It does not promise the globally cheapest price when future days are unknown, nor does it model solar export, demand charges or variable efficiency.
+
+Between changes in the reported battery percentage, measured charging power is integrated to estimate added battery energy (more slowly where the car's speed factor says a % takes longer). A changed percentage resets that estimate. Once the estimate reaches the target, charging continues until the car reports the target percentage, for **at most 30 minutes** (`soc_confirmation_until`). This covers a sensor that rounds down, without charging outside the plan until the deadline when the car's own limit is below the target. Integer-rounded or stale battery readings and power polling can introduce error. Set a suitable charge limit in the car and check the first real session. The cost sensor reports **remaining planned cost**, not the final bill or a historical total.
 
 Prices beyond the published horizon remain unknown. A provisional plan uses available cheap periods now and is recomputed when new prices arrive; this can charge earlier than a future, as-yet-unpublished cheaper period. Gaps are never filled with invented prices. Insufficient priced time produces a visible shortfall and still schedules all useful known time. Invalid or unavailable inputs request a pause; there is no unpriced emergency-charge override.
 
-The controller checks every 15 seconds and on source state changes. It uses cloud switch feedback and retries unconfirmed commands every 120 seconds; a changed on/off request bypasses this delay. A command that is still not confirmed after 5 minutes is shown as `control_error`, but it keeps being retried, so the charger recovers on its own once it responds. Actual start/stop timing also depends on the Wallbox cloud and vehicle response. The official Wallbox integration polls at roughly 90 seconds for one charger. A requested start is not proof the vehicle is drawing power. Low power is reflected in slower estimated progress and eventual shortfall.
+The controller checks every 15 seconds and on source state changes. It uses cloud switch feedback and retries unconfirmed commands every 120 seconds; a changed on/off request bypasses this delay. A command that is still not confirmed after 5 minutes is shown as `control_error`, but it keeps being retried, so the charger recovers on its own once it responds. A pause that the charger refuses or doesn't confirm while the measured power is zero (for example a Wallbox with a full car, which shows "Waiting for car demand" and keeps its switch on) is not an error: nothing flows, so it isn't retried until power flows again. Actual start/stop timing also depends on the charger's (cloud) integration and the vehicle's response; cloud integrations can take a minute or more to confirm. A requested start is not proof the vehicle is drawing power. Low power is reflected in slower estimated progress and eventual shortfall.
 
-If a started session has not reached the measured target at the deadline, charging continues for at most the configured **deadline grace** (default 60 minutes, `charging_overtime`). This never starts a new session after the deadline and stops when the car starts driving. Set it to 0 to stop exactly at the deadline.
+If a started session has not reached the measured target at the deadline, charging continues for at most the configured **deadline grace** (default 60 minutes, `charging_overtime`). This never starts a new session after the deadline. Set it to 0 to stop exactly at the deadline.
 
 Home Assistant must remain running with working network access. Unloading requests a pause, but an outage, lost connectivity or failed cloud command can leave the charger in its last state. This integration cannot guarantee a deadline or an exact percentage during those failures.
 
@@ -169,8 +179,8 @@ The **Charging plan** sensor state is one of:
 | `target_reached` | Measured battery percentage meets the target. |
 | `awaiting_soc_confirmation` | Estimated energy reaches the target; waiting (at most 30 minutes of charging) for measured SOC. |
 | `deadline_passed` | The deadline has expired; charging is paused. |
-| `waiting_for_car` | The charger is unavailable, or the car is driving; charging cannot start yet. |
-| `unlocking_charger` | The Wallbox unlock was requested and is not yet confirmed. |
+| `waiting_for_car` | The charger or its lock is unavailable; charging cannot start yet. |
+| `unlocking_charger` | The charger unlock was requested and is not yet confirmed. |
 | `starting_charge` | Resume was requested and is not yet confirmed. |
 | `stopping_charge` | Pause was requested and is not yet confirmed. |
 | `input_error` | A required input is missing, unavailable, malformed or has wrong units. Inspect `error`. |
@@ -180,15 +190,15 @@ The **Charging plan** sensor state is one of:
 
 `planning_method` shows how the plan was made: `published_prices` (all prices to the deadline are published, or the deadline is close), `forecast` or `threshold`. Slots with `estimated: true` use a forecast price.
 
-Useful attributes: `slots`, `planning_method`, `forecast_status`, `forecast_error`, `estimated_cost_eur`, `required_grid_kwh`, `planned_grid_kwh`, `shortfall_kwh`, `coverage_complete`, `measured_soc`, `estimated_soc`, `soc_reported_at`, `soc_report_old`, `charging_requested`, `price_threshold_eur_kwh`, `threshold_safety_mode`, `deadline_extension_until` and `error`.
+Useful attributes: `car_connected` (true/false, or null without that sensor), `slots`, `planning_method`, `forecast_status`, `forecast_error`, `estimated_cost_eur`, `required_grid_kwh`, `planned_grid_kwh`, `shortfall_kwh`, `coverage_complete`, `measured_soc`, `estimated_soc`, `soc_reported_at`, `soc_report_old`, `charging_requested`, `price_threshold_eur_kwh`, `threshold_safety_mode`, `deadline_extension_until` and `error`.
 
-For dashboards and apps, `setup` lists the configured entities (`charger_entity`, `soc_entity`, `price_entity`, `power_entity`, `status_entity`, `lock_entity`, `vehicle_state_entity`) with `power_kw` and `capacity_kwh`, and `prices` lists today's and later prices as `start`, `end` and `price` (adjustment included), whatever layout the price sensor uses.
+For dashboards and apps, `setup` lists the configured entities (`charger_entity`, `soc_entity`, `price_entity`, `power_entity`, `connected_entity`, `lock_entity`) with `power_kw`, `capacity_kwh` and the forecast's `bidding_zone`, and `prices` lists today's and later prices as `start`, `end` and `price` (adjustment included), whatever layout the price sensor uses.
 
 To keep the history database small, `slots`, `estimated_soc`, `active_charge_until`, `setup` and `prices` are available on the live state but are not recorded in history.
 
 ### Compatible price sensor format
 
-The sensor unit must be a currency per kWh, such as `EUR/kWh`, `€/kWh`, `SEK/kWh`, or hundredths such as `c/kWh` or `öre/kWh` (a `currency` attribute names the currency). The cost sensors and the price threshold use the same currency. The price forecast only covers Dutch prices in euros. Supported layouts: `prices_today` / `prices_tomorrow` lists with `time` and `price` (Enever, ENTSO-e), `raw_today` / `raw_tomorrow` with `start`, `end` and `value` (Nord Pool), or a `prices` attribute:
+The sensor unit must be a currency per kWh, such as `EUR/kWh`, `€/kWh`, `SEK/kWh`, or hundredths such as `c/kWh` or `öre/kWh` (a `currency` attribute names the currency). The cost sensors and the price threshold use the same currency. Supported layouts: `prices_today` / `prices_tomorrow` lists with `time` and `price` (for example Enever, ENTSO-e), `raw_today` / `raw_tomorrow` with `start`, `end` and `value` (for example Nord Pool), or a `prices` attribute:
 
 ```yaml
 prices:

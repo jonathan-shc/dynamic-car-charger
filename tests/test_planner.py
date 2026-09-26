@@ -5,7 +5,15 @@ from itertools import combinations
 
 import pytest
 
-from custom_components.dynamic_car_charger.planner import Slot, make_plan, parse_prices, price_unit
+from custom_components.dynamic_car_charger.planner import (
+    DEFAULT_TAPER,
+    Slot,
+    full_power_kwh,
+    make_plan,
+    parse_prices,
+    price_unit,
+    soc_after,
+)
 
 NOW = datetime(2026, 9, 17, 18, tzinfo=UTC)
 
@@ -128,7 +136,7 @@ def test_bad_soc(value):
         plan([0.1], soc=value)
 
 
-def test_enever_prices_with_missing_tomorrow():
+def test_today_tomorrow_prices_with_missing_tomorrow():
     result = parse_prices(
         {"prices_today": [{"time": NOW.isoformat(), "price": "0.12"}], "prices_tomorrow": None},
         adjustment=0.01,
@@ -250,3 +258,23 @@ def test_nord_pool_rows_with_values_in_cents():
 def test_price_row_without_any_price_is_rejected():
     with pytest.raises(ValueError):
         parse_prices({"prices": [{"start": NOW.isoformat()}]})
+
+
+def test_slow_last_percent_needs_more_energy_and_time():
+    # 96 -> 100% of 50 kWh: 2 points at normal speed, 2 points twice as slow.
+    assert full_power_kwh(96, 100, 50, 1, DEFAULT_TAPER) == pytest.approx(1.0 + 2.0)
+    assert full_power_kwh(96, 100, 50, 1) == pytest.approx(2.0)
+    assert full_power_kwh(20, 80, 50, 1, DEFAULT_TAPER) == pytest.approx(30.0)
+    # The plan reserves the extra time: 3 kWh at 10 kW is 18 minutes, not 12.
+    result = plan([0.1, 0.5], soc=96, target=100, taper=DEFAULT_TAPER)
+    assert result.required_kwh == pytest.approx(3.0)
+    assert sum(slot.hours for slot in result.slots) == pytest.approx(0.3)
+
+
+def test_estimated_battery_rises_slower_near_full():
+    taper = ((0.0, 1.0), (98.0, 3.0))
+    assert soc_after(96, 1.0, 50, taper) == pytest.approx(98.0)
+    # 0.5 kWh more at three times the effort per % is only a third of a %.
+    assert soc_after(96, 1.5, 50, taper) == pytest.approx(98 + 1 / 3)
+    assert soc_after(99.9, 10, 50, taper) == 100.0
+    assert soc_after(50, 5, 50) == pytest.approx(60.0)

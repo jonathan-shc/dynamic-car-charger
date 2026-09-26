@@ -4,13 +4,20 @@ from __future__ import annotations
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN, PLATFORMS, SERVICE_SET_SESSION
+from .config_flow import migrate_settings
+from .const import (
+    DOMAIN,
+    PLATFORMS,
+    SERVICE_ADD_SESSIONS,
+    SERVICE_GET_SESSIONS,
+    SERVICE_SET_SESSION,
+)
 from .coordinator import ChargerCoordinator
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
@@ -19,9 +26,30 @@ SET_SESSION_SCHEMA = vol.Schema(
     {
         vol.Optional("config_entry_id"): cv.string,
         vol.Optional("target_percentage"): vol.All(vol.Coerce(float), vol.Range(0, 100)),
+        vol.Optional("energy_to_charge"): vol.All(vol.Coerce(float), vol.Range(0, 200)),
         vol.Optional("ready_by"): cv.datetime,
         vol.Optional("automatic_charging"): cv.boolean,
         vol.Optional("charge_now"): cv.boolean,
+    }
+)
+
+
+SESSION_SCHEMA = vol.Schema(
+    {
+        vol.Required("started"): cv.datetime,
+        vol.Required("ended"): cv.datetime,
+        vol.Required("energy_kwh"): vol.All(vol.Coerce(float), vol.Range(0, 500)),
+        vol.Required("cost"): vol.Coerce(float),
+        vol.Optional("cost_complete", default=True): cv.boolean,
+        vol.Optional("currency"): cv.string,
+        # Rebuilt from hourly statistics rather than measured by the integration.
+        vol.Optional("reconstructed", default=False): cv.boolean,
+    }
+)
+ADD_SESSIONS_SCHEMA = vol.Schema(
+    {
+        vol.Optional("config_entry_id"): cv.string,
+        vol.Required("sessions"): vol.All(cv.ensure_list, [SESSION_SCHEMA]),
     }
 )
 
@@ -32,6 +60,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         changes = {}
         if "target_percentage" in call.data:
             changes["target"] = call.data["target_percentage"]
+        if "energy_to_charge" in call.data:
+            changes["energy_goal"] = call.data["energy_to_charge"]
         if "ready_by" in call.data:
             ready_by = call.data["ready_by"]
             if ready_by.tzinfo is None:
@@ -46,6 +76,33 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         await coordinator.async_change(**changes)
 
     hass.services.async_register(DOMAIN, SERVICE_SET_SESSION, set_session, SET_SESSION_SCHEMA)
+
+    async def get_sessions(call: ServiceCall) -> ServiceResponse:
+        """Every finished charging session, oldest first, and the running one."""
+        coordinator = _coordinator_for(hass, call.data.get("config_entry_id"))
+        return coordinator.sessions_response()
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_GET_SESSIONS,
+        get_sessions,
+        vol.Schema({vol.Optional("config_entry_id"): cv.string}),
+        supports_response=SupportsResponse.ONLY,
+    )
+
+    async def add_sessions(call: ServiceCall) -> ServiceResponse:
+        """Add sessions from elsewhere, e.g. reconstructed from older history."""
+        coordinator = _coordinator_for(hass, call.data.get("config_entry_id"))
+        added = coordinator.add_sessions(call.data["sessions"])
+        return {"added": added}
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_ADD_SESSIONS,
+        add_sessions,
+        ADD_SESSIONS_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
     return True
 
 
@@ -88,3 +145,15 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await entry.runtime_data.async_stop()
         return True
     return False
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Bring settings from older versions to the current form; see migrate_settings."""
+    if entry.version < 4:
+        hass.config_entries.async_update_entry(
+            entry,
+            data=migrate_settings(entry.data),
+            options=migrate_settings(entry.options),
+            version=4,
+        )
+    return entry.version <= 4

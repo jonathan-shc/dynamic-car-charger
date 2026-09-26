@@ -1,8 +1,8 @@
 """Fetch price history and weather forecasts, and keep price estimates current.
 
 Sources, no API keys needed:
-- Energy-Charts (Fraunhofer ISE): Dutch day-ahead market prices, CC BY 4.0,
-  source Bundesnetzagentur | SMARD.de.
+- Energy-Charts (Fraunhofer ISE): day-ahead market prices of the bidding zone,
+  CC BY 4.0, source Bundesnetzagentur | SMARD.de.
 - Open-Meteo: live weather forecasts, and archived forecasts to train on.
 """
 
@@ -23,17 +23,16 @@ from .price_forecast import (
     HOUR,
     MAX_LEAD_DAYS,
     TRAIN_DAYS,
-    WEATHER_POINTS,
     WEATHER_VARIABLES,
     Calibration,
     PriceModel,
     fit_calibration,
 )
+from .zones import WEATHER_POINTS, zone
 
 _LOGGER = logging.getLogger(__name__)
 
 PRICE_URL = "https://api.energy-charts.info/price"
-BIDDING_ZONE = "NL"
 ARCHIVE_URL = "https://previous-runs-api.open-meteo.com/v1/forecast"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 
@@ -78,8 +77,14 @@ def parse_weather(data: dict, point: str, suffixes: list[str]) -> dict[datetime,
 class PriceForecaster:
     """Keeps market history, weather forecasts and a trained model in memory."""
 
-    def __init__(self, hass: HomeAssistant, fetch_json: FetchJson | None = None) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        fetch_json: FetchJson | None = None,
+        bidding_zone: str | None = None,
+    ) -> None:
         self.hass = hass
+        self.zone = zone(bidding_zone)
         self._fetch_json = fetch_json or self._default_fetch
         self.market: dict[datetime, float] = {}
         self.archive: dict[datetime, dict[str, float]] = {}
@@ -107,7 +112,7 @@ class PriceForecaster:
         if self._market_at is None or now - self._market_at >= HISTORY_REFRESH:
             return True
         # After publication, fetch again until tomorrow's prices are in.
-        local = dt_util.as_local(now)
+        local = now.astimezone(self.zone.tz)
         tomorrow = local.date() + timedelta(days=1)
         model_day = self.model.last_known_day if self.model else None
         return (
@@ -137,9 +142,7 @@ class PriceForecaster:
                     await self._fetch_live()
                     self._live_at = now
                 if retrain or self.model is None:
-                    self.model = PriceModel(
-                        dt_util.get_default_time_zone(), self.market, self.archive
-                    )
+                    self.model = PriceModel(self.zone.tz, self.market, self.archive, self.zone)
                     self.trained_at = now
                 await self._estimate(now)
             except Exception as err:  # any source failure falls back to the threshold
@@ -153,11 +156,11 @@ class PriceForecaster:
             self.status = "ready" if self.estimates else "unavailable"
 
     async def _fetch_market(self, now: datetime) -> None:
-        today = dt_util.as_local(now).date()
+        today = now.astimezone(self.zone.tz).date()
         data = await self._fetch_json(
             PRICE_URL,
             {
-                "bzn": BIDDING_ZONE,
+                "bzn": self.zone.code,
                 "start": (today - timedelta(days=TRAIN_DAYS + 10)).isoformat(),
                 "end": (today + timedelta(days=1)).isoformat(),
             },
@@ -166,11 +169,12 @@ class PriceForecaster:
         self._market_at = now
 
     async def _fetch_archive(self, now: datetime) -> None:
-        today = dt_util.as_local(now).date()
+        today = now.astimezone(self.zone.tz).date()
         suffixes = [f"_previous_day{lead}" for lead in range(1, MAX_LEAD_DAYS + 1)]
         names = [f"{v}{s}" for v in WEATHER_VARIABLES for s in suffixes]
         archive: dict[datetime, dict[str, float]] = {}
-        for point, (lat, lon) in WEATHER_POINTS.items():
+        for point in self.zone.points:
+            lat, lon = WEATHER_POINTS[point]
             data = await self._fetch_json(
                 ARCHIVE_URL,
                 {
@@ -189,7 +193,8 @@ class PriceForecaster:
 
     async def _fetch_live(self) -> None:
         live: dict[datetime, dict[str, float]] = {}
-        for point, (lat, lon) in WEATHER_POINTS.items():
+        for point in self.zone.points:
+            lat, lon = WEATHER_POINTS[point]
             data = await self._fetch_json(
                 FORECAST_URL,
                 {
@@ -214,11 +219,14 @@ class PriceForecaster:
         )
         self.estimated_at = now
 
-    def estimate(self, known: list[Slot], deadline: datetime) -> tuple[list[Slot], Calibration]:
+    def estimate(
+        self, known: list[Slot], deadline: datetime, currency: str = "EUR"
+    ) -> tuple[list[Slot], Calibration]:
         """Estimated all-in price slots from the end of `known` to the deadline.
 
         The market-to-all-in relation is fitted on the published hours, so it
-        includes VAT, taxes, supplier fees and the configured price adjustment.
+        includes VAT, taxes, supplier fees, the configured price adjustment and,
+        for another currency than the euro, the exchange rate.
         """
         if not self.estimates or self.model is None:
             raise ForecastUnavailable(self.error or "Price forecast is not ready")
@@ -231,7 +239,7 @@ class PriceForecaster:
             for hour, prices in hourly.items()
             if hour in self.model.market
         ]
-        calibration = fit_calibration(pairs)
+        calibration = fit_calibration(pairs, euro=currency == "EUR")
         if calibration is None:
             raise ForecastUnavailable("Published prices do not match market prices")
         known_end = max((slot.end for slot in known), default=None)

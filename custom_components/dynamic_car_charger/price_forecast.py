@@ -2,11 +2,11 @@
 
 No Home Assistant dependencies. The model is a ridge regression on the hour,
 weekday or holiday, the last published day's prices, and forecast wind, solar
-radiation and temperature at points that drive the Dutch and German market.
-It was chosen with the backtest in tools/backtest.
+radiation and temperature at points that drive the bidding zone's market
+(see zones.py). It was chosen with the backtest in tools/backtest on Dutch prices.
 
 Prices here are market prices in EUR/kWh. `fit_calibration` maps them to the
-all-in prices of the configured price sensor.
+all-in prices of the configured price sensor, in whatever currency it uses.
 """
 
 from __future__ import annotations
@@ -17,20 +17,16 @@ from datetime import UTC, date, datetime, timedelta, tzinfo
 
 import numpy as np
 
+from .zones import WEATHER_POINTS as WEATHER_POINTS
+from .zones import Zone
+from .zones import dutch_holidays as dutch_holidays
+from .zones import easter as easter
+from .zones import zone as zone_for
+
 HOUR = timedelta(hours=1)
 DAY = timedelta(days=1)
 
-# Fixed points in the coupled NL/DE market. These are not the user's location.
-WEATHER_POINTS = {
-    "nl_offshore": (53.5, 4.5),
-    "nl_onshore": (52.9, 5.9),
-    "de_north": (54.0, 9.0),
-    "de_central": (51.0, 10.0),
-}
 WEATHER_VARIABLES = ("wind_speed_100m", "shortwave_radiation", "temperature_2m")
-WIND_POINTS = ("nl_offshore", "nl_onshore", "de_north", "de_central")
-SOLAR_POINTS = ("nl_onshore", "de_central", "de_north")
-TEMPERATURE_POINTS = ("nl_onshore", "de_central")
 # Archived forecasts exist for 1 to 6 days before each hour.
 MAX_LEAD_DAYS = 6
 TRAIN_DAYS = 365
@@ -38,39 +34,9 @@ MIN_TRAIN_HOURS = 30 * 24
 RIDGE_ALPHA = 3.0
 
 
-def easter(year: int) -> date:
-    """Gregorian Easter Sunday (anonymous algorithm)."""
-    a, b, c = year % 19, year // 100, year % 100
-    d, e = b // 4, b % 4
-    f = (b + 8) // 25
-    g = (b - f + 1) // 3
-    h = (19 * a + b - d - g + 15) % 30
-    i, k = c // 4, c % 4
-    m = (32 + 2 * e + 2 * i - h - k) % 7
-    n = (a + 11 * h + 22 * m) // 451
-    month, day = divmod(h + m - 7 * n + 114, 31)
-    return date(year, month, day + 1)
-
-
-def dutch_holidays(year: int) -> set[date]:
-    easter_sunday = easter(year)
-    kings_day = date(year, 4, 27)
-    if kings_day.weekday() == 6:
-        kings_day = date(year, 4, 26)
-    return {
-        date(year, 1, 1),
-        easter_sunday + timedelta(days=1),
-        kings_day,
-        easter_sunday + timedelta(days=39),
-        easter_sunday + timedelta(days=50),
-        date(year, 12, 25),
-        date(year, 12, 26),
-    }
-
-
-def is_day_off(day: date) -> bool:
+def is_day_off(day: date, code: str | None = None) -> bool:
     """Weekends and public holidays behave alike on the power market."""
-    return day.weekday() >= 5 or day in dutch_holidays(day.year)
+    return zone_for(code).is_day_off(day)
 
 
 @dataclass(frozen=True)
@@ -85,11 +51,13 @@ class Calibration:
         return self.slope * market + self.offset
 
 
-def fit_calibration(pairs: list[tuple[float, float]]) -> Calibration | None:
+def fit_calibration(pairs: list[tuple[float, float]], euro: bool = True) -> Calibration | None:
     """Fit the all-in price from market prices for hours where both are known.
 
     Returns None when there are too few hours or the relation is not the
-    linear one expected from VAT, taxes and supplier fees.
+    linear one expected from VAT, taxes and supplier fees. Prices in another
+    currency than the euro market prices also carry the exchange rate, so the
+    slope can be anything positive and the allowed error scales with it.
     """
     if len(pairs) < 12:
         return None
@@ -99,7 +67,10 @@ def fit_calibration(pairs: list[tuple[float, float]]) -> Calibration | None:
         return None
     slope, offset = np.polyfit(market, all_in, 1)
     residual = all_in - (slope * market + offset)
-    if not 0.5 <= slope <= 2.0 or float(np.sqrt(np.mean(residual**2))) > 0.01:
+    error = float(np.sqrt(np.mean(residual**2)))
+    if euro and (not 0.5 <= slope <= 2.0 or error > 0.01):
+        return None
+    if not euro and (slope <= 0 or error > 0.01 * slope):
         return None
     return Calibration(float(slope), float(offset), len(pairs))
 
@@ -112,8 +83,10 @@ class PriceModel:
         tz: tzinfo,
         market: dict[datetime, float],
         archive: dict[datetime, dict[str, float]],
+        zone: Zone | None = None,
     ) -> None:
         self.tz = tz
+        self.zone = zone or zone_for(None)
         self.market = market
         self.archive = archive
         by_day: dict[date, list[float]] = {}
@@ -140,14 +113,14 @@ class PriceModel:
             return None
         local_hour = hour.astimezone(self.tz).hour
         row = [1.0 if local_hour == h else 0.0 for h in range(24)]
-        row += [1.0 if is_day_off(day) else 0.0, lag_mean, lag_price]
+        row += [1.0 if self.zone.is_day_off(day) else 0.0, lag_mean, lag_price]
         try:
-            for point in WIND_POINTS:
+            for point in self.zone.wind:
                 wind = weather[f"{point}.wind_speed_100m{suffix}"] / 10
                 row += [wind, wind * wind]
-            for point in SOLAR_POINTS:
+            for point in self.zone.solar:
                 row.append(weather[f"{point}.shortwave_radiation{suffix}"] / 100)
-            for point in TEMPERATURE_POINTS:
+            for point in self.zone.temperature:
                 row.append(weather[f"{point}.temperature_2m{suffix}"] / 10)
         except (KeyError, TypeError):
             return None
