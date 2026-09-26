@@ -21,6 +21,7 @@ from custom_components.dynamic_car_charger.coordinator import ChargerCoordinator
 from custom_components.dynamic_car_charger.forecaster import ForecastUnavailable
 from custom_components.dynamic_car_charger.planner import Slot, make_plan
 from custom_components.dynamic_car_charger.price_forecast import Calibration
+from custom_components.dynamic_car_charger.zones import zone
 
 
 @pytest.fixture
@@ -120,8 +121,9 @@ async def test_estimated_target_waits_for_measured_soc(rig):
     assert c._active_charge_until is not None
 
     # The power integration estimates that enough energy has been delivered,
-    # but the car itself still reports 99%. Charging must continue.
-    c._credit_kwh = 0.5
+    # but the car itself still reports 99%. Charging must continue. (The last
+    # 2% counts as twice as slow by default: 1% of 50 kWh takes 1 kWh.)
+    c._credit_kwh = 1.0
     await c.async_reconcile()
     assert c.data["status"] == "awaiting_soc_confirmation"
     assert c.data["charging_requested"] is True
@@ -611,7 +613,7 @@ async def test_soc_confirmation_charges_at_most_30_minutes_past_estimate(rig):
     c.target = 100
     hass.states.async_set("sensor.battery", "99", {"unit_of_measurement": "%"})
     await c.async_change(enabled=True)
-    c._credit_kwh = 0.5
+    c._credit_kwh = 1.0
     await c.async_reconcile()
     assert c.data["status"] == "awaiting_soc_confirmation"
     assert c.data["charging_requested"] is True
@@ -817,6 +819,7 @@ class FakeForecaster:
     """Stands in for PriceForecaster without network access."""
 
     def __init__(self, hass=None, slots=(), error=None, bidding_zone=None):
+        self.zone = zone(bidding_zone)
         self.status = "ready"
         self.error = None
         self.model = None
