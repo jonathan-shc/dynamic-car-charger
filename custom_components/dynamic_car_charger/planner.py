@@ -35,6 +35,8 @@ class Slot:
     # A forecast price for an hour that is not published yet. Estimated slots
     # help decide whether to wait, but never start charging themselves.
     estimated: bool = False
+    # Chosen because its price is under the always-charge price, whatever the plan.
+    always: bool = False
 
     @property
     def hours(self):
@@ -67,6 +69,7 @@ class Plan:
                     price_eur_kwh=s.price,
                     energy_kwh=round(max(0.0, s.hours * power), 4),
                     estimated=s.estimated,
+                    always=s.always,
                 )
                 for s in self.slots
             ],
@@ -183,7 +186,11 @@ def _compact_selected_slots(chosen, candidates):
         next_selected = selected.get(source_index + 1)
         if next_selected is not None and source.end == sources[source_index + 1].start:
             compacted[chosen_index] = Slot(
-                source.end - duration, source.end, chosen_slot.price, chosen_slot.estimated
+                source.end - duration,
+                source.end,
+                chosen_slot.price,
+                chosen_slot.estimated,
+                chosen_slot.always,
             )
 
     return sorted(compacted, key=lambda slot: slot.start)
@@ -230,7 +237,19 @@ def soc_after(soc, battery_kwh, capacity, taper=None):
 
 
 def make_plan(
-    prices, now, deadline, soc, target, capacity, power, efficiency, max_price=None, taper=None
+    prices,
+    now,
+    deadline,
+    soc,
+    target,
+    capacity,
+    power,
+    efficiency,
+    max_price=None,
+    taper=None,
+    always_below=None,
+    always_until=None,
+    always_prices=None,
 ):
     """Fractional cheapest-first allocation, optimal for fixed power/efficiency.
 
@@ -238,6 +257,12 @@ def make_plan(
     consecutive known intervals are shifted within their intervals to avoid a
     needless pause while preserving the energy and cost of the plan. With a
     taper, the slow last part of a charge gets the extra time it needs.
+
+    With `always_below`, intervals at or below that price come first, whatever
+    the deadline or `max_price`: from `always_prices` (by default `prices`) up to
+    `always_until` (by default the deadline), cheapest first. Estimated ones count
+    too, so a cheaper hour expected later is waited for, but never start charging.
+    The rest of the energy is planned as usual in the other intervals.
     """
     now, deadline = timestamp(now), timestamp(deadline)
     soc, target = number(soc, 0, 100), number(target, 0, 100)
@@ -259,17 +284,24 @@ def make_plan(
             break
         cursor = max(cursor, slot.end)
     coverage = cursor >= deadline
-    clipped = [slot for slot in all_clipped if max_price is None or slot.price <= number(max_price)]
-    remaining, cost, chosen = required, 0.0, []
-    for slot in sorted(clipped, key=lambda s: (s.price, s.start)):
-        if remaining < 1e-8:
-            break
-        energy = min(remaining, slot.hours * power)
-        end = slot.start + timedelta(hours=energy / power)
-        chosen.append(Slot(slot.start, end, slot.price, slot.estimated))
-        remaining -= energy
-        cost += energy * slot.price
-    chosen = _compact_selected_slots(chosen, clipped)
+    remaining, chosen, taken = required, [], set()
+    if always_below is not None:
+        until = timestamp(always_until) if always_until is not None else deadline
+        always = [
+            Slot(max(s.start, now), min(s.end, until), number(s.price), s.estimated, True)
+            for s in (prices if always_prices is None else always_prices)
+            if s.end > now and s.start < until and number(s.price) <= number(always_below)
+        ]
+        picked, remaining = _allocate(always, remaining, power)
+        chosen += _compact_selected_slots(picked, always)
+        taken = {slot.start for slot in always}
+    clipped = [
+        slot
+        for slot in all_clipped
+        if (max_price is None or slot.price <= number(max_price)) and slot.start not in taken
+    ]
+    picked, remaining = _allocate(clipped, remaining, power)
+    chosen = sorted(chosen + _compact_selected_slots(picked, clipped), key=lambda s: s.start)
     cost = sum(slot.hours * power * slot.price for slot in chosen)
     return Plan(
         tuple(chosen),
@@ -279,3 +311,16 @@ def make_plan(
         coverage,
         max(0, remaining),
     )
+
+
+def _allocate(candidates, remaining, power):
+    """The cheapest intervals for the energy, the last one partly; and what's left."""
+    chosen = []
+    for slot in sorted(candidates, key=lambda s: (s.price, s.start)):
+        if remaining < 1e-8:
+            break
+        energy = min(remaining, slot.hours * power)
+        end = slot.start + timedelta(hours=energy / power)
+        chosen.append(Slot(slot.start, end, slot.price, slot.estimated, slot.always))
+        remaining -= energy
+    return chosen, remaining
