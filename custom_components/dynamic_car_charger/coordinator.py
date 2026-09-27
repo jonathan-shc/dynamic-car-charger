@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from datetime import datetime, timedelta
 from functools import partial
@@ -662,6 +663,11 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         data["threshold_safety_mode"] = safety_mode
         data["forecast_status"] = self.forecaster.status if self.use_forecast else "off"
         data["forecast_error"] = None
+        if self.use_forecast:
+            # Kept current even when the plan doesn't need the forecast: the forecast
+            # sensor shows its estimates in all-in prices only with a calibration.
+            with contextlib.suppress(ForecastUnavailable):
+                self.forecast_calibration = self.forecaster.calibration(prices, self.currency)
         # Once prices are known continuously through the deadline, use the
         # normal least-cost plan. Near the deadline, use any published price.
         if full_plan.coverage_complete or safety_mode:

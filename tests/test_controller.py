@@ -888,9 +888,12 @@ class FakeForecaster:
         self.async_update = AsyncMock()
 
     def estimate(self, known, deadline, currency="EUR"):
+        return self.slots, self.calibration(known, currency)
+
+    def calibration(self, known, currency="EUR"):
         if self.fail:
             raise ForecastUnavailable(self.fail)
-        return self.slots, Calibration(1.21, 0.1327, 48)
+        return Calibration(1.21, 0.1327, 48)
 
 
 def _forecast_rig(c, **kwargs):
@@ -944,6 +947,8 @@ async def test_published_prices_to_deadline_ignore_forecast(rig):
     await c.async_reconcile()
     assert c.data["planning_method"] == "published_prices"
     assert c.data["plan_is_provisional"] is False
+    # The forecast sensor still gets its calibration, to show estimates in all-in prices.
+    assert c.forecast_calibration is not None
 
 
 async def test_estimated_slot_never_starts_charging(rig):

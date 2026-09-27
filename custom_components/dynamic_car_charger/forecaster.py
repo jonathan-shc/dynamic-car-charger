@@ -228,6 +228,23 @@ class PriceForecaster:
         includes VAT, taxes, supplier fees, the configured price adjustment and,
         for another currency than the euro, the exchange rate.
         """
+        calibration = self.calibration(known, currency)
+        known_end = max((slot.end for slot in known), default=None)
+        if known_end is None:
+            raise ForecastUnavailable("No published prices")
+        hour = known_end.replace(minute=0, second=0, microsecond=0)
+        if hour < known_end:
+            hour += HOUR
+        slots = []
+        while hour < deadline:
+            market = self.estimates.get(hour)
+            if market is not None:
+                slots.append(Slot(hour, hour + HOUR, calibration.apply(market), True))
+            hour += HOUR
+        return slots, calibration
+
+    def calibration(self, known: list[Slot], currency: str = "EUR") -> Calibration:
+        """How market prices turn into the all-in prices of `known`, the published slots."""
         if not self.estimates or self.model is None:
             raise ForecastUnavailable(self.error or "Price forecast is not ready")
         hourly: dict[datetime, list[float]] = {}
@@ -242,16 +259,4 @@ class PriceForecaster:
         calibration = fit_calibration(pairs, euro=currency == "EUR")
         if calibration is None:
             raise ForecastUnavailable("Published prices do not match market prices")
-        known_end = max((slot.end for slot in known), default=None)
-        if known_end is None:
-            raise ForecastUnavailable("No published prices")
-        hour = known_end.replace(minute=0, second=0, microsecond=0)
-        if hour < known_end:
-            hour += HOUR
-        slots = []
-        while hour < deadline:
-            market = self.estimates.get(hour)
-            if market is not None:
-                slots.append(Slot(hour, hour + HOUR, calibration.apply(market), True))
-            hour += HOUR
-        return slots, calibration
+        return calibration
