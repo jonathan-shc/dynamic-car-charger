@@ -16,7 +16,7 @@ It works with any charger that has an on/off switch in Home Assistant and any dy
 - Optional charger unlocking before charging and locking when the car drives away.
 - A `set_session` action to set target, deadline and mode from automations, scripts or iOS Shortcuts.
 - A measured **Session charging cost** from the measured charging power and the price at the time.
-- The car's **drives**, with their routes, kept for good from its device tracker for dashboards and apps.
+- The car's **drives**, with their routes and battery use, kept for good from its device tracker for dashboards and apps.
 - Repair issues in **Settings → System → Repairs** when inputs or the charger stay broken for 30 minutes.
 - Replanning as prices, battery telemetry and measured charging power change.
 - Negative prices, fractional charging intervals, hourly or quarter-hourly prices and timezone-aware daylight-saving handling.
@@ -149,7 +149,9 @@ Every finished session is kept in the integration's own storage (about 150 bytes
 
 When the car has a device tracker with a GPS position, the integration keeps its drives. It uses **Car location** from the options, or else the device tracker on the same device as the battery sensor. A step of more than 40 m counts as moving (a parked car's GPS wanders less), a stop of more than 10 minutes ends a drive, and drives shorter than 0.5 km are left out. A drive keeps every position from just before its first step to its last, and those of the two minutes after, so the route ends where the car parked. Each drive keeps its start, end, distance and route; the route is simplified to within 8 m, so a drive takes a few kilobytes. Drives have their own storage file, saved when a drive ends, and are kept for good. On every start the integration also reads the positions the recorder has since the last kept drive (normally up to 10 days), so drives from before, or cut off by a restart, are kept too.
 
-`dynamic_car_charger.get_trips` returns the last drives, newest first (`limit`, default 20), each with `started`, `ended`, `distance_km`, `route` as `[latitude, longitude, seconds after the start]`, and `from_zone`, `from_name`, `to_zone` and `to_name` when it started or ended in a zone (the smallest one it was in, looked up when asked, so zones added or moved later name earlier drives too), and the `total` number kept. Drives kept by 0.10.0 are cut again once from the recorder, as far back as it goes. The tracker in use is in the plan's `setup` as `location_entity`.
+With a battery sensor, each drive also keeps how many percent of the battery it used: the percentage at its start less the middle reading of the five minutes after it, as the reading wavers by a few tenths while the car settles. A drive during which the battery went up (charged on the way) gets none. Drives the recorder still has the battery's history for get it filled in on start.
+
+`dynamic_car_charger.get_trips` returns the last drives, newest first (`limit`, default 20), each with `started`, `ended`, `distance_km`, `route` as `[latitude, longitude, seconds after the start]`, and `from_zone`, `from_name`, `to_zone` and `to_name` when it started or ended in a zone (the smallest one it was in, looked up when asked, so zones added or moved later name earlier drives too), `battery_used` in percent where known, with `energy_kwh` from the battery (from **Usable car battery capacity**) and `cost` with `currency`: what charging that back costs, through the charging efficiency, at the average price paid per kWh in the charging sessions of the last 60 days (left out when fewer than 1 kWh was charged in them), and the `total` number kept. Drives kept by 0.10.0 are cut again once from the recorder, as far back as it goes. The tracker in use is in the plan's `setup` as `location_entity`.
 
 ## Planning and execution
 

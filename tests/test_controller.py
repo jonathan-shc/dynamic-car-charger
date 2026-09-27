@@ -736,6 +736,21 @@ async def test_get_sessions_service_returns_the_log(rig):
     assert answer["running"] is None
 
 
+def test_average_price_paid_over_recent_complete_sessions(rig):
+    _, c, _ = rig
+    recent = (dt_util.utcnow() - timedelta(days=3)).isoformat()
+    old = (dt_util.utcnow() - timedelta(days=90)).isoformat()
+    c.session_log = [
+        {"started": recent, "energy_kwh": 20.0, "cost": 5.0},
+        {"started": recent, "energy_kwh": 10.0, "cost": 4.0},
+        {"started": recent, "energy_kwh": 10.0, "cost": 0.1, "cost_complete": False},
+        {"started": old, "energy_kwh": 50.0, "cost": 1.0},
+    ]
+    assert c.average_price_paid() == pytest.approx(0.3)
+    c.session_log = []
+    assert c.average_price_paid() is None
+
+
 async def test_sessions_that_charged_nothing_are_not_logged(rig):
     _, c, _ = rig
     c._log_session(

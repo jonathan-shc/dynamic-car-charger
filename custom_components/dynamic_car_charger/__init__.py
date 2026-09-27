@@ -108,9 +108,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     async def get_trips(call: ServiceCall) -> ServiceResponse:
         """The car's last drives, newest first, with their routes."""
         coordinator = _coordinator_for(hass, call.data.get("config_entry_id"))
-        if coordinator.trips is None:
-            return {"trips": [], "total": 0}
-        return coordinator.trips.response(call.data["limit"])
+        return coordinator.trips_response(call.data["limit"])
 
     hass.services.async_register(
         DOMAIN,

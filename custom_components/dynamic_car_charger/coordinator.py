@@ -183,7 +183,9 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._async_import_recorded_sessions(), f"{DOMAIN} import recorded sessions"
         )
         if location := self.location_entity():
-            self.trips = TripRecorder(self.hass, self.entry.entry_id, location)
+            self.trips = TripRecorder(
+                self.hass, self.entry.entry_id, location, self.settings.get("soc_entity")
+            )
             await self.trips.async_start()
         await self.async_reconcile()
 
@@ -973,6 +975,31 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.session_log.sort(key=lambda entry: timestamp(entry["started"]))
         self.store.async_delay_save(self._save_data, 1)
         return added
+
+    def average_price_paid(self, days: int = 60) -> float | None:
+        """What a kWh from the grid cost on average in the recent charging sessions."""
+        since = dt_util.utcnow() - timedelta(days=days)
+        energy = cost = 0.0
+        for entry in self.session_log:
+            if not entry.get("cost_complete", True) or timestamp(entry["started"]) < since:
+                continue
+            energy += entry["energy_kwh"]
+            cost += entry["cost"]
+        return cost / energy if energy >= 1 else None
+
+    def trips_response(self, limit: int) -> dict[str, Any]:
+        """For the get_trips action; energy and cost only where the battery's size is known."""
+        if self.trips is None:
+            return {"trips": [], "total": 0}
+        if self.energy_mode:
+            return self.trips.response(limit)
+        return self.trips.response(
+            limit,
+            capacity_kwh=self.settings["capacity_kwh"],
+            efficiency=self.settings["efficiency"],
+            price=self.average_price_paid(),
+            currency=self.currency,
+        )
 
     def sessions_response(self) -> dict[str, Any]:
         """For the get_sessions action: the log, and the running session if any."""

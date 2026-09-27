@@ -4,13 +4,15 @@ The car's device tracker is followed. A step of more than 40 m starts a drive (a
 car's GPS wanders less); a drive ends when the car hasn't moved for ten minutes, and keeps
 the positions of the two minutes after its last step, so the route ends where the car
 parked. Each drive is kept with its start, end, distance and route, the route simplified
-to a few metres so a drive costs a few kilobytes. The Home Assistant zones it started and
+to a few metres so a drive costs a few kilobytes, and with how much of the battery it
+used, from the car's battery percentage. The Home Assistant zones it started and
 ended in are looked up when the drives are asked for, so zones added or moved later name
 earlier drives too. The trips have their own storage file, saved
 only when a drive ends, so the frequently saved charging state stays small.
 
 On every start the recorder's positions since the last kept drive are read, which adds
-drives from before the integration kept them and finishes one cut off by a restart.
+drives from before the integration kept them and finishes one cut off by a restart; the
+battery use of drives the recorder still has is filled in the same way.
 """
 
 from __future__ import annotations
@@ -46,7 +48,14 @@ RECORDER_DAYS = 10
 # Drives kept by an older way of cutting them are rebuilt from the recorder once.
 VERSION = 2
 
+# The battery percentage after a drive: the middle reading of these minutes after it, as
+# it wavers by a few tenths while the car settles.
+SOC_SETTLE = timedelta(minutes=5)
+# Battery readings kept for the drive under way: enough for a long one.
+SOC_MEMORY = timedelta(hours=6)
+
 Point = tuple[datetime, float, float]  # time, latitude, longitude
+Reading = tuple[datetime, float]  # time, battery percentage
 
 
 def metres(a: Point, b: Point) -> float:
@@ -134,6 +143,30 @@ def record(points: list[Point]) -> dict[str, Any]:
     }
 
 
+def battery_used(started: datetime, ended: datetime, readings: list[Reading]) -> float | None:
+    """How many percent of the battery a drive used: the reading at its start less the
+    middle reading of the minutes after it. None when that isn't known, or the battery went
+    up (charged on the way)."""
+    before = [soc for time, soc in readings if time <= started]
+    after = sorted(soc for time, soc in readings if ended <= time <= ended + SOC_SETTLE)
+    if not after:
+        after = [soc for time, soc in readings if started < time <= ended][-1:]
+    if not before or not after:
+        return None
+    used = before[-1] - after[len(after) // 2]
+    # A tenth or two either way is the reading wavering.
+    return round(max(0.0, used), 1) if used > -0.5 else None
+
+
+def reading(state: State | None) -> Reading | None:
+    if state is None:
+        return None
+    try:
+        return (state.last_updated, float(state.state))
+    except ValueError:
+        return None
+
+
 def with_zones(trip: dict[str, Any], zones: list[dict[str, Any]]) -> dict[str, Any]:
     """A kept drive with the zones it started and ended in, as they are now: a zone added
     or moved later counts for earlier drives too."""
@@ -187,9 +220,12 @@ def position(state: State | None) -> Point | None:
 class TripRecorder:
     """Follow one car's device tracker and keep its drives."""
 
-    def __init__(self, hass: HomeAssistant, entry_id: str, entity_id: str) -> None:
+    def __init__(
+        self, hass: HomeAssistant, entry_id: str, entity_id: str, soc_entity: str | None = None
+    ) -> None:
         self.hass = hass
         self.entity_id = entity_id
+        self.soc_entity = soc_entity
         self.store: Store = Store(hass, 1, f"{DOMAIN}.{entry_id}.trips")
         # Every drive, oldest first.
         self.trips: list[dict[str, Any]] = []
@@ -197,6 +233,8 @@ class TripRecorder:
         self._drive: list[Point] = []
         self._moved_at: datetime | None = None
         self._last: Point | None = None
+        # Recent battery readings, oldest first.
+        self._readings: list[Reading] = []
         self._rebuilt = False
         self._unsubs: list = []
 
@@ -214,6 +252,10 @@ class TripRecorder:
             async_track_state_change_event(self.hass, [self.entity_id], self._changed),
             async_track_time_interval(self.hass, self._tick, timedelta(minutes=1)),
         ]
+        if self.soc_entity:
+            self._unsubs.append(
+                async_track_state_change_event(self.hass, [self.soc_entity], self._soc_changed)
+            )
         self.hass.async_create_task(
             self._async_import_recorded(), f"{DOMAIN} import recorded trips"
         )
@@ -228,6 +270,22 @@ class TripRecorder:
         point = position(event.data.get("new_state"))
         if point is not None:
             self.add(point)
+
+    @callback
+    def _soc_changed(self, event: Event) -> None:
+        if (found := reading(event.data.get("new_state"))) is not None:
+            self.add_reading(found)
+
+    def add_reading(self, found: Reading) -> None:
+        self._readings.append(found)
+        self._forget_readings(found[0])
+
+    def _forget_readings(self, now: datetime) -> None:
+        """Drop readings older than the memory, but the last one before it: the battery as
+        it was when a drive started."""
+        cut = now - SOC_MEMORY
+        while len(self._readings) > 1 and self._readings[1][0] <= cut:
+            self._readings.pop(0)
 
     async def _tick(self, now: datetime) -> None:
         self.finish_if_parked(now)
@@ -258,7 +316,11 @@ class TripRecorder:
         for drive in drives:
             if last_end is not None and drive[0][0] <= last_end:
                 continue
-            self.trips.append(record(drive))
+            kept = record(drive)
+            used = battery_used(drive[0][0], drive[-1][0], self._readings)
+            if used is not None:
+                kept["battery_used"] = used
+            self.trips.append(kept)
             last_end = drive[-1][0]
             added += 1
         return added
@@ -277,10 +339,42 @@ class TripRecorder:
             self._last = points[-1]
         return self.keep(drives)
 
-    def response(self, limit: int) -> dict[str, Any]:
-        """For the get_trips action: the last drives, newest first, with their zones."""
+    def fill_battery_used(self, readings: list[Reading]) -> int:
+        """Battery use for kept drives without it, from recorded readings; returns how many."""
+        filled = 0
+        for trip in self.trips:
+            if "battery_used" in trip:
+                continue
+            started = dt_util.parse_datetime(trip["started"])
+            ended = dt_util.parse_datetime(trip["ended"])
+            if not readings or readings[0][0] > started:
+                continue  # from before the recorder's readings
+            if (used := battery_used(started, ended, readings)) is not None:
+                trip["battery_used"] = used
+                filled += 1
+        return filled
+
+    def response(
+        self,
+        limit: int,
+        capacity_kwh: float | None = None,
+        efficiency: float = 1.0,
+        price: float | None = None,
+        currency: str | None = None,
+    ) -> dict[str, Any]:
+        """For the get_trips action: the last drives, newest first, with their zones and,
+        where the battery use is known, the energy from the battery and what charging it
+        back costs at the price paid on average."""
         zones = zones_of(self.hass)
-        trips = [with_zones(trip, zones) for trip in reversed(self.trips[-limit:])]
+        trips = []
+        for trip in reversed(self.trips[-limit:]):
+            named = with_zones(trip, zones)
+            if capacity_kwh and (used := trip.get("battery_used")) is not None:
+                named["energy_kwh"] = round(used / 100 * capacity_kwh, 2)
+                if price is not None:
+                    named["cost"] = round(named["energy_kwh"] / efficiency * price, 2)
+                    named["currency"] = currency
+            trips.append(named)
         return {"trips": trips, "total": len(self.trips)}
 
     def _save(self) -> None:
@@ -307,7 +401,31 @@ class TripRecorder:
         except Exception:  # noqa: BLE001 - earlier drives are a bonus; never block charging
             _LOGGER.warning("Could not read earlier drives from the recorder")
             return
+        # Battery readings: taken first, so drives imported now have them too.
+        readings: list[Reading] = []
+        if self.soc_entity:
+            try:
+                recorded = await get_instance(self.hass).async_add_executor_job(
+                    partial(
+                        history.state_changes_during_period,
+                        self.hass,
+                        dt_util.utcnow() - timedelta(days=RECORDER_DAYS),
+                        entity_id=self.soc_entity,
+                        include_start_time_state=True,
+                    )
+                )
+            except Exception:  # noqa: BLE001 - battery use is a bonus too
+                _LOGGER.warning("Could not read the battery's history from the recorder")
+            else:
+                readings = sorted(
+                    found
+                    for found in map(reading, recorded.get(self.soc_entity, []))
+                    if found is not None
+                )
+        self._readings = sorted(readings + self._readings)
         added = self.import_states(found.get(self.entity_id, []), dt_util.utcnow())
-        if added or self._rebuilt:
+        filled = self.fill_battery_used(self._readings)
+        self._forget_readings(dt_util.utcnow())
+        if added or filled or self._rebuilt:
             self._save()
             _LOGGER.info("Kept %d drives from the recorder", added)
