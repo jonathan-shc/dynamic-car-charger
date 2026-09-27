@@ -3,9 +3,10 @@
 The car's device tracker is followed. A step of more than 40 m starts a drive (a parked
 car's GPS wanders less); a drive ends when the car hasn't moved for ten minutes, and keeps
 the positions of the two minutes after its last step, so the route ends where the car
-parked. Each drive is kept with its start, end, distance, route and the Home Assistant
-zones it started and ended in, the route simplified to a few metres so a drive costs a
-few kilobytes. The trips have their own storage file, saved
+parked. Each drive is kept with its start, end, distance and route, the route simplified
+to a few metres so a drive costs a few kilobytes. The Home Assistant zones it started and
+ended in are looked up when the drives are asked for, so zones added or moved later name
+earlier drives too. The trips have their own storage file, saved
 only when a drive ends, so the frequently saved charging state stays small.
 
 On every start the recorder's positions since the last kept drive are read, which adds
@@ -119,11 +120,10 @@ def _off_line(point: Point, start: Point, end: Point) -> float:
     return math.hypot(px - t * ex, py - t * ey)
 
 
-def record(points: list[Point], zones: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    """A drive as kept: the route as [latitude, longitude, seconds after the start], and
-    the zones it started and ended in, if any."""
+def record(points: list[Point]) -> dict[str, Any]:
+    """A drive as kept: the route as [latitude, longitude, seconds after the start]."""
     start = points[0][0]
-    kept: dict[str, Any] = {
+    return {
         "started": start.isoformat(),
         "ended": points[-1][0].isoformat(),
         "distance_km": round(length_km(points), 2),
@@ -132,10 +132,17 @@ def record(points: list[Point], zones: list[dict[str, Any]] | None = None) -> di
             for time, lat, lon in simplify(points)
         ],
     }
-    for key, point in (("from", points[0]), ("to", points[-1])):
-        if zone := zone_at(point, zones or []):
-            kept[f"{key}_zone"], kept[f"{key}_name"] = zone["entity_id"], zone["name"]
-    return kept
+
+
+def with_zones(trip: dict[str, Any], zones: list[dict[str, Any]]) -> dict[str, Any]:
+    """A kept drive with the zones it started and ended in, as they are now: a zone added
+    or moved later counts for earlier drives too."""
+    named = {key: value for key, value in trip.items() if not key.startswith(("from_", "to_"))}
+    route = trip.get("route") or []
+    for key, row in (("from", route[:1]), ("to", route[-1:])):
+        if row and (zone := zone_at((None, row[0][0], row[0][1]), zones)):
+            named[f"{key}_zone"], named[f"{key}_name"] = zone["entity_id"], zone["name"]
+    return named
 
 
 def zone_at(point: Point, zones: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -251,7 +258,7 @@ class TripRecorder:
         for drive in drives:
             if last_end is not None and drive[0][0] <= last_end:
                 continue
-            self.trips.append(record(drive, zones_of(self.hass)))
+            self.trips.append(record(drive))
             last_end = drive[-1][0]
             added += 1
         return added
@@ -271,8 +278,10 @@ class TripRecorder:
         return self.keep(drives)
 
     def response(self, limit: int) -> dict[str, Any]:
-        """For the get_trips action: the last drives, newest first."""
-        return {"trips": list(reversed(self.trips[-limit:])), "total": len(self.trips)}
+        """For the get_trips action: the last drives, newest first, with their zones."""
+        zones = zones_of(self.hass)
+        trips = [with_zones(trip, zones) for trip in reversed(self.trips[-limit:])]
+        return {"trips": trips, "total": len(self.trips)}
 
     def _save(self) -> None:
         self.store.async_delay_save(lambda: {"version": VERSION, "trips": self.trips}, 1)
