@@ -56,6 +56,21 @@ def test_split_finds_drives_and_ignores_a_parked_cars_wander():
     assert at(370, 10.0001) in drives[0]
 
 
+def test_a_drive_ends_where_the_car_parked_and_keeps_slow_parts():
+    points = [
+        at(0, 0),
+        at(10, 5),
+        at(20, 5.2),  # 22 m: crawling in traffic, still part of the route
+        at(30, 10),
+        at(40, 10.2),  # parking: slower than a step
+        at(90, 10.25),  # where it stands, within two minutes
+        at(400, 10.25),  # later: not part of the drive
+    ]
+    (drive,) = split(points)
+    assert at(20, 5.2) in drive
+    assert drive[-1] == at(90, 10.25)
+
+
 def test_a_long_stop_starts_a_new_drive():
     points = [at(0, 0), at(10, 5), at(20, 10), at(20 + 11 * 60, 10), at(20 + 11 * 60 + 10, 15)]
     assert len(split(points)) == 2
@@ -91,7 +106,8 @@ def test_live_positions_become_a_drive_after_ten_minutes_parked(recorder):
     assert len(recorder.trips) == 1
     trip = recorder.trips[0]
     assert trip["started"] == (T0 + timedelta(seconds=20)).isoformat()
-    assert trip["ended"] == (T0 + timedelta(seconds=60)).isoformat()
+    # It ends where the car parked, a minute after the last step.
+    assert trip["ended"] == (T0 + timedelta(seconds=120)).isoformat()
     assert recorder._drive == []
 
 
@@ -117,6 +133,55 @@ def test_import_keeps_finished_drives_once_and_carries_on_one_under_way(recorder
     assert recorder.trips[1]["ended"] == (T0 + timedelta(seconds=3700)).isoformat()
     # Importing the same history again adds nothing.
     assert recorder.import_states(states, now + PAUSE) == 0
+
+
+def test_record_names_the_zones_it_started_and_ended_in():
+    zones = [
+        {
+            "entity_id": "zone.home",
+            "name": "Home",
+            "latitude": 52.0,
+            "longitude": 5.0,
+            "radius": 100,
+        },
+        {
+            "entity_id": "zone.town",
+            "name": "Town",
+            "latitude": 52.01,
+            "longitude": 5.0,
+            "radius": 2000,
+        },
+        {
+            "entity_id": "zone.work",
+            "name": "Work",
+            "latitude": 52.01,
+            "longitude": 5.0,
+            "radius": 150,
+        },
+    ]
+    kept = record([at(0, 0), at(60, 5), at(120, 10)], zones)
+    assert (kept["from_zone"], kept["from_name"]) == ("zone.home", "Home")
+    # In two zones: the smaller one names it better.
+    assert (kept["to_zone"], kept["to_name"]) == ("zone.work", "Work")
+    assert "to_zone" not in record([at(0, 0), at(60, 30)], zones)
+
+
+async def test_drives_cut_the_old_way_are_cut_again(recorder):
+    old = {"started": "2020-01-01T00:00:00+00:00", "ended": "2020-01-01T01:00:00+00:00"}
+    recent = {"started": T0.isoformat(), "ended": (T0 + timedelta(hours=1)).isoformat()}
+
+    async def load():
+        return {"trips": [old, recent]}
+
+    recorder.store = SimpleNamespace(async_load=load, async_delay_save=lambda *a: None)
+    with patch(
+        "custom_components.dynamic_car_charger.trips.dt_util.utcnow",
+        return_value=T0 + timedelta(days=1),
+    ):
+        await recorder.async_start()
+    # The recorder still has the recent one: it's cut again from there; the old one stays.
+    assert recorder.trips == [old]
+    await recorder.async_stop()
 
 
 def test_response_is_newest_first(recorder):
