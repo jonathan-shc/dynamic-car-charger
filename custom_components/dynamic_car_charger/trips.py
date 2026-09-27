@@ -1,9 +1,11 @@
 """Keep the car's drives: its positions while driving, cut into trips and kept for good.
 
 The car's device tracker is followed. A step of more than 40 m starts a drive (a parked
-car's GPS wanders less); a drive ends when the car hasn't moved for ten minutes. Each
-drive is kept with its start, end, distance and route, the route simplified to a few
-metres so a drive costs a few kilobytes. The trips have their own storage file, saved
+car's GPS wanders less); a drive ends when the car hasn't moved for ten minutes, and keeps
+the positions of the two minutes after its last step, so the route ends where the car
+parked. Each drive is kept with its start, end, distance, route and the Home Assistant
+zones it started and ended in, the route simplified to a few metres so a drive costs a
+few kilobytes. The trips have their own storage file, saved
 only when a drive ends, so the frequently saved charging state stays small.
 
 On every start the recorder's positions since the last kept drive are read, which adds
@@ -29,6 +31,9 @@ _LOGGER = logging.getLogger(__name__)
 
 # Not moving for this long ends a drive; a shorter stop is part of it.
 PAUSE = timedelta(minutes=10)
+# Positions this long after the last step still belong to the drive: slowing down,
+# parking, and where the car stands.
+SETTLE = timedelta(minutes=2)
 # A step longer than this counts as moving.
 STEP_METRES = 40.0
 # Shorter drives (moving the car on the drive, a GPS jump) aren't kept.
@@ -37,6 +42,8 @@ MIN_KM = 0.5
 SIMPLIFY_METRES = 8.0
 # How far back the recorder is read at start; it usually keeps ten days.
 RECORDER_DAYS = 10
+# Drives kept by an older way of cutting them are rebuilt from the recorder once.
+VERSION = 2
 
 Point = tuple[datetime, float, float]  # time, latitude, longitude
 
@@ -50,19 +57,24 @@ def metres(a: Point, b: Point) -> float:
 
 
 def split(points: list[Point]) -> list[list[Point]]:
-    """The drives in a series of positions: moving steps joined while no pause ends them,
-    each at least half a kilometre long."""
-    trips: list[list[Point]] = []
-    for before, after in zip(points, points[1:], strict=False):
-        if metres(before, after) <= STEP_METRES:
+    """The drives in a series of positions, each at least half a kilometre long: from the
+    position before the first step of more than 40 m to the last such step with no pause
+    between steps, every position in between (slow traffic too), and the positions of
+    the two minutes after it."""
+    moves: list[list[int]] = []  # first and last index of each run of steps
+    for index in range(1, len(points)):
+        if metres(points[index - 1], points[index]) <= STEP_METRES:
             continue
-        if trips and before[0] - trips[-1][-1][0] <= PAUSE:
-            # Moving again after a short stop: the stop's last position belongs to it too.
-            if before[0] != trips[-1][-1][0]:
-                trips[-1].append(before)
-            trips[-1].append(after)
+        if moves and points[index - 1][0] - points[moves[-1][1]][0] <= PAUSE:
+            moves[-1][1] = index
         else:
-            trips.append([before, after])
+            moves.append([index - 1, index])
+    trips = []
+    for first, last in moves:
+        end = last
+        while end + 1 < len(points) and points[end + 1][0] - points[last][0] <= SETTLE:
+            end += 1
+        trips.append(points[first : end + 1])
     return [trip for trip in trips if length_km(trip) >= MIN_KM]
 
 
@@ -107,10 +119,11 @@ def _off_line(point: Point, start: Point, end: Point) -> float:
     return math.hypot(px - t * ex, py - t * ey)
 
 
-def record(points: list[Point]) -> dict[str, Any]:
-    """A drive as kept: the route as [latitude, longitude, seconds after the start]."""
+def record(points: list[Point], zones: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """A drive as kept: the route as [latitude, longitude, seconds after the start], and
+    the zones it started and ended in, if any."""
     start = points[0][0]
-    return {
+    kept: dict[str, Any] = {
         "started": start.isoformat(),
         "ended": points[-1][0].isoformat(),
         "distance_km": round(length_km(points), 2),
@@ -119,6 +132,40 @@ def record(points: list[Point]) -> dict[str, Any]:
             for time, lat, lon in simplify(points)
         ],
     }
+    for key, point in (("from", points[0]), ("to", points[-1])):
+        if zone := zone_at(point, zones or []):
+            kept[f"{key}_zone"], kept[f"{key}_name"] = zone["entity_id"], zone["name"]
+    return kept
+
+
+def zone_at(point: Point, zones: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The smallest zone the position is in."""
+    inside = [
+        zone
+        for zone in zones
+        if metres(point, (point[0], zone["latitude"], zone["longitude"])) <= zone["radius"]
+    ]
+    return min(inside, key=lambda zone: zone["radius"], default=None)
+
+
+def zones_of(hass: HomeAssistant) -> list[dict[str, Any]]:
+    """Home Assistant's zones, passive ones included: they name places too."""
+    zones = []
+    for state in hass.states.async_all("zone"):
+        attributes = state.attributes
+        lat, lon = attributes.get("latitude"), attributes.get("longitude")
+        if not isinstance(lat, int | float) or not isinstance(lon, int | float):
+            continue
+        zones.append(
+            {
+                "entity_id": state.entity_id,
+                "name": attributes.get("friendly_name") or state.entity_id,
+                "latitude": float(lat),
+                "longitude": float(lon),
+                "radius": float(attributes.get("radius") or 100),
+            }
+        )
+    return zones
 
 
 def position(state: State | None) -> Point | None:
@@ -143,11 +190,19 @@ class TripRecorder:
         self._drive: list[Point] = []
         self._moved_at: datetime | None = None
         self._last: Point | None = None
+        self._rebuilt = False
         self._unsubs: list = []
 
     async def async_start(self) -> None:
         saved = await self.store.async_load() or {}
         self.trips = list(saved.get("trips") or [])
+        self._rebuilt = bool(saved) and saved.get("version", 1) < VERSION
+        if self._rebuilt:
+            # Cut the old way: the drives the recorder still has are cut again.
+            since = dt_util.utcnow() - timedelta(days=RECORDER_DAYS)
+            self.trips = [
+                trip for trip in self.trips if dt_util.parse_datetime(trip["started"]) < since
+            ]
         self._unsubs = [
             async_track_state_change_event(self.hass, [self.entity_id], self._changed),
             async_track_time_interval(self.hass, self._tick, timedelta(minutes=1)),
@@ -196,7 +251,7 @@ class TripRecorder:
         for drive in drives:
             if last_end is not None and drive[0][0] <= last_end:
                 continue
-            self.trips.append(record(drive))
+            self.trips.append(record(drive, zones_of(self.hass)))
             last_end = drive[-1][0]
             added += 1
         return added
@@ -220,7 +275,7 @@ class TripRecorder:
         return {"trips": list(reversed(self.trips[-limit:])), "total": len(self.trips)}
 
     def _save(self) -> None:
-        self.store.async_delay_save(lambda: {"trips": self.trips}, 1)
+        self.store.async_delay_save(lambda: {"version": VERSION, "trips": self.trips}, 1)
 
     async def _async_import_recorded(self) -> None:
         if "recorder" not in self.hass.config.components:
@@ -244,6 +299,6 @@ class TripRecorder:
             _LOGGER.warning("Could not read earlier drives from the recorder")
             return
         added = self.import_states(found.get(self.entity_id, []), dt_util.utcnow())
-        if added:
+        if added or self._rebuilt:
             self._save()
             _LOGGER.info("Kept %d drives from the recorder", added)
