@@ -13,6 +13,7 @@ from custom_components.dynamic_car_charger.trips import (
     record,
     simplify,
     split,
+    with_zones,
 )
 
 T0 = datetime(2026, 9, 18, 17, 0, tzinfo=UTC)
@@ -135,7 +136,7 @@ def test_import_keeps_finished_drives_once_and_carries_on_one_under_way(recorder
     assert recorder.import_states(states, now + PAUSE) == 0
 
 
-def test_record_names_the_zones_it_started_and_ended_in():
+def test_drives_are_named_by_the_zones_as_they_are_now():
     zones = [
         {
             "entity_id": "zone.home",
@@ -159,11 +160,15 @@ def test_record_names_the_zones_it_started_and_ended_in():
             "radius": 150,
         },
     ]
-    kept = record([at(0, 0), at(60, 5), at(120, 10)], zones)
-    assert (kept["from_zone"], kept["from_name"]) == ("zone.home", "Home")
+    kept = record([at(0, 0), at(60, 5), at(120, 10)])
+    named = with_zones(kept, zones)
+    assert (named["from_zone"], named["from_name"]) == ("zone.home", "Home")
     # In two zones: the smaller one names it better.
-    assert (kept["to_zone"], kept["to_name"]) == ("zone.work", "Work")
-    assert "to_zone" not in record([at(0, 0), at(60, 30)], zones)
+    assert (named["to_zone"], named["to_name"]) == ("zone.work", "Work")
+    # A zone that has moved away no longer names it.
+    moved = [dict(zones[0], latitude=53.0)]
+    assert "from_zone" not in with_zones(named, moved)
+    assert "to_zone" not in with_zones(record([at(0, 0), at(60, 30)]), zones)
 
 
 async def test_drives_cut_the_old_way_are_cut_again(recorder):
