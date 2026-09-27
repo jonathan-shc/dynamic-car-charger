@@ -31,6 +31,7 @@ from .planner import (
     soc_after,
     timestamp,
 )
+from .trips import TripRecorder
 from .zones import zone_for_location
 
 _LOGGER = logging.getLogger(__name__)
@@ -126,6 +127,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._charger_available = False
         self._unsubs: list = []
         self._stop_unsub = None
+        # The car's drives, when its location is known.
+        self.trips: TripRecorder | None = None
         self.data = {"status": "set_deadline", "slots": []}
 
     async def async_start(self) -> None:
@@ -178,7 +181,34 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.hass.async_create_task(
             self._async_import_recorded_sessions(), f"{DOMAIN} import recorded sessions"
         )
+        if location := self.location_entity():
+            self.trips = TripRecorder(self.hass, self.entry.entry_id, location)
+            await self.trips.async_start()
         await self.async_reconcile()
+
+    def location_entity(self) -> str | None:
+        """The car's device tracker: as set in the options, or the one on the same device
+        as the battery sensor."""
+        if configured := self.settings.get("location_entity"):
+            return configured
+        soc_entity = self.settings.get("soc_entity")
+        if not soc_entity:
+            return None
+        from homeassistant.helpers import entity_registry as er
+
+        try:
+            registry = er.async_get(self.hass)
+            entry = registry.async_get(soc_entity)
+            if entry is None or entry.device_id is None:
+                return None
+            trackers = [
+                other.entity_id
+                for other in er.async_entries_for_device(registry, entry.device_id)
+                if other.domain == "device_tracker"
+            ]
+        except Exception:  # noqa: BLE001 - drives are a bonus; never block charging
+            return None
+        return trackers[0] if trackers else None
 
     @callback
     def _changed(self, event: Event) -> None:
@@ -380,6 +410,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         details["bidding_zone"] = self.forecaster.zone.code.lower()
         details["power_kw"] = self.settings["power_kw"]
         details["capacity_kwh"] = self.settings["capacity_kwh"]
+        details["location_entity"] = self.trips.entity_id if self.trips else None
         return details
 
     def _price_rows(self, now: datetime) -> list[dict[str, Any]]:
@@ -1136,6 +1167,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if self._forecast_unsub is not None:
                 self._forecast_unsub()
                 self._forecast_unsub = None
+            if self.trips is not None:
+                await self.trips.async_stop()
             if self.enabled or self.immediate_charging:
                 error = await self._control(False, dt_util.utcnow(), force=True)
                 if error and error not in PENDING_STATUSES:

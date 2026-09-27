@@ -21,7 +21,8 @@
           "soc_max_age_minutes": "Battery report age warning (minutes)",
           "max_price_eur_kwh": "Maximum charging price (per kWh)",
           "deadline_grace_minutes": "Maximum charging extension after deadline (minutes)",
-          "bidding_zone": "Price forecast market"
+          "bidding_zone": "Price forecast market",
+          "location_entity": "Car location (optional)"
         },
         "data_description": {
           "charger_entity": "The switch that starts and pauses charging: on charges, off pauses. Do not select a power relay.",
@@ -38,7 +39,8 @@
           "max_price_eur_kwh": "Charge below this price while there is enough time; near the deadline the planner may exceed it to finish.",
           "deadline_grace_minutes": "If an already-started session has not reached the target at the deadline, keep charging for at most this many minutes. This does not extend the planning horizon; 0 disables it.",
           "soc_max_age_minutes": "Only marks the battery report as old (soc_report_old). It does not pause charging, because a battery percentage that does not change while parked is normal.",
-          "bidding_zone": "The day-ahead market of your electricity price, used only by the price forecast to learn prices before they are published."
+          "bidding_zone": "The day-ahead market of your electricity price, used only by the price forecast to learn prices before they are published.",
+          "location_entity": "Optional. The car's device tracker, to keep its drives with their routes for the app. Left empty, the tracker on the same device as the battery sensor is used, if there is one."
         }
       }
     },
@@ -77,7 +79,8 @@
           "soc_max_age_minutes": "Battery report age warning (minutes)",
           "max_price_eur_kwh": "Maximum charging price (per kWh)",
           "deadline_grace_minutes": "Maximum charging extension after deadline (minutes)",
-          "bidding_zone": "Price forecast market"
+          "bidding_zone": "Price forecast market",
+          "location_entity": "Car location (optional)"
         },
         "data_description": {
           "charger_entity": "The switch that starts and pauses charging: on charges, off pauses. Do not select a power relay.",
@@ -94,7 +97,8 @@
           "max_price_eur_kwh": "Charge below this price while there is enough time; near the deadline the planner may exceed it to finish.",
           "deadline_grace_minutes": "If an already-started session has not reached the target at the deadline, keep charging for at most this many minutes. This does not extend the planning horizon; 0 disables it.",
           "soc_max_age_minutes": "Only marks the battery report as old (soc_report_old). It does not pause charging, because a battery percentage that does not change while parked is normal.",
-          "bidding_zone": "The day-ahead market of your electricity price, used only by the price forecast to learn prices before they are published."
+          "bidding_zone": "The day-ahead market of your electricity price, used only by the price forecast to learn prices before they are published.",
+          "location_entity": "Optional. The car's device tracker, to keep its drives with their routes for the app. Left empty, the tracker on the same device as the battery sensor is used, if there is one."
         }
       }
     },
@@ -242,6 +246,20 @@
         "sessions": {
           "name": "Sessions",
           "description": "A list with started, ended, energy_kwh and cost for each session; optionally cost_complete, currency and reconstructed."
+        }
+      }
+    },
+    "get_trips": {
+      "name": "Get drives",
+      "description": "Returns the car's last drives, newest first, with start, end, distance and route. Drives are kept from the car's device tracker.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Charger",
+          "description": "The Dynamic Car Charger entry. Can be left out when only one is set up."
+        },
+        "limit": {
+          "name": "Number of drives",
+          "description": "How many of the last drives to return."
         }
       }
     }

@@ -2,7 +2,7 @@
 
 A Home Assistant custom integration for deadline-based EV charging. Set **80% by Friday at 07:30** (or **20 kWh by Friday at 07:30**), inspect the charging plan, and let the integration pause and resume your charger during the cheapest published price intervals.
 
-It works with any charger that has an on/off switch in Home Assistant and any dynamic price sensor with today's and tomorrow's prices. With a car that reports its battery percentage it charges to a percentage; without one it charges an amount of energy. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Check compatibility with your own devices. Current version: 0.9.0 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
+It works with any charger that has an on/off switch in Home Assistant and any dynamic price sensor with today's and tomorrow's prices. With a car that reports its battery percentage it charges to a percentage; without one it charges an amount of energy. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Check compatibility with your own devices. Current version: 0.10.0 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
 
 ## What you get
 
@@ -16,6 +16,7 @@ It works with any charger that has an on/off switch in Home Assistant and any dy
 - Optional charger unlocking before charging and locking when the car drives away.
 - A `set_session` action to set target, deadline and mode from automations, scripts or iOS Shortcuts.
 - A measured **Session charging cost** from the measured charging power and the price at the time.
+- The car's **drives**, with their routes, kept for good from its device tracker for dashboards and apps.
 - Repair issues in **Settings → System → Repairs** when inputs or the charger stay broken for 30 minutes.
 - Replanning as prices, battery telemetry and measured charging power change.
 - Negative prices, fractional charging intervals, hourly or quarter-hourly prices and timezone-aware daylight-saving handling.
@@ -144,6 +145,12 @@ Every finished session is kept in the integration's own storage (about 150 bytes
 
 `dynamic_car_charger.add_sessions` adds sessions from elsewhere, for example rebuilt from older hourly statistics: a list with `started`, `ended`, `energy_kwh` and `cost` per session (optionally `cost_complete`, `currency` and `reconstructed`). Sessions already in the list are skipped.
 
+### Drives
+
+When the car has a device tracker with a GPS position, the integration keeps its drives. It uses **Car location** from the options, or else the device tracker on the same device as the battery sensor. A step of more than 40 m counts as moving (a parked car's GPS wanders less), a stop of more than 10 minutes ends a drive, and drives shorter than 0.5 km are left out. Each drive keeps its start, end, distance and route; the route is simplified to within 8 m, so a drive takes a few kilobytes. Drives have their own storage file, saved when a drive ends, and are kept for good. On every start the integration also reads the positions the recorder has since the last kept drive (normally up to 10 days), so drives from before, or cut off by a restart, are kept too.
+
+`dynamic_car_charger.get_trips` returns the last drives, newest first (`limit`, default 20), each with `started`, `ended`, `distance_km` and `route` as `[latitude, longitude, seconds after the start]`, and the `total` number kept. The tracker in use is in the plan's `setup` as `location_entity`.
+
 ## Planning and execution
 
 Required grid energy is `(target - current %) / 100 × usable capacity / efficiency`. The scheduler allocates it to the cheapest known intervals before the deadline, allowing a partial final interval. Equal prices favor earlier charging. This allocation minimizes modeled energy cost at constant power and efficiency over the **published** intervals.
@@ -192,7 +199,7 @@ The **Charging plan** sensor state is one of:
 
 Useful attributes: `car_connected` (true/false, or null without that sensor), `slots`, `planning_method`, `forecast_status`, `forecast_error`, `estimated_cost_eur`, `required_grid_kwh`, `planned_grid_kwh`, `shortfall_kwh`, `coverage_complete`, `measured_soc`, `estimated_soc`, `soc_reported_at`, `soc_report_old`, `charging_requested`, `price_threshold_eur_kwh`, `threshold_safety_mode`, `deadline_extension_until` and `error`.
 
-For dashboards and apps, `setup` lists the configured entities (`charger_entity`, `soc_entity`, `price_entity`, `power_entity`, `connected_entity`, `lock_entity`) with `power_kw`, `capacity_kwh` and the forecast's `bidding_zone`, and `prices` lists today's and later prices as `start`, `end` and `price` (adjustment included), whatever layout the price sensor uses.
+For dashboards and apps, `setup` lists the configured entities (`charger_entity`, `soc_entity`, `price_entity`, `power_entity`, `connected_entity`, `lock_entity`, and `location_entity` for drives) with `power_kw`, `capacity_kwh` and the forecast's `bidding_zone`, and `prices` lists today's and later prices as `start`, `end` and `price` (adjustment included), whatever layout the price sensor uses.
 
 To keep the history database small, `slots`, `estimated_soc`, `active_charge_until`, `setup` and `prices` are available on the live state but are not recorded in history.
 

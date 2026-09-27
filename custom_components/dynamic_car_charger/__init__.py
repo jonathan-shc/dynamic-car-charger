@@ -16,6 +16,7 @@ from .const import (
     PLATFORMS,
     SERVICE_ADD_SESSIONS,
     SERVICE_GET_SESSIONS,
+    SERVICE_GET_TRIPS,
     SERVICE_SET_SESSION,
 )
 from .coordinator import ChargerCoordinator
@@ -102,6 +103,26 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         add_sessions,
         ADD_SESSIONS_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
+    )
+
+    async def get_trips(call: ServiceCall) -> ServiceResponse:
+        """The car's last drives, newest first, with their routes."""
+        coordinator = _coordinator_for(hass, call.data.get("config_entry_id"))
+        if coordinator.trips is None:
+            return {"trips": [], "total": 0}
+        return coordinator.trips.response(call.data["limit"])
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_GET_TRIPS,
+        get_trips,
+        vol.Schema(
+            {
+                vol.Optional("config_entry_id"): cv.string,
+                vol.Optional("limit", default=20): vol.All(vol.Coerce(int), vol.Range(1, 1000)),
+            }
+        ),
+        supports_response=SupportsResponse.ONLY,
     )
     return True
 

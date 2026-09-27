@@ -49,3 +49,16 @@ add_sessions:
       example: '[{"started": "2026-09-19T00:30:00+02:00", "ended": "2026-09-19T16:47:00+02:00", "energy_kwh": 36.2, "cost": 4.82, "reconstructed": true}]'
       selector:
         object:
+get_trips:
+  fields:
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: dynamic_car_charger
+    limit:
+      example: 20
+      selector:
+        number:
+          min: 1
+          max: 1000
+          mode: box
