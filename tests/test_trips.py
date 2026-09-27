@@ -10,6 +10,7 @@ from homeassistant.core import HomeAssistant, State
 from custom_components.dynamic_car_charger.trips import (
     PAUSE,
     TripRecorder,
+    battery_used,
     record,
     simplify,
     split,
@@ -196,12 +197,63 @@ def test_response_is_newest_first(recorder):
     assert answer["total"] == 5
 
 
+def soc(seconds: float, percent: float):
+    return (T0 + timedelta(seconds=seconds), percent)
+
+
+def test_battery_used_from_the_start_to_where_it_settles():
+    readings = [soc(-3600, 80.0), soc(30, 79.8), soc(300, 78.1), soc(600, 77.0)]
+    # After the drive it wavers: the middle reading of the minutes after counts.
+    readings += [soc(610, 76.6), soc(640, 76.9), soc(700, 76.9)]
+    assert battery_used(T0, T0 + timedelta(seconds=600), readings) == 3.1
+    # A wobble up on a short drive is none used, not less than none.
+    assert battery_used(T0, T0 + timedelta(seconds=60), [soc(-10, 80.0), soc(70, 80.2)]) == 0.0
+    # Charged on the way, or no reading before it: not known.
+    assert battery_used(T0, T0 + timedelta(seconds=60), [soc(-10, 80.0), soc(70, 85.0)]) is None
+    assert battery_used(T0, T0 + timedelta(seconds=60), [soc(70, 80.0)]) is None
+
+
+def test_a_drive_kept_live_has_its_battery_use(recorder):
+    recorder.add_reading(soc(-7200, 90.0))
+    for i, north in enumerate([0, 1, 3, 6, 10]):
+        recorder.add(at(i * 10, north))
+        recorder.add_reading(soc(i * 10 + 5, 90.0 - i * 0.2))
+    recorder.add_reading(soc(200, 89.0))
+    recorder.add_reading(soc(250, 89.0))
+    recorder.finish_if_parked(T0 + timedelta(seconds=40) + PAUSE)
+    # 90 at the start; after it 89.2, 89.0 and 89.0.
+    assert recorder.trips[0]["battery_used"] == 1.0
+    # Old readings go, but the one the next drive starts from stays.
+    recorder.add_reading(soc(8 * 3600, 89.0))
+    assert recorder._readings[0] == soc(250, 89.0)
+
+
+def test_battery_use_is_filled_in_for_drives_the_recorder_still_has(recorder):
+    recorder.trips = [record([at(0, 0), at(60, 10)])]
+    assert recorder.fill_battery_used([soc(-60, 70.0), soc(90, 69.5)]) == 1
+    assert recorder.trips[0]["battery_used"] == 0.5
+    # From before the readings: left as it is.
+    recorder.trips.append(record([at(-9000, 0), at(-8940, 10)]))
+    assert recorder.fill_battery_used([soc(-60, 70.0), soc(90, 69.5)]) == 0
+
+
+def test_response_has_energy_and_cost_where_the_use_is_known(recorder):
+    recorder.trips = [record([at(0, 0), at(60, 10)]), record([at(900, 10), at(960, 20)])]
+    recorder.trips[0]["battery_used"] = 2.0
+    answer = recorder.response(5, capacity_kwh=60, efficiency=0.9, price=0.27, currency="EUR")
+    newest, oldest = answer["trips"]
+    assert "energy_kwh" not in newest
+    assert oldest["energy_kwh"] == 1.2
+    # Charging it back: 1.2 kWh / 0.9 at 0.27 a kWh.
+    assert (oldest["cost"], oldest["currency"]) == (0.36, "EUR")
+
+
 async def test_get_trips_service(recorder):
     hass = recorder.hass
     from custom_components.dynamic_car_charger import async_setup
 
     recorder.trips = [record([at(0, 0), at(60, 10)])]
-    coordinator = SimpleNamespace(trips=recorder)
+    coordinator = SimpleNamespace(trips_response=recorder.response)
     await async_setup(hass, {})
     with patch("custom_components.dynamic_car_charger._coordinator_for", return_value=coordinator):
         answer = await hass.services.async_call(
