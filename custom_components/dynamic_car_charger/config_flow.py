@@ -32,6 +32,7 @@ def schema(values: dict[str, Any], default_zone: str = "nl") -> vol.Schema:
         ("soc_entity", ["sensor", "input_number"]),
         ("connected_entity", ["sensor", "binary_sensor"]),
         ("lock_entity", ["lock"]),
+        ("location_entity", ["device_tracker"]),
     ):
         marker = vol.Optional(key, default=values[key]) if values.get(key) else vol.Optional(key)
         fields[marker] = selector.EntitySelector(selector.EntitySelectorConfig(domain=domain))
@@ -92,6 +93,7 @@ def validate(hass, data: dict[str, Any]) -> dict[str, str]:
         "power_entity": {"sensor"},
         "connected_entity": {"sensor", "binary_sensor"},
         "lock_entity": {"lock"},
+        "location_entity": {"device_tracker"},
     }
     for key in ("charger_entity", "soc_entity", "price_entity", "power_entity"):
         entity_id = data.get(key)
@@ -112,7 +114,7 @@ def validate(hass, data: dict[str, Any]) -> dict[str, str]:
                 price_unit(state.attributes)
             except ValueError:
                 return {key: "price_unit"}
-    for key in ("connected_entity", "lock_entity"):
+    for key in ("connected_entity", "lock_entity", "location_entity"):
         entity_id = data.get(key)
         if not entity_id:
             continue
