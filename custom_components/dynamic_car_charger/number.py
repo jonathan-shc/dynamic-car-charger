@@ -14,7 +14,14 @@ async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = entry.runtime_data
     # Without a battery sensor the target is an amount of energy, not a percentage.
     target = EnergyGoal(coordinator) if coordinator.energy_mode else Target(coordinator)
-    async_add_entities([target, PriceThreshold(coordinator)])
+    async_add_entities(
+        [
+            target,
+            PriceThreshold(coordinator),
+            PriceSetting(coordinator, "cheap_price", "mdi:piggy-bank-outline"),
+            PriceSetting(coordinator, "charge_below_price", "mdi:cash-check"),
+        ]
+    )
 
 
 class Target(ChargerEntity, NumberEntity):
@@ -78,3 +85,30 @@ class PriceThreshold(ChargerEntity, NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         await self.coordinator.async_change_price_threshold(number(value, 0, 5))
+
+
+class PriceSetting(ChargerEntity, NumberEntity):
+    """A price per kWh the coordinator keeps under the same name: the cheap-only
+    mode's highest price, or the always-charge price."""
+
+    _attr_native_min_value = -1
+    _attr_native_max_value = 5
+    _attr_native_step = 0.01
+    _attr_mode = NumberMode.BOX
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator, key: str, icon: str):
+        super().__init__(coordinator, key)
+        self._key = key
+        self._attr_icon = icon
+
+    @property
+    def native_unit_of_measurement(self) -> str:
+        return f"{self.coordinator.currency}/kWh"
+
+    @property
+    def native_value(self) -> float:
+        return getattr(self.coordinator, self._key)
+
+    async def async_set_native_value(self, value: float) -> None:
+        await self.coordinator.async_change(**{self._key: number(value, -1, 5)})

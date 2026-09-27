@@ -994,9 +994,16 @@ async def test_forecast_switch_starts_updates_and_survives_restart(rig):
 
 EXPECTED_ENTITIES = {
     "sensor": {"plan", "cost", "session_cost", "price_forecast_status"},
-    "number": {"target", "price_threshold"},
+    "number": {"target", "price_threshold", "cheap_price", "charge_below_price"},
     "datetime": {"deadline"},
-    "switch": {"automatic", "immediate_charging", "price_forecast"},
+    "switch": {
+        "automatic",
+        "immediate_charging",
+        "price_forecast",
+        "cheap_only",
+        "charge_negative",
+        "charge_below",
+    },
     "button": {"tomorrow_0700", "tomorrow_0900", "day_after_tomorrow_0900"},
 }
 
@@ -1192,7 +1199,7 @@ async def test_energy_mode_creates_energy_entities(rig):
     _energy_mode(c)
     entry = SimpleNamespace(entry_id="test", runtime_data=c)
     for platform, expected in (
-        ("number", {"energy_goal", "price_threshold"}),
+        ("number", {"energy_goal", "price_threshold", "cheap_price", "charge_below_price"}),
         ("button", {"tomorrow_0700", "tomorrow_0900", "day_after_tomorrow_0900", "new_charge"}),
     ):
         module = importlib.import_module(f"custom_components.dynamic_car_charger.{platform}")
@@ -1461,3 +1468,72 @@ async def test_add_sessions_service_keeps_them_once(rig):
     assert entry["started"] == "2026-09-18T22:30:00+00:00"
     assert entry["energy_kwh"] == 36.2
     assert entry["reconstructed"] is True
+
+
+async def test_cheap_only_charges_only_at_or_below_its_price(rig):
+    _, c, calls = rig
+    c.deadline = None
+    c.cheap_price = 0.05
+    await c.async_change(cheap_only=True, enabled=True)
+    assert c.data["status"] == "waiting_for_cheap_price"
+    assert c.data["slots"] == [] and calls == []
+    await c.async_change(cheap_price=0.15)
+    await c.async_reconcile()
+    assert c.data["status"] == "charging"
+    assert calls == ["turn_on"]
+    assert c.data["planning_method"] == "cheap_only"
+
+
+async def test_always_charge_rules_charge_without_a_deadline(rig):
+    _, c, calls = rig
+    c.deadline = None
+    await c.async_change(enabled=True)
+    assert c.data["status"] == "set_deadline"
+    # Negative prices only: 0.10 isn't.
+    await c.async_change(charge_negative=True)
+    assert c.data["status"] == "set_deadline" and calls == []
+    await c.async_change(charge_below=True, charge_below_price=0.10)
+    await c.async_reconcile()
+    assert c.data["status"] == "charging"
+    assert c.data["slots"][0]["always"] is True
+    assert c.data["always_charge_below_eur_kwh"] == 0.10
+    assert calls == ["turn_on"]
+
+
+async def test_always_charge_hours_join_the_deadline_plan(rig):
+    _, c, _ = rig
+    c.charge_below, c.charge_below_price = True, 0.30
+    await c.async_reconcile()
+    # The hour now is under 0.30: it's taken as an always-charge hour.
+    assert [slot["always"] for slot in c.data["slots"]] == [True]
+    assert c.data["planning_method"] == "published_prices"
+
+
+async def test_always_charge_hours_after_the_deadline_dont_replace_the_plan(rig):
+    hass, c, _ = rig
+    now = dt_util.utcnow()
+    # Now 0.30 before the deadline; a negative hour after it.
+    hass.states.async_set(
+        "sensor.electricity_price",
+        ".3",
+        {
+            "unit_of_measurement": "EUR/kWh",
+            "prices": [
+                {
+                    "start": (now - timedelta(minutes=1)).isoformat(),
+                    "end": (now + timedelta(minutes=59)).isoformat(),
+                    "price": 0.3,
+                },
+                {
+                    "start": (now + timedelta(minutes=119)).isoformat(),
+                    "end": (now + timedelta(minutes=179)).isoformat(),
+                    "price": -0.1,
+                },
+            ],
+        },
+    )
+    c.charge_negative = True
+    c.settings["max_price_eur_kwh"] = 0.5
+    await c.async_reconcile()
+    assert [slot["always"] for slot in c.data["slots"]] == [False]
+    assert c.data["shortfall_kwh"] == 0
