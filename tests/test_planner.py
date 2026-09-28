@@ -280,56 +280,13 @@ def test_estimated_battery_rises_slower_near_full():
     assert soc_after(50, 5, 50) == pytest.approx(60.0)
 
 
-def test_hours_under_the_always_charge_price_come_first():
-    # 30 kWh needed: the two hours at or under 0.05 first, then the plan as usual; the
-    # threshold of 0.01 leaves nothing for the rest.
-    result = plan([0.3, 0.05, 0.2, 0.04, 0.25], max_price=0.01, always_below=0.05)
-    assert [(s.start.hour, s.always) for s in result.slots] == [(19, True), (21, True)]
-    assert result.shortfall_kwh == pytest.approx(10)
-    # Without a threshold the rest goes to the cheapest other hour.
-    result = plan([0.3, 0.05, 0.2, 0.04, 0.25], always_below=0.05)
-    assert [(s.start.hour, s.always) for s in result.slots] == [(19, True), (20, False), (21, True)]
-
-
-def test_always_charge_hours_after_the_deadline_count_too():
-    # A negative hour after the deadline is used: 30 kWh, the rest before the deadline.
-    prices = slots([0.3, 0.3, 0.3, -0.1, 0.3])
-    result = make_plan(
-        prices,
-        NOW,
-        NOW + timedelta(hours=2),
-        20,
-        80,
-        50,
-        10,
-        1,
-        always_below=-1e-9,
-        always_until=NOW + timedelta(hours=5),
-    )
-    assert [(s.start.hour, s.always) for s in result.slots] == [
-        (18, False),
-        (19, False),
-        (21, True),
-    ]
-
-
 def test_a_cheaper_hour_expected_later_is_waited_for():
-    # 10 kWh: a more negative hour is expected after the published negative one, so
-    # the plan waits for it; being an estimate it doesn't start charging itself.
-    prices = slots([0.3, -0.1, 0.3])
+    # Cheap-only, 10 kWh: a published hour at -0.01 is under the cheap price, but -0.20 is
+    # expected later, so the plan waits for it; an estimate doesn't start charging itself.
+    prices = slots([0.3, -0.01, 0.3])
     expected = [Slot(NOW + timedelta(hours=3), NOW + timedelta(hours=4), -0.2, estimated=True)]
     result = make_plan(
-        prices,
-        NOW,
-        NOW + timedelta(hours=3),
-        20,
-        40,
-        50,
-        10,
-        1,
-        always_below=-1e-9,
-        always_until=NOW + timedelta(hours=4),
-        always_prices=prices + expected,
+        prices + expected, NOW, NOW + timedelta(hours=4), 20, 40, 50, 10, 1, max_price=0.1
     )
     assert [(s.start.hour, s.estimated) for s in result.slots] == [(21, True)]
     assert not result.charging_at(NOW + timedelta(hours=1, minutes=30))

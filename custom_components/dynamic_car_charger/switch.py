@@ -16,8 +16,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
             ImmediateCharging(entry.runtime_data),
             PriceForecast(entry.runtime_data),
             CheapOnly(entry.runtime_data),
-            ChargeAtNegativePrices(entry.runtime_data),
-            ChargeBelowPrice(entry.runtime_data),
+            CheapAfterDeadline(entry.runtime_data),
         ]
     )
 
@@ -97,39 +96,21 @@ class CheapOnly(ChargerEntity, SwitchEntity):
         await self.coordinator.async_change(cheap_only=False)
 
 
-class ChargeAtNegativePrices(ChargerEntity, SwitchEntity):
-    """Always charge, up to the target, in hours with a negative price."""
+class CheapAfterDeadline(ChargerEntity, SwitchEntity):
+    """Without a deadline, or once it passed, charge as in the cheap-only mode until a
+    new deadline is set."""
 
-    _attr_icon = "mdi:cash-minus"
+    _attr_icon = "mdi:piggy-bank-outline"
 
     def __init__(self, coordinator):
-        super().__init__(coordinator, "charge_negative")
+        super().__init__(coordinator, "cheap_after_deadline")
 
     @property
     def is_on(self) -> bool:
-        return self.coordinator.charge_negative
+        return self.coordinator.cheap_after_deadline
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        await self.coordinator.async_change(charge_negative=True)
+        await self.coordinator.async_change(cheap_after_deadline=True)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        await self.coordinator.async_change(charge_negative=False)
-
-
-class ChargeBelowPrice(ChargerEntity, SwitchEntity):
-    """Always charge, up to the target, in hours at or below the always-charge price."""
-
-    _attr_icon = "mdi:cash-check"
-
-    def __init__(self, coordinator):
-        super().__init__(coordinator, "charge_below")
-
-    @property
-    def is_on(self) -> bool:
-        return self.coordinator.charge_below
-
-    async def async_turn_on(self, **kwargs: Any) -> None:
-        await self.coordinator.async_change(charge_below=True)
-
-    async def async_turn_off(self, **kwargs: Any) -> None:
-        await self.coordinator.async_change(charge_below=False)
+        await self.coordinator.async_change(cheap_after_deadline=False)

@@ -11,8 +11,7 @@ It works with any charger that has an on/off switch in Home Assistant and any dy
 - A plan showing start/end times, EUR/kWh, grid energy and estimated remaining cost.
 - Automatic pause/resume with a 15-second control loop and entity-change updates.
 - A price threshold that limits provisional plans to cheap periods while there is still enough time.
-- **Only charge when cheap**: no deadline, charge to the target only at or below a price of your choice.
-- Optionally always charge at negative prices, or below a price of your choice, whatever the plan.
+- **Only charge when cheap**: no deadline, charge to the target only at or below a price of your choice; optionally also whenever there is no deadline, or it passed.
 - An optional **price forecast** that estimates unpublished prices from weather forecasts, switchable with one toggle.
 - **Charge now to target**, ignoring prices, for when you need the car soon.
 - Optional charger unlocking before charging and locking when the car drives away.
@@ -115,14 +114,9 @@ The **Price forecast** diagnostic sensor shows `off`, `loading`, `ready` or `una
 
 When the car isn't needed for a while, turn on **Only charge when cheap** (this also turns on **Automatic charging**). The deadline is then set aside: the integration charges to the target only in published hours at or below **Cheap charging price**, cheapest first. With **Use price forecast** on it also looks at the estimated prices of the coming days, and waits when a cheaper hour is expected; an estimated hour never starts charging itself, so when the estimate doesn't come true the published cheap hour is used once it is known. Without any hour that cheap the plan's state is `waiting_for_cheap_price`. Turn it off to plan for the deadline again.
 
-### Always charge when it's cheap
+### Charge when cheap after the deadline
 
-Two settings charge in cheap hours whatever the plan, up to the target:
-
-- **Always charge at negative prices**: every hour with a price below zero.
-- **Always charge below a price**: every hour at or below **Always-charge price**.
-
-These hours come first, cheapest first, and the plan fills in the rest before the deadline. Among them the cheapest are chosen, and with the price forecast on, estimated hours count too: when a cheaper or more negative hour is expected, the battery is kept for that one. With a deadline only the hours before it can stand in for the plan's, so the deadline is always met; after the deadline, or without one, they charge by themselves. The plan's slots chosen this way have `always: true`, and `always_charge_below_eur_kwh` shows the price that applies (just below zero for negative prices only).
+Turn on **Charge when cheap after the deadline** to charge as in **Only charge when cheap** whenever there is no deadline, or it passed (after the deadline grace): to the target, at or below **Cheap charging price**, cheapest first, waiting for a cheaper hour expected later. A negative price is covered by a cheap price of zero or more. Setting a new deadline plans for it again. The plan's `planning_method` is then `cheap_after_deadline`.
 
 ### Set a session from an automation
 
@@ -203,7 +197,7 @@ The **Charging plan** sensor state is one of:
 | `target_reached` | Measured battery percentage meets the target. |
 | `awaiting_soc_confirmation` | Estimated energy reaches the target; waiting (at most 30 minutes of charging) for measured SOC. |
 | `deadline_passed` | The deadline has expired; charging is paused. |
-| `waiting_for_cheap_price` | **Only charge when cheap** is on and no hour is at or below the cheap price. |
+| `waiting_for_cheap_price` | Charging when cheap (**Only charge when cheap**, or after the deadline) and no hour is at or below the cheap price. |
 | `waiting_for_car` | The charger or its lock is unavailable; charging cannot start yet. |
 | `unlocking_charger` | The charger unlock was requested and is not yet confirmed. |
 | `starting_charge` | Resume was requested and is not yet confirmed. |
@@ -213,7 +207,7 @@ The **Charging plan** sensor state is one of:
 
 `plan_status` additionally uses `immediate_charging` while **Charge now to target** is active.
 
-`planning_method` shows how the plan was made: `published_prices` (all prices to the deadline are published, or the deadline is close), `forecast`, `threshold`, `cheap_only`, or `always_charge` (no deadline, only the always-charge hours). Slots with `estimated: true` use a forecast price.
+`planning_method` shows how the plan was made: `published_prices` (all prices to the deadline are published, or the deadline is close), `forecast`, `threshold`, `cheap_only`, or `cheap_after_deadline`. Slots with `estimated: true` use a forecast price.
 
 Useful attributes: `car_connected` (true/false, or null without that sensor), `slots`, `planning_method`, `forecast_status`, `forecast_error`, `estimated_cost_eur`, `required_grid_kwh`, `planned_grid_kwh`, `shortfall_kwh`, `coverage_complete`, `measured_soc`, `estimated_soc`, `soc_reported_at`, `soc_report_old`, `charging_requested`, `price_threshold_eur_kwh`, `threshold_safety_mode`, `deadline_extension_until` and `error`.
 
