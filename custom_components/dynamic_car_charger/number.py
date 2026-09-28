@@ -19,7 +19,6 @@ async def async_setup_entry(hass, entry, async_add_entities):
             target,
             PriceThreshold(coordinator),
             PriceSetting(coordinator, "cheap_price", "mdi:piggy-bank-outline"),
-            PriceSetting(coordinator, "charge_below_price", "mdi:cash-check"),
         ]
     )
 
@@ -89,7 +88,7 @@ class PriceThreshold(ChargerEntity, NumberEntity):
 
 class PriceSetting(ChargerEntity, NumberEntity):
     """A price per kWh the coordinator keeps under the same name: the cheap-only
-    mode's highest price, or the always-charge price."""
+    mode's highest price."""
 
     _attr_native_min_value = -1
     _attr_native_max_value = 5

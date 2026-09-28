@@ -130,12 +130,10 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._charger_available = False
         self._unsubs: list = []
         self._stop_unsub = None
-        # Cheap-only mode, and hours it always charges in whatever the plan.
+        # Cheap-only mode, also (when chosen) once the deadline has passed.
         self.cheap_only = False
         self.cheap_price = 0.10
-        self.charge_negative = False
-        self.charge_below = False
-        self.charge_below_price = 0.05
+        self.cheap_after_deadline = False
         # The car's drives, when its location is known.
         self.trips: TripRecorder | None = None
         self.data = {"status": "set_deadline", "slots": []}
@@ -164,9 +162,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.use_forecast = bool(saved.get("use_forecast", False))
         self.cheap_only = bool(saved.get("cheap_only", False))
         self.cheap_price = number(saved.get("cheap_price", 0.10), -1, 5)
-        self.charge_negative = bool(saved.get("charge_negative", False))
-        self.charge_below = bool(saved.get("charge_below", False))
-        self.charge_below_price = number(saved.get("charge_below_price", 0.05), -1, 5)
+        self.cheap_after_deadline = bool(saved.get("cheap_after_deadline", False))
         # Keep a live threshold change across restarts, unless the configured
         # threshold was changed in the options since it was saved.
         if (
@@ -318,9 +314,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "use_forecast": self.use_forecast,
             "cheap_only": self.cheap_only,
             "cheap_price": self.cheap_price,
-            "charge_negative": self.charge_negative,
-            "charge_below": self.charge_below,
-            "charge_below_price": self.charge_below_price,
+            "cheap_after_deadline": self.cheap_after_deadline,
             "energy_goal": self.energy_goal,
             "delivered_kwh": self._delivered_kwh,
         }
@@ -612,22 +606,20 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "prices": self._price_rows(now),
                 "cheap_only": self.cheap_only,
                 "cheap_price_eur_kwh": self.cheap_price,
-                "charge_at_negative_prices": self.charge_negative,
-                "charge_below": self.charge_below,
-                "charge_below_price_eur_kwh": self.charge_below_price,
-                "always_charge_below_eur_kwh": self._always_below(),
+                "cheap_after_deadline": self.cheap_after_deadline,
             }
             try:
                 if self.immediate_charging:
                     desired = self._reconcile_immediate(now, data)
                 elif self.cheap_only:
-                    desired, prices = self._reconcile_open(now, data, cheap=True)
-                elif self.deadline is not None and (
-                    now < self.deadline + self._grace() or self._always_below() is None
+                    desired, prices = self._reconcile_cheap(now, data)
+                elif self.cheap_after_deadline and (
+                    self.deadline is None or now >= self.deadline + self._grace()
                 ):
+                    # No deadline, or it passed: charge when cheap until a new one is set.
+                    desired, prices = self._reconcile_cheap(now, data, after_deadline=True)
+                elif self.deadline is not None:
                     desired, prices = self._reconcile_deadline(now, data)
-                elif self._always_below() is not None:
-                    desired, prices = self._reconcile_open(now, data, cheap=False)
             except (ValueError, TypeError, KeyError, OverflowError) as err:
                 data.update(status="input_error", error=str(err))
                 self._sample_time = None
@@ -673,16 +665,6 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         data["status"] = "charging"
         return True
 
-    def _always_below(self) -> float | None:
-        """The price at or below which it always charges, whatever the plan: the
-        always-charge price, or just under zero for negative prices; None when off."""
-        prices = []
-        if self.charge_below:
-            prices.append(self.charge_below_price)
-        if self.charge_negative:
-            prices.append(-1e-9)
-        return max(prices, default=None)
-
     def _estimates(self, prices: list[Slot], until: datetime) -> list[Slot]:
         """Forecast prices after the published ones, when the forecast is on and ready."""
         if not self.use_forecast:
@@ -695,31 +677,17 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return []
         return estimated
 
-    def _always(self, prices: list[Slot], now: datetime) -> dict[str, Any]:
-        """make_plan's always-charge arguments: over the published prices and, with the
-        forecast, the estimated days after them, so a cheaper hour expected later is
-        waited for."""
-        if self._always_below() is None:
-            return {}
-        pool = prices + self._estimates(prices, now + FORECAST_REACH)
-        return {
-            "always_below": self._always_below(),
-            "always_prices": pool,
-            "always_until": max((slot.end for slot in pool), default=now),
-        }
-
     def _grace(self) -> timedelta:
         return timedelta(minutes=number(self.settings.get("deadline_grace_minutes", 60), 0, 720))
 
-    def _reconcile_open(self, now: datetime, data: dict[str, Any], cheap: bool):
-        """Without a deadline: in the cheap-only mode, in the published hours at or
-        below the cheap price; otherwise (no deadline, or it passed) only in the hours
-        the always-charge rules allow. Up to the target, cheapest first."""
+    def _reconcile_cheap(self, now: datetime, data: dict[str, Any], after_deadline=False):
+        """Without a deadline: to the target in the hours at or below the cheap price,
+        cheapest first. In the cheap-only mode, or once the deadline passed when chosen."""
         soc, effective, prices = self._read(now, include_prices=True)
         target = self._goal_target()
         # With the forecast the cheap-only mode also waits for a cheaper hour expected
         # later; estimated hours never start charging.
-        pool = prices + self._estimates(prices, now + FORECAST_REACH) if cheap else prices
+        pool = prices + self._estimates(prices, now + FORECAST_REACH)
         known_until = max((slot.end for slot in pool), default=now)
         plan = make_plan(
             pool,
@@ -730,14 +698,12 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._capacity(),
             self.settings["power_kw"],
             self._efficiency(),
-            # Outside the cheap-only mode nothing but the always-charge hours.
-            max_price=self.cheap_price if cheap else -1e9,
+            max_price=self.cheap_price,
             taper=None if self.energy_mode else self._taper(),
-            **self._always(prices, now),
         )
         data.update(plan.as_dict(self.settings["power_kw"]))
         data.update(self._battery_details(now, soc, effective))
-        data["planning_method"] = "cheap_only" if cheap else "always_charge"
+        data["planning_method"] = "cheap_after_deadline" if after_deadline else "cheap_only"
         data["plan_is_provisional"] = True
         desired = plan.charging_at(now) and soc < target
         self._clear_active_run()
@@ -749,10 +715,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             status = "awaiting_soc_confirmation"
         elif plan.slots:
             status = "scheduled"
-        elif cheap:
-            status = "waiting_for_cheap_price"
         else:
-            status = "deadline_passed" if self.deadline is not None else "set_deadline"
+            status = "waiting_for_cheap_price"
         data["status"] = status if self.enabled or status == "target_reached" else "preview"
         data["plan_status"] = status
         return desired, prices
@@ -771,14 +735,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         # The slow last part of a charge needs extra time (not in energy mode).
         taper = None if self.energy_mode else self._taper()
-        # Hours under the always-charge price come first, also after the deadline.
-        # Only hours before the deadline may stand in for the plan's; after it the
-        # always-charge rules carry on by themselves.
-        always = self._always(prices, now)
-        if always:
-            always["always_until"] = min(always["always_until"], self.deadline)
-        threshold_plan = make_plan(prices, *args, max_price=threshold, taper=taper, **always)
-        full_plan = make_plan(prices, *args, taper=taper, **always)
+        threshold_plan = make_plan(prices, *args, max_price=threshold, taper=taper)
+        full_plan = make_plan(prices, *args, taper=taper)
         safety_hours = max(1.0, threshold_plan.required_kwh / self.settings["power_kw"] * 1.5)
         safety_mode = (self.deadline - now).total_seconds() / 3600 <= safety_hours
         data["price_threshold_eur_kwh"] = threshold
@@ -807,7 +765,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 data["forecast_error"] = str(err)
             else:
                 data["planning_method"] = "forecast"
-                return make_plan(prices + estimated, *args, taper=taper, **always), False
+                return make_plan(prices + estimated, *args, taper=taper), False
         # The threshold limits provisional planning while future prices are
         # unknown, and is the fallback when the forecast is unavailable.
         data["planning_method"] = "threshold"
@@ -825,7 +783,6 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             target,
             self.settings.get("max_price_eur_kwh", 0.20),
             self.use_forecast,
-            self._always_below(),
         )
         plan, coverage_complete = self._choose_plan(prices, now, effective, data)
         data.update(plan.as_dict(self.settings["power_kw"]))

@@ -164,9 +164,6 @@
       },
       "cheap_price": {
         "name": "Cheap charging price"
-      },
-      "charge_below_price": {
-        "name": "Always-charge price"
       }
     },
     "datetime": {
@@ -187,11 +184,8 @@
       "cheap_only": {
         "name": "Only charge when cheap"
       },
-      "charge_negative": {
-        "name": "Always charge at negative prices"
-      },
-      "charge_below": {
-        "name": "Always charge below a price"
+      "cheap_after_deadline": {
+        "name": "Charge when cheap after the deadline"
       }
     },
     "button": {
