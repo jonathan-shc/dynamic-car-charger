@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.const import EntityCategory
+from homeassistant.util import dt as dt_util
 
 from .entity import ChargerEntity
 
@@ -131,10 +133,26 @@ class PriceForecastSensor(ChargerEntity, SensorEntity):
             "estimates": [],
         }
         if calibration and model and model.last_known_day:
-            # Only hours after the last published market day are estimates.
+            # Every hour after the last published all-in price. Between the market
+            # publishing the next day (about 13:00) and the price sensor having it, those
+            # are the market's own prices, calibrated: without them the next day was empty.
+            published_until = self._published_until()
             attributes["estimates"] = [
                 {"start": hour.isoformat(), "price_eur_kwh": round(calibration.apply(price), 4)}
                 for hour, price in sorted(forecaster.estimates.items())
-                if model.local_date(hour) > model.last_known_day
+                if (
+                    hour >= published_until
+                    if published_until
+                    else model.local_date(hour) > model.last_known_day
+                )
             ]
         return attributes
+
+    def _published_until(self) -> datetime | None:
+        """The end of the last all-in price the price sensor has, from the plan."""
+        ends = [
+            dt_util.parse_datetime(row["end"])
+            for row in (self.coordinator.data or {}).get("prices") or []
+            if row.get("end")
+        ]
+        return max((end for end in ends if end is not None), default=None)

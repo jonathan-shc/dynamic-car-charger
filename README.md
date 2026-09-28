@@ -109,7 +109,7 @@ How the estimate works:
 
 Why: a [backtest](tools/backtest/) over 17,715 sessions from June 2024 to September 2026 found the forecast cost 1.8% more than perfect foresight, against 5.1% for a fixed threshold of 0.18–0.20. For about 2,170 kWh a year, mostly charged in windows of several days, that is roughly EUR 16 a year. It saves most with long windows.
 
-The **Price forecast** diagnostic sensor shows `off`, `loading`, `ready` or `unavailable`, with `error`, `trained_at`, `last_market_day`, the fitted `calibration_slope` and `calibration_offset`, and the hourly `estimates` in EUR/kWh.
+The **Price forecast** diagnostic sensor shows `off`, `loading`, `ready` or `unavailable`, with `error`, `trained_at`, `last_market_day`, the fitted `calibration_slope` and `calibration_offset`, and the hourly `estimates` in EUR/kWh for every hour after the last published price: the next day's market prices, calibrated, once the market has them (about 13:00) and the price sensor not yet, then the forecast.
 
 ### Only charge when cheap
 

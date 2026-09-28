@@ -1537,3 +1537,28 @@ async def test_always_charge_hours_after_the_deadline_dont_replace_the_plan(rig)
     await c.async_reconcile()
     assert [slot["always"] for slot in c.data["slots"]] == [False]
     assert c.data["shortfall_kwh"] == 0
+
+
+async def test_forecast_sensor_estimates_start_where_published_prices_end(rig):
+    """The market has tomorrow (after about 13:00) but the price sensor not yet: tomorrow's
+    hours must still be shown, from the market's prices, not left empty."""
+    _, c, _ = rig
+    from custom_components.dynamic_car_charger.sensor import PriceForecastSensor
+
+    await c.async_reconcile()
+    published_until = max(dt_util.parse_datetime(row["end"]) for row in c.data["prices"])
+    hour = published_until.replace(minute=0, second=0, microsecond=0)
+    c.use_forecast = True
+    c.forecast_calibration = Calibration(1.0, 0.1, 48)
+    c.forecaster = FakeForecaster()
+    # The market's last known day is tomorrow, and it has an hour right after the
+    # published prices as well as one before.
+    c.forecaster.model = SimpleNamespace(
+        last_known_day=(hour + timedelta(days=1)).date(),
+        local_date=lambda h: h.date(),
+    )
+    c.forecaster.estimates = {hour - timedelta(hours=2): 0.2, hour + timedelta(hours=1): 0.05}
+    attributes = PriceForecastSensor(c).extra_state_attributes
+    assert attributes["estimates"] == [
+        {"start": (hour + timedelta(hours=1)).isoformat(), "price_eur_kwh": 0.15}
+    ]
