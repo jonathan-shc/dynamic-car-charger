@@ -46,7 +46,11 @@ SIMPLIFY_METRES = 8.0
 # How far back the recorder is read at start; it usually keeps ten days.
 RECORDER_DAYS = 10
 # Drives kept by an older way of cutting them are rebuilt from the recorder once.
-VERSION = 2
+VERSION = 3
+# A car asleep reports no positions: when the one before the first step is older than
+# this, the drive is taken to start as long before that step as it takes at town speed.
+ASLEEP = timedelta(minutes=2)
+TOWN_SPEED = 30 / 3.6  # metres a second
 
 # The battery percentage after a drive: the middle reading of these minutes after it, as
 # it wavers by a few tenths while the car settles.
@@ -84,8 +88,17 @@ def split(points: list[Point]) -> list[list[Point]]:
         end = last
         while end + 1 < len(points) and points[end + 1][0] - points[last][0] <= SETTLE:
             end += 1
-        trips.append(points[first : end + 1])
+        trips.append([_woken(points[first], points[first + 1]), *points[first + 1 : end + 1]])
     return [trip for trip in trips if length_km(trip) >= MIN_KM]
+
+
+def _woken(parked: Point, moved: Point) -> Point:
+    """Where a drive starts: the position before its first step. Overnight that position
+    is hours old, so its time is then moved up to just before the step."""
+    if moved[0] - parked[0] <= ASLEEP:
+        return parked
+    seconds = min(metres(parked, moved) / TOWN_SPEED, ASLEEP.total_seconds())
+    return (moved[0] - timedelta(seconds=seconds), parked[1], parked[2])
 
 
 def length_km(points: list[Point]) -> float:

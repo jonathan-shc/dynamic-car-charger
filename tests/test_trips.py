@@ -73,6 +73,17 @@ def test_a_drive_ends_where_the_car_parked_and_keeps_slow_parts():
     assert drive[-1] == at(90, 10.25)
 
 
+def test_a_drive_after_a_night_asleep_starts_in_the_morning():
+    # Parked at 17:00; the car sends nothing overnight, then drives off at 07:00.
+    morning = 14 * 3600
+    points = [at(0, 0), at(morning, 1.2), at(morning + 10, 3), at(morning + 20, 6)]
+    (drive,) = split(points)
+    # Where it stood, but 16 s (133 m at town speed) before the first step, not at 17:00.
+    assert drive[0][1:] == points[0][1:]
+    assert (points[1][0] - drive[0][0]).total_seconds() == pytest.approx(16, abs=1)
+    assert record(drive)["started"] == drive[0][0].isoformat()
+
+
 def test_a_long_stop_starts_a_new_drive():
     points = [at(0, 0), at(10, 5), at(20, 10), at(20 + 11 * 60, 10), at(20 + 11 * 60 + 10, 15)]
     assert len(split(points)) == 2
