@@ -16,8 +16,10 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
+from .const import DOMAIN
 from .planner import Slot
 from .price_forecast import (
     HOUR,
@@ -75,7 +77,10 @@ def parse_weather(data: dict, point: str, suffixes: list[str]) -> dict[datetime,
 
 
 class PriceForecaster:
-    """Keeps market history, weather forecasts and a trained model in memory."""
+    """Keeps market history, weather forecasts and a trained model in memory.
+
+    The market history is also kept on disk: when its source is down, also after a
+    restart, the forecast carries on from the last prices it had."""
 
     def __init__(
         self,
@@ -86,6 +91,7 @@ class PriceForecaster:
         self.hass = hass
         self.zone = zone(bidding_zone)
         self._fetch_json = fetch_json or self._default_fetch
+        self._store: Store = Store(hass, 1, f"{DOMAIN}.market.{self.zone.code.lower()}")
         self.market: dict[datetime, float] = {}
         self.archive: dict[datetime, dict[str, float]] = {}
         self.live: dict[datetime, dict[str, float]] = {}
@@ -96,6 +102,7 @@ class PriceForecaster:
         self.estimates: dict[datetime, float] = {}
         self.estimated_at: datetime | None = None
         self._market_at: datetime | None = None
+        self._market_failed_at: datetime | None = None
         self._archive_at: datetime | None = None
         self._live_at: datetime | None = None
         self._failed_at: datetime | None = None
@@ -109,6 +116,9 @@ class PriceForecaster:
             return await response.json()
 
     def _market_outdated(self, now: datetime) -> bool:
+        # Its source just failed: carry on from the prices kept, and ask again later.
+        if self._market_failed_at is not None and now - self._market_failed_at < RETRY_AFTER:
+            return False
         if self._market_at is None or now - self._market_at >= HISTORY_REFRESH:
             return True
         # After publication, fetch again until tomorrow's prices are in.
@@ -130,11 +140,27 @@ class PriceForecaster:
                 return
             if self.status == "off":
                 self.status = "loading"
+            market_error = None
             try:
                 retrain = False
                 if self._market_outdated(now):
-                    await self._fetch_market(now)
-                    retrain = True
+                    try:
+                        await self._fetch_market(now)
+                        self._market_failed_at = None
+                        retrain = True
+                    except Exception as err:  # noqa: BLE001 - carry on from the prices kept
+                        if not self.market:
+                            await self._load_market()
+                            retrain = True
+                        if not self.market:
+                            raise
+                        market_error = f"{type(err).__name__}: {err}"
+                        self._market_failed_at = now
+                        _LOGGER.warning(
+                            "Market prices unavailable (%s); using those up to %s",
+                            market_error,
+                            max(self.market).date(),
+                        )
                 if self._archive_at is None or now - self._archive_at >= HISTORY_REFRESH:
                     await self._fetch_archive(now)
                     retrain = True
@@ -152,7 +178,10 @@ class PriceForecaster:
                 _LOGGER.warning("Price forecast update failed: %s", self.error)
                 return
             self._failed_at = None
-            self.error = None
+            # Still shown while the forecast works from the prices kept.
+            if market_error is None and self._market_failed_at is not None:
+                market_error = self.error
+            self.error = market_error
             self.status = "ready" if self.estimates else "unavailable"
 
     async def _fetch_market(self, now: datetime) -> None:
@@ -167,6 +196,23 @@ class PriceForecaster:
         )
         self.market = parse_market(data)
         self._market_at = now
+        self._store.async_delay_save(self._market_to_save, 5)
+
+    def _market_to_save(self) -> dict[str, Any]:
+        return {
+            "market": {str(int(hour.timestamp())): price for hour, price in self.market.items()}
+        }
+
+    async def _load_market(self) -> None:
+        """The market prices of the last fetch that worked, from disk."""
+        try:
+            saved = await self._store.async_load() or {}
+            self.market = {
+                datetime.fromtimestamp(int(stamp), UTC): float(price)
+                for stamp, price in (saved.get("market") or {}).items()
+            }
+        except Exception:  # noqa: BLE001 - a broken cache is no worse than none
+            self.market = {}
 
     async def _fetch_archive(self, now: datetime) -> None:
         today = now.astimezone(self.zone.tz).date()

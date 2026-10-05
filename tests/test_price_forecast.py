@@ -338,3 +338,44 @@ def test_default_zone_follows_home_assistants_country_and_home():
     assert zone_for_location(None) == "nl"
     assert zone_for_location("ES") == "nl"
     assert all(zone(zone_for_location(c)).code in ZONES for c in ("NL", "DK", "SE", "XX"))
+
+
+async def test_forecaster_carries_on_from_kept_market_prices_when_the_source_is_down(hass):
+    down = False
+
+    async def fetch(url, params):
+        if down and "energy-charts" in url:
+            raise TimeoutError("503 Service Unavailable")
+        return api_response(url, params)
+
+    now = datetime(2026, 3, 11, 9, tzinfo=UTC)
+    first = PriceForecaster(hass, fetch)
+    await first.async_update(now)
+    await first._store.async_save(first._market_to_save())
+
+    # Restarted while the source is down: the prices kept on disk still give estimates.
+    down = True
+    restarted = PriceForecaster(hass, fetch)
+    await restarted.async_update(now + timedelta(hours=1))
+    assert restarted.status == "ready"
+    assert "503" in restarted.error
+    assert restarted.estimates
+    assert restarted.market == first.market
+    # It asks again after the retry time, and the error goes once the source is back.
+    down = False
+    await restarted.async_update(now + timedelta(hours=1, minutes=5))
+    assert "503" in restarted.error
+    await restarted.async_update(now + timedelta(hours=1, minutes=20))
+    assert restarted.error is None
+
+
+async def test_forecaster_without_kept_prices_is_unavailable_when_the_source_is_down(hass):
+    async def fetch(url, params):
+        if "energy-charts" in url:
+            raise TimeoutError("503 Service Unavailable")
+        return api_response(url, params)
+
+    forecaster = PriceForecaster(hass, fetch)
+    await forecaster.async_update(datetime(2026, 3, 11, 9, tzinfo=UTC))
+    assert forecaster.status == "unavailable"
+    assert "503" in forecaster.error
