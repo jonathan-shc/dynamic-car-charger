@@ -125,6 +125,7 @@ class PriceForecastSensor(ChargerEntity, SensorEntity):
             "estimated_at": (
                 forecaster.estimated_at.isoformat() if forecaster.estimated_at else None
             ),
+            "market_source": forecaster.market_source,
             "last_market_day": (
                 model.last_known_day.isoformat() if model and model.last_known_day else None
             ),

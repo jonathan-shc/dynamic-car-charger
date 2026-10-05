@@ -170,6 +170,17 @@ def api_response(url, params):
         stamps = [int(h.timestamp()) for h in hours(START, END)]
         prices = [market_price(h) * 1000 for h in hours(START, END)]
         return {"unix_seconds": stamps, "price": prices}
+    if "smard" in url:
+        # A file a week, as SMARD has them: [milliseconds, EUR/MWh], empty hours as null.
+        weeks = [START + timedelta(days=7 * i) for i in range((END - START).days // 7 + 1)]
+        if url.endswith("index_hour.json"):
+            return {"timestamps": [int(w.timestamp() * 1000) for w in weeks]}
+        week = datetime.fromtimestamp(int(url.rsplit("_", 1)[1].removesuffix(".json")) / 1000, UTC)
+        series = [
+            [int(h.timestamp() * 1000), market_price(h) * 1000 if h < END else None]
+            for h in hours(week, week + timedelta(days=7))
+        ]
+        return {"series": series}
     point = next(
         p
         for p, (lat, lon) in WEATHER_POINTS.items()
@@ -340,11 +351,11 @@ def test_default_zone_follows_home_assistants_country_and_home():
     assert all(zone(zone_for_location(c)).code in ZONES for c in ("NL", "DK", "SE", "XX"))
 
 
-async def test_forecaster_carries_on_from_kept_market_prices_when_the_source_is_down(hass):
+async def test_forecaster_carries_on_from_kept_market_prices_when_both_sources_are_down(hass):
     down = False
 
     async def fetch(url, params):
-        if down and "energy-charts" in url:
+        if down and ("energy-charts" in url or "smard" in url):
             raise TimeoutError("503 Service Unavailable")
         return api_response(url, params)
 
@@ -369,9 +380,9 @@ async def test_forecaster_carries_on_from_kept_market_prices_when_the_source_is_
     assert restarted.error is None
 
 
-async def test_forecaster_without_kept_prices_is_unavailable_when_the_source_is_down(hass):
+async def test_forecaster_without_kept_prices_is_unavailable_when_both_sources_are_down(hass):
     async def fetch(url, params):
-        if "energy-charts" in url:
+        if "energy-charts" in url or "smard" in url:
             raise TimeoutError("503 Service Unavailable")
         return api_response(url, params)
 
@@ -379,3 +390,53 @@ async def test_forecaster_without_kept_prices_is_unavailable_when_the_source_is_
     await forecaster.async_update(datetime(2026, 3, 11, 9, tzinfo=UTC))
     assert forecaster.status == "unavailable"
     assert "503" in forecaster.error
+
+
+async def test_forecaster_takes_market_prices_from_smard_when_energy_charts_is_down(hass):
+    calls = []
+
+    async def fetch(url, params):
+        calls.append(url)
+        if "energy-charts" in url:
+            raise TimeoutError("503 Service Unavailable")
+        return api_response(url, params)
+
+    now = datetime(2026, 3, 11, 9, tzinfo=UTC)
+    forecaster = PriceForecaster(hass, fetch)
+    await forecaster.async_update(now)
+    assert forecaster.status == "ready"
+    assert forecaster.error is None
+    assert forecaster.market_source == "smard"
+    # The same prices as Energy-Charts would have given, for the training year.
+    hour = datetime(2026, 3, 10, 12, tzinfo=UTC)
+    assert forecaster.market[hour] == pytest.approx(market_price(hour))
+    assert min(forecaster.market) == START
+    slots, calibration = forecaster.estimate(
+        [
+            Slot(h, h + HOUR, 1.21 * market_price(h) + 0.1327)
+            for h in hours(
+                datetime(2026, 3, 10, 23, tzinfo=UTC), datetime(2026, 3, 11, 22, tzinfo=UTC)
+            )
+        ],
+        datetime(2026, 3, 13, 6, tzinfo=UTC),
+    )
+    assert calibration.slope == pytest.approx(1.21)
+    assert slots
+
+    # With prices kept, only the last weeks are asked for the next time.
+    smard = len([url for url in calls if "smard" in url])
+    calls.clear()
+    await forecaster.async_update(now + timedelta(hours=25))
+    assert 0 < len([url for url in calls if "smard" in url]) <= 4 < smard
+
+
+async def test_a_zone_without_a_second_source_says_so(hass):
+    async def fetch(url, params):
+        if "energy-charts" in url:
+            raise TimeoutError("503 Service Unavailable")
+        return api_response(url, params)
+
+    forecaster = PriceForecaster(hass, fetch, bidding_zone="fi")
+    await forecaster.async_update(datetime(2026, 3, 11, 9, tzinfo=UTC))
+    assert forecaster.status == "unavailable"
+    assert "503" in forecaster.error and "No second source for FI" in forecaster.error
