@@ -362,7 +362,7 @@ async def test_forecaster_carries_on_from_kept_market_prices_when_both_sources_a
     now = datetime(2026, 3, 11, 9, tzinfo=UTC)
     first = PriceForecaster(hass, fetch)
     await first.async_update(now)
-    await first._store.async_save(first._market_to_save())
+    await first._store.async_save(first._to_save())
 
     # Restarted while the source is down: the prices kept on disk still give estimates.
     down = True
@@ -440,3 +440,53 @@ async def test_a_zone_without_a_second_source_says_so(hass):
     await forecaster.async_update(datetime(2026, 3, 11, 9, tzinfo=UTC))
     assert forecaster.status == "unavailable"
     assert "503" in forecaster.error and "No second source for FI" in forecaster.error
+
+
+async def test_both_sources_are_asked_after_publication_and_their_arrivals_noted(hass):
+    """An afternoon: SMARD has tomorrow's prices at 13:05, Energy-Charts at 13:20."""
+    tomorrow = datetime(2026, 3, 10, 23, tzinfo=UTC)  # 11 March in the Netherlands
+    has_it = {"energy-charts": datetime(2026, 3, 10, 12, 20, tzinfo=UTC)}
+    has_it["smard"] = datetime(2026, 3, 10, 12, 5, tzinfo=UTC)
+    clock = [datetime(2026, 3, 10, 11, 40, tzinfo=UTC)]
+    calls = []
+
+    async def fetch(url, params):
+        data = api_response(url, params)
+        source = next((name for name in has_it if name in url), None)
+        calls.append(source)
+        if source is None or clock[0] >= has_it[source]:
+            return data
+        if source == "energy-charts":
+            keep = [
+                i for i, stamp in enumerate(data["unix_seconds"]) if stamp < tomorrow.timestamp()
+            ]
+            return {key: [values[i] for i in keep] for key, values in data.items()}
+        if "series" in data:
+            cut = tomorrow.timestamp() * 1000
+            data["series"] = [[at, None if at >= cut else price] for at, price in data["series"]]
+        return data
+
+    forecaster = PriceForecaster(hass, fetch)
+    await forecaster.async_update(clock[0])  # 12:40: before publication
+    assert forecaster.arrivals == []
+    assert "smard" not in calls
+    sources = []
+    while clock[0] < datetime(2026, 3, 10, 12, 45, tzinfo=UTC):
+        clock[0] += timedelta(minutes=5) if sources else timedelta(minutes=6)
+        await forecaster.async_update(clock[0])
+        sources.append(forecaster.market_source)
+    # Asked every five minutes from 12:45; each noted when it first had them.
+    assert forecaster.arrivals == [
+        {
+            "day": "2026-03-11",
+            "smard": "2026-03-10T13:06+01:00",
+            "energy-charts": "2026-03-10T13:21+01:00",
+        }
+    ]
+    # SMARD's prices were used as soon as it had them; Energy-Charts' once it did.
+    assert sources[4] == "smard" and sources[-1] == "energy-charts"
+    assert forecaster.model.last_known_day.isoformat() == "2026-03-11"
+    # With both in, neither is asked again.
+    calls.clear()
+    await forecaster.async_update(clock[0] + timedelta(minutes=5))
+    assert "energy-charts" not in calls and "smard" not in calls

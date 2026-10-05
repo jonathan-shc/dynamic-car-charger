@@ -51,7 +51,8 @@ SOC_CONFIRMATION_LIMIT = timedelta(minutes=30)
 # An input or control problem that lasts this long raises a repair issue.
 REPAIR_DELAY = timedelta(minutes=30)
 # How often the price forecast checks for new prices and weather forecasts.
-FORECAST_INTERVAL = timedelta(minutes=15)
+# Often enough to ask for the next day's prices every five minutes when they're due.
+FORECAST_INTERVAL = timedelta(minutes=5)
 SESSION_END_STATUSES = ("set_deadline", "target_reached", "deadline_passed")
 # Below this measured power the charger counts as not charging.
 IDLE_POWER_KW = 0.1
