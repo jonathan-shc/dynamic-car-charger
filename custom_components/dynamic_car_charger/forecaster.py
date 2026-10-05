@@ -426,10 +426,14 @@ class PriceForecaster:
         if hour < known_end:
             hour += HOUR
         slots = []
+        # The days the market has published are its own prices, as good as known; only
+        # the days after are forecast from the weather.
+        published = self.model.last_known_day
         while hour < deadline:
             market = self.estimates.get(hour)
             if market is not None:
-                slots.append(Slot(hour, hour + HOUR, calibration.apply(market), True))
+                forecast = published is None or self.model.local_date(hour) > published
+                slots.append(Slot(hour, hour + HOUR, calibration.apply(market), True, forecast))
             hour += HOUR
         return slots, calibration
 

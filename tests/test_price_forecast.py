@@ -486,6 +486,15 @@ async def test_both_sources_are_asked_after_publication_and_their_arrivals_noted
     # SMARD's prices were used as soon as it had them; Energy-Charts' once it did.
     assert sources[4] == "smard" and sources[-1] == "energy-charts"
     assert forecaster.model.last_known_day.isoformat() == "2026-03-11"
+    # Tomorrow's hours are now the market's own prices; only the days after are forecast.
+    known = [
+        Slot(h, h + HOUR, 1.21 * market_price(h) + 0.1327)
+        for h in hours(datetime(2026, 3, 9, 23, tzinfo=UTC), datetime(2026, 3, 10, 22, tzinfo=UTC))
+    ]
+    estimated, _ = forecaster.estimate(known, datetime(2026, 3, 12, 12, tzinfo=UTC))
+    day_after = datetime(2026, 3, 11, 23, tzinfo=UTC)
+    assert [slot.forecast for slot in estimated] == [slot.start >= day_after for slot in estimated]
+    assert any(slot.forecast for slot in estimated) and not estimated[0].forecast
     # With both in, neither is asked again.
     calls.clear()
     await forecaster.async_update(clock[0] + timedelta(minutes=5))

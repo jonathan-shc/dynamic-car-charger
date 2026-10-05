@@ -96,7 +96,7 @@ A change on the dashboard is kept across restarts. Changing the threshold in the
 
 Turn on **Use price forecast** to replace the threshold with estimated prices for the hours that are not published yet. Turn it off to go back to the threshold. You can switch at any time.
 
-With the forecast on, the plan covers published and estimated prices together, until the deadline. Estimated hours **never start charging**. They only decide whether a published hour now is worth using, or whether waiting is likely to be cheaper. When the real prices are published, the plan uses them. Close to the deadline the safety rule applies as before. If the forecast is unavailable, the threshold is used automatically (`planning_method: threshold`, reason in `forecast_error`).
+With the forecast on, the plan covers published and estimated prices together, until the deadline. An hour forecast from the weather has to be about half a cent cheaper than a published hour (0.4 cents on the market price) before the plan waits for it, so a known price isn't given up for a gain smaller than the forecast's error; the next day's hours that the market has already published count as known for this. Estimated hours **never start charging**. They only decide whether a published hour now is worth using, or whether waiting is likely to be cheaper. When the real prices are published, the plan uses them. Close to the deadline the safety rule applies as before. If the forecast is unavailable, the threshold is used automatically (`planning_method: threshold`, reason in `forecast_error`).
 
 How the estimate works:
 

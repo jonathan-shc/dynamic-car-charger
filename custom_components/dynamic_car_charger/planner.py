@@ -35,6 +35,9 @@ class Slot:
     # A forecast price for an hour that is not published yet. Estimated slots
     # help decide whether to wait, but never start charging themselves.
     estimated: bool = False
+    # Estimated from the weather, not the market's own price: less certain than a known
+    # price, so it only wins from one by more than the plan's margin.
+    forecast: bool = False
 
     @property
     def hours(self):
@@ -187,6 +190,7 @@ def _compact_selected_slots(chosen, candidates):
                 source.end,
                 chosen_slot.price,
                 chosen_slot.estimated,
+                chosen_slot.forecast,
             )
 
     return sorted(compacted, key=lambda slot: slot.start)
@@ -243,6 +247,7 @@ def make_plan(
     efficiency,
     max_price=None,
     taper=None,
+    forecast_margin=0.0,
 ):
     """Fractional cheapest-first allocation, optimal for fixed power/efficiency.
 
@@ -250,6 +255,10 @@ def make_plan(
     consecutive known intervals are shifted within their intervals to avoid a
     needless pause while preserving the energy and cost of the plan. With a
     taper, the slow last part of a charge gets the extra time it needs.
+
+    Intervals forecast from the weather are ranked `forecast_margin` dearer than their
+    price: a known price isn't given up for a gain smaller than the forecast's error.
+    Their cost is still counted at the forecast price.
     """
     now, deadline = timestamp(now), timestamp(deadline)
     soc, target = number(soc, 0, 100), number(target, 0, 100)
@@ -257,7 +266,7 @@ def make_plan(
     efficiency = number(efficiency, 0.1, 1)
     required = full_power_kwh(soc, target, capacity, efficiency, taper) if target > soc else 0.0
     all_clipped = [
-        Slot(max(s.start, now), min(s.end, deadline), number(s.price), s.estimated)
+        Slot(max(s.start, now), min(s.end, deadline), number(s.price), s.estimated, s.forecast)
         for s in prices
         if s.end > now and s.start < deadline
     ]
@@ -272,7 +281,7 @@ def make_plan(
         cursor = max(cursor, slot.end)
     coverage = cursor >= deadline
     clipped = [slot for slot in all_clipped if max_price is None or slot.price <= number(max_price)]
-    picked, remaining = _allocate(clipped, required, power)
+    picked, remaining = _allocate(clipped, required, power, number(forecast_margin, 0))
     chosen = _compact_selected_slots(picked, clipped)
     cost = sum(slot.hours * power * slot.price for slot in chosen)
     return Plan(
@@ -285,14 +294,18 @@ def make_plan(
     )
 
 
-def _allocate(candidates, remaining, power):
-    """The cheapest intervals for the energy, the last one partly; and what's left."""
+def _allocate(candidates, remaining, power, forecast_margin=0.0):
+    """The cheapest intervals for the energy, the last one partly; and what's left.
+    Forecast intervals count the margin dearer in this ranking."""
     chosen = []
-    for slot in sorted(candidates, key=lambda s: (s.price, s.start)):
+    ranked = sorted(
+        candidates, key=lambda s: (s.price + (forecast_margin if s.forecast else 0.0), s.start)
+    )
+    for slot in ranked:
         if remaining < 1e-8:
             break
         energy = min(remaining, slot.hours * power)
         end = slot.start + timedelta(hours=energy / power)
-        chosen.append(Slot(slot.start, end, slot.price, slot.estimated))
+        chosen.append(Slot(slot.start, end, slot.price, slot.estimated, slot.forecast))
         remaining -= energy
     return chosen, remaining

@@ -40,6 +40,11 @@ _LOGGER = logging.getLogger(__name__)
 TICK = timedelta(seconds=15)
 # How far ahead estimated prices are asked for outside a deadline: the forecast's reach.
 FORECAST_REACH = timedelta(days=7)
+# A price forecast from the weather has to beat a known price by this much (a market price
+# in EUR/kWh; half a cent all-in in the Netherlands) before the plan waits for it. In the
+# backtest up to this much costs nothing; without it a known price was given up for a
+# gain smaller than the forecast's error.
+FORECAST_MARGIN_MARKET = 0.004
 # A command that is not confirmed within this time is reported as an error,
 # but it is still retried at the normal retry interval.
 CONFIRM_TIMEOUT = timedelta(minutes=5)
@@ -678,6 +683,12 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return []
         return estimated
 
+    def _forecast_margin(self) -> float:
+        """The margin in the price sensor's all-in prices and currency: through the same
+        slope as the estimates (VAT and, for another currency, the exchange rate)."""
+        calibration = self.forecast_calibration
+        return FORECAST_MARGIN_MARKET * calibration.slope if calibration else 0.0
+
     def _grace(self) -> timedelta:
         return timedelta(minutes=number(self.settings.get("deadline_grace_minutes", 60), 0, 720))
 
@@ -701,6 +712,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._efficiency(),
             max_price=self.cheap_price,
             taper=None if self.energy_mode else self._taper(),
+            forecast_margin=self._forecast_margin(),
         )
         data.update(plan.as_dict(self.settings["power_kw"]))
         data.update(self._battery_details(now, soc, effective))
@@ -766,7 +778,15 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 data["forecast_error"] = str(err)
             else:
                 data["planning_method"] = "forecast"
-                return make_plan(prices + estimated, *args, taper=taper), False
+                return (
+                    make_plan(
+                        prices + estimated,
+                        *args,
+                        taper=taper,
+                        forecast_margin=self._forecast_margin(),
+                    ),
+                    False,
+                )
         # The threshold limits provisional planning while future prices are
         # unknown, and is the fallback when the forecast is unavailable.
         data["planning_method"] = "threshold"

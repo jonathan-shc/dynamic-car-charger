@@ -290,3 +290,31 @@ def test_a_cheaper_hour_expected_later_is_waited_for():
     )
     assert [(s.start.hour, s.estimated) for s in result.slots] == [(21, True)]
     assert not result.charging_at(NOW + timedelta(hours=1, minutes=30))
+
+
+def test_a_forecast_hour_must_beat_a_known_one_by_the_margin():
+    def choose(forecast_price, forecast=True):
+        later = Slot(
+            NOW + timedelta(hours=3), NOW + timedelta(hours=4), forecast_price, True, forecast
+        )
+        result = make_plan(
+            slots([0.3, 0.200, 0.3]) + [later],
+            NOW,
+            NOW + timedelta(hours=4),
+            20,
+            40,
+            50,
+            10,
+            1,
+            forecast_margin=0.005,
+        )
+        return [s.start.hour for s in result.slots], result.cost
+
+    # 0.4 cent cheaper isn't worth giving up the known hour for; a cent is.
+    assert choose(0.196)[0] == [19]
+    hours_chosen, cost = choose(0.190)
+    assert hours_chosen == [21]
+    # The cost is counted at the forecast price itself, not with the margin.
+    assert cost == pytest.approx(1.9)
+    # The market's own price for tomorrow is as good as known: no margin.
+    assert choose(0.196, forecast=False)[0] == [21]
