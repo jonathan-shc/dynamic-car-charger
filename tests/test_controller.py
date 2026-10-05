@@ -896,6 +896,8 @@ class FakeForecaster:
         self.error = None
         self.model = None
         self.estimates = {}
+        self.market_source = "energy-charts"
+        self.arrivals = []
         self.trained_at = None
         self.estimated_at = None
         self.slots = list(slots)

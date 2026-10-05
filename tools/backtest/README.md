@@ -43,7 +43,7 @@ Each session is simulated hour by hour. At every hour a strategy only sees the p
 | Profile forecast | Forecast = last known day's average + the typical hourly shape of the last 4 weeks. |
 | Weather forecast | Ridge regression on hour, weekday or holiday, recent prices, and forecast wind, solar radiation and temperature at the zone's 4 weather points. Retrained weekly on the past year. |
 
-Forecast strategies plan over published and forecast prices together, but only charge in published hours. The margin is added to forecast prices, so the plan only waits for an unpublished hour when the forecast is clearly cheaper.
+Forecast strategies plan over published and forecast prices together, but only charge in published hours. The margin is added to forecast prices, so the plan only waits for an unpublished hour when the forecast is clearly cheaper. Small margins were tried separately on the Dutch sessions (17,682, June 2024 to September 2026): 0, 0.25, 0.5, 0.75, 1 and 2 cents cost 1.82, 1.81, 1.82, 1.85, 1.90 and 2.26% more than the oracle. Up to half a cent is free, so the integration uses that (0.4 cents on the market price) for hours forecast from the weather.
 
 The weather model only uses weather forecasts that existed at the decision time, and it is only trained on prices published before the decision.
 

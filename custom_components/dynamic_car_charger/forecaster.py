@@ -3,6 +3,7 @@
 Sources, no API keys needed:
 - Energy-Charts (Fraunhofer ISE): day-ahead market prices of the bidding zone,
   CC BY 4.0, source Bundesnetzagentur | SMARD.de.
+- SMARD.de (Bundesnetzagentur, CC BY 4.0): the same prices, when Energy-Charts is down.
 - Open-Meteo: live weather forecasts, and archived forecasts to train on.
 """
 
@@ -11,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -35,14 +36,37 @@ from .zones import WEATHER_POINTS, zone
 _LOGGER = logging.getLogger(__name__)
 
 PRICE_URL = "https://api.energy-charts.info/price"
+# Energy-Charts' own source, asked when it is down: the same day-ahead prices, a file a
+# week. The filter per bidding zone; zones without one have no second source.
+SMARD_URL = "https://www.smard.de/app/chart_data/{filter}/DE/"
+SMARD_FILTERS = {
+    "NL": 256,
+    "DE-LU": 4169,
+    "BE": 4996,
+    "FR": 254,
+    "AT": 4170,
+    "CH": 259,
+    "PL": 257,
+    "DK1": 252,
+    "DK2": 253,
+}
+WEEK = timedelta(days=7)
 ARCHIVE_URL = "https://previous-runs-api.open-meteo.com/v1/forecast"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 
 HISTORY_REFRESH = timedelta(hours=24)
-# Next-day market prices are usually published shortly after 13:00.
-MARKET_PUBLICATION_HOUR = 13
+# The exchange publishes the next day's prices from about 12:45, usually before 13:00;
+# the sources follow some time after. From then both are asked until the prices are in:
+# every five minutes at first, as cars often charge in these very hours.
+MARKET_PUBLICATION = time(12, 45)
+EAGER_UNTIL = time(14, 0)
+EAGER_RETRY = timedelta(minutes=5)
+# How long each source keeps being asked just to note when it had them (`arrivals`).
+ARRIVALS_UNTIL = time(16, 0)
+ARRIVALS_KEPT = 30
 LIVE_REFRESH = timedelta(hours=1)
 RETRY_AFTER = timedelta(minutes=15)
+ENERGY_CHARTS, SMARD = "energy-charts", "smard"
 
 FetchJson = Callable[[str, dict[str, Any]], Awaitable[Any]]
 
@@ -103,6 +127,15 @@ class PriceForecaster:
         self.estimated_at: datetime | None = None
         self._market_at: datetime | None = None
         self._market_failed_at: datetime | None = None
+        # Where the latest market prices in use came from: "energy-charts", "smard", or
+        # "kept" (those on disk, when neither answers).
+        self.market_source: str | None = None
+        # When each source first had the next day's prices, the last days:
+        # [{"day": "2026-10-06", "energy-charts": "2026-10-05T13:10+02:00", "smard": ...}].
+        self.arrivals: list[dict[str, Any]] = []
+        self._asked: dict[str, datetime] = {}
+        self._polled_at: datetime | None = None
+        self._loaded = False
         self._archive_at: datetime | None = None
         self._live_at: datetime | None = None
         self._failed_at: datetime | None = None
@@ -115,22 +148,62 @@ class PriceForecaster:
             response.raise_for_status()
             return await response.json()
 
-    def _market_outdated(self, now: datetime) -> bool:
-        # Its source just failed: carry on from the prices kept, and ask again later.
+    def _tomorrow(self, now: datetime) -> date:
+        return now.astimezone(self.zone.tz).date() + timedelta(days=1)
+
+    def _has_day(self, prices: dict[datetime, float], day: date) -> bool:
+        """Whether the prices reach into a day of the bidding zone."""
+        return bool(prices) and max(prices) >= self.zone_start(day)
+
+    def _sources_due(self, now: datetime) -> set[str]:
+        """Which sources to ask for market prices now."""
+        # Both just failed: carry on from the prices kept, and ask again later.
         if self._market_failed_at is not None and now - self._market_failed_at < RETRY_AFTER:
-            return False
+            return set()
+        due = set()
         if self._market_at is None or now - self._market_at >= HISTORY_REFRESH:
-            return True
-        # After publication, fetch again until tomorrow's prices are in.
-        local = now.astimezone(self.zone.tz)
-        tomorrow = local.date() + timedelta(days=1)
-        model_day = self.model.last_known_day if self.model else None
-        return (
-            local.hour >= MARKET_PUBLICATION_HOUR
-            and model_day is not None
-            and model_day < tomorrow
-            and now - self._market_at >= RETRY_AFTER
-        )
+            due.add(ENERGY_CHARTS)
+        local = now.astimezone(self.zone.tz).time()
+        if local < MARKET_PUBLICATION:
+            return due
+        gap = EAGER_RETRY if local < EAGER_UNTIL else RETRY_AFTER
+        if self._polled_at is not None and now - self._polled_at < gap:
+            return due
+        both = {ENERGY_CHARTS, SMARD} if self.zone.code in SMARD_FILTERS else {ENERGY_CHARTS}
+        tomorrow = self._tomorrow(now)
+        if not self._has_day(self.market, tomorrow):
+            # After publication, ask both until tomorrow's prices are in.
+            due |= both
+        elif local < ARRIVALS_UNTIL:
+            # In from one: the other only to note when it has them too.
+            seen = self._arrival(tomorrow, create=False) or {}
+            due |= {source for source in both if not seen.get(source)}
+        return due
+
+    def _arrival(self, day: date, create: bool = True) -> dict[str, Any] | None:
+        for entry in self.arrivals:
+            if entry["day"] == day.isoformat():
+                return entry
+        if not create:
+            return None
+        self.arrivals.append({"day": day.isoformat()})
+        del self.arrivals[:-ARRIVALS_KEPT]
+        return self.arrivals[-1]
+
+    def _note(self, source: str, prices: dict[datetime, float], now: datetime) -> None:
+        """Note when a source first had tomorrow's prices: the time, or "<" and the time
+        when it wasn't asked shortly before, so they may have been there a while."""
+        asked_before, self._asked[source] = self._asked.get(source), now
+        tomorrow = self._tomorrow(now)
+        if not self._has_day(prices, tomorrow):
+            return
+        entry = self._arrival(tomorrow)
+        if entry.get(source):
+            return
+        watched = asked_before is not None and now - asked_before <= RETRY_AFTER + EAGER_RETRY
+        stamp = now.astimezone(self.zone.tz).isoformat(timespec="minutes")
+        entry[source] = stamp if watched else f"<{stamp}"
+        self._store.async_delay_save(self._to_save, 5)
 
     async def async_update(self, now: datetime | None = None) -> None:
         """Refresh what is outdated, retrain when needed and update estimates."""
@@ -143,24 +216,12 @@ class PriceForecaster:
             market_error = None
             try:
                 retrain = False
-                if self._market_outdated(now):
-                    try:
-                        await self._fetch_market(now)
-                        self._market_failed_at = None
-                        retrain = True
-                    except Exception as err:  # noqa: BLE001 - carry on from the prices kept
-                        if not self.market:
-                            await self._load_market()
-                            retrain = True
-                        if not self.market:
-                            raise
-                        market_error = f"{type(err).__name__}: {err}"
-                        self._market_failed_at = now
-                        _LOGGER.warning(
-                            "Market prices unavailable (%s); using those up to %s",
-                            market_error,
-                            max(self.market).date(),
-                        )
+                if not self._loaded:
+                    await self._load_saved()
+                if due := self._sources_due(now):
+                    before = (len(self.market), max(self.market, default=None))
+                    market_error = await self._refresh_market(now, due)
+                    retrain = before != (len(self.market), max(self.market, default=None))
                 if self._archive_at is None or now - self._archive_at >= HISTORY_REFRESH:
                     await self._fetch_archive(now)
                     retrain = True
@@ -184,7 +245,86 @@ class PriceForecaster:
             self.error = market_error
             self.status = "ready" if self.estimates else "unavailable"
 
-    async def _fetch_market(self, now: datetime) -> None:
+    async def _refresh_market(self, now: datetime, sources: set[str]) -> str | None:
+        """Market prices from Energy-Charts, else (or as well, when asked) from SMARD, else
+        those kept on disk. Returns the failure to show while the last are in use; raises
+        without any prices at all."""
+        self._polled_at = now
+        failure = None
+        if ENERGY_CHARTS in sources:
+            try:
+                fetched = await self._fetch_energy_charts(now)
+            except Exception as err:  # noqa: BLE001 - there are two more places to look
+                failure = f"{type(err).__name__}: {err}"
+            else:
+                # Hours only SMARD had so far stay until Energy-Charts has them too.
+                later = {h: p for h, p in self.market.items() if h > max(fetched)}
+                self.market = {**fetched, **later}
+                self.market_source = SMARD if later else ENERGY_CHARTS
+                self._note(ENERGY_CHARTS, fetched, now)
+        if SMARD in sources or failure is not None:
+            try:
+                fetched = await self._fetch_smard(now)
+            except Exception as err:  # noqa: BLE001 - carry on from the prices there are
+                if failure is None:
+                    _LOGGER.debug("SMARD didn't answer: %s", err)
+                else:
+                    failure += f"; SMARD: {type(err).__name__}: {err}"
+                    if not self.market:
+                        raise ForecastUnavailable(failure) from err
+                    self._market_failed_at = now
+                    self.market_source = "kept"
+                    _LOGGER.warning(
+                        "Market prices unavailable (%s); using those up to %s",
+                        failure,
+                        max(self.market).date(),
+                    )
+                    return failure
+            else:
+                if failure is not None or any(hour not in self.market for hour in fetched):
+                    self.market_source = SMARD
+                if failure is not None:
+                    _LOGGER.info("Energy-Charts unavailable (%s); prices from SMARD", failure)
+                self.market = {**self.market, **fetched}
+                self._note(SMARD, fetched, now)
+        oldest = self._oldest(now)
+        self.market = {hour: price for hour, price in self.market.items() if hour >= oldest}
+        self._market_at = now
+        self._market_failed_at = None
+        self._store.async_delay_save(self._to_save, 5)
+        return None
+
+    def _oldest(self, now: datetime) -> datetime:
+        """The start of the history the model trains on."""
+        today = now.astimezone(self.zone.tz).date()
+        return self.zone_start(today - timedelta(days=TRAIN_DAYS + 10))
+
+    def zone_start(self, day: date) -> datetime:
+        """Midnight of a day in the bidding zone, in UTC."""
+        return datetime(day.year, day.month, day.day, tzinfo=self.zone.tz).astimezone(UTC)
+
+    async def _fetch_smard(self, now: datetime) -> dict[datetime, float]:
+        """The weeks still missing, from SMARD: all of the training year without prices
+        yet, otherwise from the week before the last price."""
+        if (number := SMARD_FILTERS.get(self.zone.code)) is None:
+            raise ForecastUnavailable(f"No second source for {self.zone.code}")
+        base = SMARD_URL.format(filter=number)
+        oldest = self._oldest(now)
+        since = max(oldest, max(self.market) - WEEK) if self.market else oldest
+        index = await self._fetch_json(f"{base}index_hour.json", {})
+        fetched: dict[datetime, float] = {}
+        for stamp in index["timestamps"]:
+            if datetime.fromtimestamp(stamp / 1000, UTC) + WEEK <= since:
+                continue
+            data = await self._fetch_json(f"{base}{number}_DE_hour_{stamp}.json", {})
+            for millis, price in data["series"]:
+                if price is not None:
+                    fetched[datetime.fromtimestamp(millis / 1000, UTC)] = price / 1000
+        if not fetched:
+            raise ForecastUnavailable("SMARD has no prices")
+        return fetched
+
+    async def _fetch_energy_charts(self, now: datetime) -> dict[datetime, float]:
         today = now.astimezone(self.zone.tz).date()
         data = await self._fetch_json(
             PRICE_URL,
@@ -194,25 +334,29 @@ class PriceForecaster:
                 "end": (today + timedelta(days=1)).isoformat(),
             },
         )
-        self.market = parse_market(data)
-        self._market_at = now
-        self._store.async_delay_save(self._market_to_save, 5)
+        fetched = parse_market(data)
+        if not fetched:
+            raise ForecastUnavailable("Energy-Charts has no prices")
+        return fetched
 
-    def _market_to_save(self) -> dict[str, Any]:
+    def _to_save(self) -> dict[str, Any]:
         return {
-            "market": {str(int(hour.timestamp())): price for hour, price in self.market.items()}
+            "market": {str(int(hour.timestamp())): price for hour, price in self.market.items()},
+            "arrivals": self.arrivals,
         }
 
-    async def _load_market(self) -> None:
-        """The market prices of the last fetch that worked, from disk."""
+    async def _load_saved(self) -> None:
+        """The market prices of the last fetch that worked and the arrivals, from disk."""
+        self._loaded = True
         try:
             saved = await self._store.async_load() or {}
             self.market = {
                 datetime.fromtimestamp(int(stamp), UTC): float(price)
                 for stamp, price in (saved.get("market") or {}).items()
             }
+            self.arrivals = [dict(entry) for entry in saved.get("arrivals") or []]
         except Exception:  # noqa: BLE001 - a broken cache is no worse than none
-            self.market = {}
+            self.market, self.arrivals = {}, []
 
     async def _fetch_archive(self, now: datetime) -> None:
         today = now.astimezone(self.zone.tz).date()
@@ -282,10 +426,14 @@ class PriceForecaster:
         if hour < known_end:
             hour += HOUR
         slots = []
+        # The days the market has published are its own prices, as good as known; only
+        # the days after are forecast from the weather.
+        published = self.model.last_known_day
         while hour < deadline:
             market = self.estimates.get(hour)
             if market is not None:
-                slots.append(Slot(hour, hour + HOUR, calibration.apply(market), True))
+                forecast = published is None or self.model.local_date(hour) > published
+                slots.append(Slot(hour, hour + HOUR, calibration.apply(market), True, forecast))
             hour += HOUR
         return slots, calibration
 
