@@ -6,6 +6,7 @@
         "title": "Set up Dynamic Car Charger",
         "description": "Connect your charger, price sensor and, if the car reports it, its battery percentage. Without a battery sensor the integration charges an amount of energy. Automatic control starts disabled so you can inspect the plan first.",
         "data": {
+          "name": "Name (optional)",
           "charger_entity": "Charger on/off switch",
           "soc_entity": "Car battery percentage sensor (optional)",
           "price_entity": "Electricity price sensor (per kWh)",
@@ -25,6 +26,7 @@
           "location_entity": "Car location (optional)"
         },
         "data_description": {
+          "name": "What is charged, such as 'Scooter'. Only needed with more than one scheduler: it names the device and its entities.",
           "charger_entity": "The switch that starts and pauses charging: on charges, off pauses. Do not select a power relay.",
           "soc_entity": "Live battery percentage from the car. Leave empty to charge an amount of energy (kWh) instead: the integration then counts what the charger delivers.",
           "price_entity": "A sensor with today's and tomorrow's prices: prices_today / prices_tomorrow with time and price, raw_today / raw_tomorrow with start, end and value, or a prices list with start, end and price. Any currency per kWh, also cents such as c/kWh.",
@@ -64,6 +66,7 @@
         "title": "Charger and tariff settings",
         "description": "Changing settings reloads the integration and requests a pause before restarting control.",
         "data": {
+          "name": "Name (optional)",
           "charger_entity": "Charger on/off switch",
           "soc_entity": "Car battery percentage sensor (optional)",
           "price_entity": "Electricity price sensor (per kWh)",
@@ -83,6 +86,7 @@
           "location_entity": "Car location (optional)"
         },
         "data_description": {
+          "name": "What is charged, such as 'Scooter'. Only needed with more than one scheduler: it names the device and its entities.",
           "charger_entity": "The switch that starts and pauses charging: on charges, off pauses. Do not select a power relay.",
           "soc_entity": "Live battery percentage from the car. Leave empty to charge an amount of energy (kWh) instead: the integration then counts what the charger delivers.",
           "price_entity": "A sensor with today's and tomorrow's prices: prices_today / prices_tomorrow with time and price, raw_today / raw_tomorrow with start, end and value, or a prices list with start, end and price. Any currency per kWh, also cents such as c/kWh.",

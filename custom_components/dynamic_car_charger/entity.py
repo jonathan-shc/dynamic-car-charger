@@ -18,7 +18,7 @@ class ChargerEntity(CoordinatorEntity[ChargerCoordinator]):
         self._attr_translation_key = key
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, coordinator.entry.entry_id)},
-            name=NAME,
+            name=coordinator.entry.title or NAME,
             manufacturer="Community",
             model="Charging scheduler",
         )

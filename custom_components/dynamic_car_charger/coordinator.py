@@ -20,7 +20,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, EVENT_CAR_CONNECTED, NAME
-from .forecaster import ForecastUnavailable, PriceForecaster
+from .forecaster import ForecastUnavailable, shared_forecaster
 from .planner import (
     DEFAULT_TAPER,
     Plan,
@@ -70,7 +70,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Own the charging session for one charger."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
-        super().__init__(hass, _LOGGER, name=NAME, config_entry=entry)
+        super().__init__(hass, _LOGGER, name=entry.title or NAME, config_entry=entry)
         self.entry = entry
         self.settings: dict[str, Any] = {**entry.data, **entry.options}
         # The configured threshold, before any live change from the Number entity.
@@ -96,7 +96,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         bidding_zone = self.settings.get("bidding_zone") or zone_for_location(
             hass.config.country, hass.config.latitude, hass.config.longitude
         )
-        self.forecaster = PriceForecaster(hass, bidding_zone=bidding_zone)
+        self.forecaster = shared_forecaster(hass, bidding_zone)
         self.forecast_calibration = None
         self._forecast_unsub = None
         self._lock = asyncio.Lock()
@@ -387,7 +387,6 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         elif not self.use_forecast and self._forecast_unsub is not None:
             self._forecast_unsub()
             self._forecast_unsub = None
-            self.forecaster.status = "off"
 
     async def _forecast_tick(self, now: datetime | None = None) -> None:
         await self.forecaster.async_update()
@@ -425,6 +424,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "lock_entity",
         )
         details: dict[str, Any] = {key: self.settings.get(key) for key in keys}
+        # What is charged, to tell schedulers apart: "Dynamic Car Charger" or a given name.
+        details["name"] = self.entry.title
         details["mode"] = "energy" if self.energy_mode else "battery"
         details["currency"] = self.currency
         # The market the price forecast learns from, as stored in the options.
