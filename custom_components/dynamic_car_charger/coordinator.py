@@ -112,6 +112,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.use_forecast = False
         # A ready-by time per weekday ({"mon": "07:30"}); followed when switched on.
         self.schedule: dict[str, str] = {}
+        # A target percentage for a scheduled day ({"fri": 100}); other days keep the target.
+        self.schedule_targets: dict[str, float] = {}
         self.schedule_enabled = False
         # Settings from before the bidding zone existed follow Home Assistant's country.
         bidding_zone = self.settings.get("bidding_zone") or zone_for_location(
@@ -194,6 +196,11 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             day: str(time)
             for day, time in (saved.get("schedule") or {}).items()
             if day in WEEKDAYS and time
+        }
+        self.schedule_targets = {
+            day: number(target, 0, 100)
+            for day, target in (saved.get("schedule_targets") or {}).items()
+            if day in WEEKDAYS and target is not None
         }
         self.schedule_enabled = bool(saved.get("schedule_enabled", False))
         # Keep a live threshold change across restarts, unless the configured
@@ -379,6 +386,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "cheap_price": self.cheap_price,
             "cheap_after_deadline": self.cheap_after_deadline,
             "schedule": self.schedule,
+            "schedule_targets": self.schedule_targets,
             "schedule_enabled": self.schedule_enabled,
             "energy_goal": self.energy_goal,
             "delivered_kwh": self._delivered_kwh,
@@ -435,9 +443,11 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._pending_stop = False
             for key, value in changes.items():
                 setattr(self, key, value)
-            if self.schedule_enabled and ("schedule" in changes or "schedule_enabled" in changes):
+            if self.schedule_enabled and any(
+                key in changes for key in ("schedule", "schedule_targets", "schedule_enabled")
+            ):
                 # Switched on or changed: the next scheduled time counts from now on.
-                self.deadline = self._next_scheduled() or self.deadline
+                self._take_next_scheduled()
             self._changed_by_user()
             if "use_forecast" in changes:
                 self._set_forecast_tracking()
@@ -689,7 +699,11 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "cheap_only": self.cheap_only,
                 "cheap_price_eur_kwh": self.cheap_price,
                 "cheap_after_deadline": self.cheap_after_deadline,
-                "schedule": {"enabled": self.schedule_enabled, "days": dict(self.schedule)},
+                "schedule": {
+                    "enabled": self.schedule_enabled,
+                    "days": dict(self.schedule),
+                    "targets": dict(self.schedule_targets),
+                },
             }
             try:
                 if self.immediate_charging:
@@ -766,9 +780,15 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         calibration = self.forecast_calibration
         return FORECAST_MARGIN_MARKET * calibration.slope if calibration else 0.0
 
-    def _next_scheduled(self) -> datetime | None:
+    def _take_next_scheduled(self) -> None:
+        """The next scheduled ready-by time, with that day's target if it has its own."""
         moment = next_scheduled(self.schedule, dt_util.now())
-        return dt_util.as_utc(moment) if moment else None
+        if moment is None:
+            return
+        self.deadline = dt_util.as_utc(moment)
+        target = self.schedule_targets.get(WEEKDAYS[moment.weekday()])
+        if target is not None and not self.energy_mode:
+            self.target = target
 
     def _follow_schedule(self, now: datetime) -> None:
         """With the weekly schedule on, a ready-by time that passed makes way for the next
@@ -779,8 +799,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         extended = (self.data or {}).get("deadline_extension_active")
         if self.deadline is not None and extended and now < self.deadline + self._grace():
             return
-        if (moment := self._next_scheduled()) is not None:
-            self.deadline = moment
+        self._take_next_scheduled()
 
     def _grace(self) -> timedelta:
         return timedelta(minutes=number(self.settings.get("deadline_grace_minutes", 60), 0, 720))

@@ -132,7 +132,10 @@ class WeeklySchedule(ChargerEntity, SwitchEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        return {"days": dict(self.coordinator.schedule)}
+        return {
+            "days": dict(self.coordinator.schedule),
+            "targets": dict(self.coordinator.schedule_targets),
+        }
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         await self.coordinator.async_change(schedule_enabled=True)

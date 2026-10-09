@@ -1611,7 +1611,7 @@ async def test_weekly_schedule_sets_the_next_ready_by_time(rig):
     await c.async_change(schedule_enabled=True)
     first = c.deadline
     assert first != by_hand and dt_util.as_local(first).strftime("%H:%M") == "07:30"
-    assert c.data["schedule"] == {"enabled": True, "days": c.schedule}
+    assert c.data["schedule"] == {"enabled": True, "days": c.schedule, "targets": {}}
     # A time set by hand counts until it has passed.
     await c.async_change(deadline=by_hand)
     assert c.deadline == by_hand
@@ -1624,3 +1624,21 @@ async def test_weekly_schedule_sets_the_next_ready_by_time(rig):
     c.deadline = dt_util.utcnow() - timedelta(minutes=1)
     await c.async_reconcile()
     assert c.deadline < dt_util.utcnow()
+
+
+async def test_a_scheduled_day_brings_its_own_target(rig):
+    _, c, _ = rig
+    c.target = 60
+    today = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")[
+        (dt_util.now() + timedelta(minutes=5)).weekday()
+    ]
+    time = (dt_util.now() + timedelta(minutes=5)).strftime("%H:%M")
+    await c.async_change(
+        schedule={today: time}, schedule_targets={today: 90}, schedule_enabled=True
+    )
+    assert c.target == 90
+    assert c.data["schedule"]["targets"] == {today: 90}
+    # A day without its own target keeps the target as it is.
+    await c.async_change(target=70)
+    await c.async_change(schedule_targets={})
+    assert c.target == 70
