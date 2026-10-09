@@ -197,9 +197,15 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.hass.async_create_task(
             self._async_import_recorded_sessions(), f"{DOMAIN} import recorded sessions"
         )
-        if location := self.location_entity():
+        location = self.location_entity()
+        coordinates = None if location else self.location_sensors()
+        if location or coordinates:
             self.trips = TripRecorder(
-                self.hass, self.entry.entry_id, location, self.settings.get("soc_entity")
+                self.hass,
+                self.entry.entry_id,
+                location,
+                self.settings.get("soc_entity"),
+                coordinates,
             )
             await self.trips.async_start()
         await self.async_reconcile()
@@ -227,6 +233,30 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except Exception:  # noqa: BLE001 - drives are a bonus; never block charging
             return None
         return trackers[0] if trackers else None
+
+    def location_sensors(self) -> tuple[str, str] | None:
+        """A latitude and a longitude sensor on the same device as the battery sensor, for
+        a vehicle without a device tracker, such as a scooter."""
+        soc_entity = self.settings.get("soc_entity")
+        if not soc_entity:
+            return None
+        from homeassistant.helpers import entity_registry as er
+
+        try:
+            registry = er.async_get(self.hass)
+            entry = registry.async_get(soc_entity)
+            if entry is None or entry.device_id is None:
+                return None
+            sensors = [
+                other.entity_id
+                for other in er.async_entries_for_device(registry, entry.device_id)
+                if other.domain == "sensor"
+            ]
+        except Exception:  # noqa: BLE001 - drives are a bonus; never block charging
+            return None
+        latitude = [entity_id for entity_id in sensors if entity_id.endswith("latitude")]
+        longitude = [entity_id for entity_id in sensors if entity_id.endswith("longitude")]
+        return (latitude[0], longitude[0]) if latitude and longitude else None
 
     @callback
     def _changed(self, event: Event) -> None:
@@ -433,6 +463,10 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         details["power_kw"] = self.settings["power_kw"]
         details["capacity_kwh"] = self.settings["capacity_kwh"]
         details["location_entity"] = self.trips.entity_id if self.trips else None
+        # Without a tracker: the latitude and longitude sensors the drives are kept from.
+        details["location_sensors"] = (
+            list(self.trips.coordinates) if self.trips and self.trips.coordinates else None
+        )
         return details
 
     def _price_rows(self, now: datetime) -> list[dict[str, Any]]:

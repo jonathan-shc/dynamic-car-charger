@@ -13,6 +13,15 @@ from .const import DEFAULTS, DOMAIN, NAME
 from .planner import price_unit
 from .zones import ZONES, zone_for_location
 
+OPTIONAL_KEYS = (
+    "name",
+    "soc_entity",
+    "connected_entity",
+    "connected_states",
+    "lock_entity",
+    "location_entity",
+)
+
 
 def interval_default(values: dict[str, Any]) -> str:
     """Return the configured interval as a select option.
@@ -233,6 +242,10 @@ class OptionsFlow(config_entries.OptionsFlow):
                     self.hass.config_entries.async_update_entry(
                         self.config_entry, unique_id=user_input["charger_entity"]
                     )
+                # An emptied optional field is left out of the form's answer: say so, or
+                # the value given when the entry was made would come back.
+                for key in OPTIONAL_KEYS:
+                    user_input.setdefault(key, None)
                 name = (user_input.get("name") or "").strip()
                 if name and name != self.config_entry.title:
                     self.hass.config_entries.async_update_entry(self.config_entry, title=name)
