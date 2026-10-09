@@ -42,7 +42,7 @@
           "deadline_grace_minutes": "If an already-started session has not reached the target at the deadline, keep charging for at most this many minutes. This does not extend the planning horizon; 0 disables it.",
           "soc_max_age_minutes": "Only marks the battery report as old (soc_report_old). It does not pause charging, because a battery percentage that does not change while parked is normal.",
           "bidding_zone": "The day-ahead market of your electricity price, used only by the price forecast to learn prices before they are published.",
-          "location_entity": "Optional. The car's device tracker, to keep its drives with their routes for the app. Left empty, the tracker on the same device as the battery sensor is used, if there is one."
+          "location_entity": "Optional. The car's device tracker, to keep its drives with their routes for the app. Left empty, the tracker on the same device as the battery sensor is used, or else that device's latitude and longitude sensors."
         }
       }
     },
@@ -102,7 +102,7 @@
           "deadline_grace_minutes": "If an already-started session has not reached the target at the deadline, keep charging for at most this many minutes. This does not extend the planning horizon; 0 disables it.",
           "soc_max_age_minutes": "Only marks the battery report as old (soc_report_old). It does not pause charging, because a battery percentage that does not change while parked is normal.",
           "bidding_zone": "The day-ahead market of your electricity price, used only by the price forecast to learn prices before they are published.",
-          "location_entity": "Optional. The car's device tracker, to keep its drives with their routes for the app. Left empty, the tracker on the same device as the battery sensor is used, if there is one."
+          "location_entity": "Optional. The car's device tracker, to keep its drives with their routes for the app. Left empty, the tracker on the same device as the battery sensor is used, or else that device's latitude and longitude sensors."
         }
       }
     },

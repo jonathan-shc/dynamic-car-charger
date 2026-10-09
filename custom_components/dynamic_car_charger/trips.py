@@ -24,7 +24,11 @@ from functools import partial
 from typing import Any
 
 from homeassistant.core import Event, HomeAssistant, State, callback
-from homeassistant.helpers.event import async_track_state_change_event, async_track_time_interval
+from homeassistant.helpers.event import (
+    async_call_later,
+    async_track_state_change_event,
+    async_track_time_interval,
+)
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
@@ -57,6 +61,8 @@ TOWN_SPEED = 30 / 3.6  # metres a second
 SOC_SETTLE = timedelta(minutes=5)
 # Battery readings kept for the drive under way: enough for a long one.
 SOC_MEMORY = timedelta(hours=6)
+# A latitude and a longitude sensor change in the same report, at most this far apart.
+PAIR = timedelta(seconds=2)
 
 Point = tuple[datetime, float, float]  # time, latitude, longitude
 Reading = tuple[datetime, float]  # time, battery percentage
@@ -230,14 +236,50 @@ def position(state: State | None) -> Point | None:
     return (state.last_updated, float(lat), float(lon))
 
 
+def number_of(state: State | None) -> float | None:
+    try:
+        return float(state.state) if state is not None else None
+    except ValueError:
+        return None
+
+
+def paired(latitudes: list[State], longitudes: list[State]) -> list[Point]:
+    """Positions from a latitude and a longitude sensor's recorded states. Both change in
+    the same report, a moment apart; driving due north only the latitude does."""
+    changes = sorted(
+        [(state.last_updated, 0, number_of(state)) for state in latitudes]
+        + [(state.last_updated, 1, number_of(state)) for state in longitudes],
+        key=lambda change: change[0],
+    )
+    points: list[Point] = []
+    now: list[float | None] = [None, None]
+    for index, (time, which, value) in enumerate(changes):
+        if value is None:
+            continue
+        now[which] = value
+        report_over = index + 1 == len(changes) or changes[index + 1][0] - time > PAIR
+        if report_over and now[0] is not None and now[1] is not None:
+            points.append((time, now[0], now[1]))
+    return points
+
+
 class TripRecorder:
-    """Follow one car's device tracker and keep its drives."""
+    """Follow one car's device tracker, or a scooter's latitude and longitude sensors, and
+    keep its drives."""
 
     def __init__(
-        self, hass: HomeAssistant, entry_id: str, entity_id: str, soc_entity: str | None = None
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        entity_id: str | None,
+        soc_entity: str | None = None,
+        coordinates: tuple[str, str] | None = None,
     ) -> None:
         self.hass = hass
         self.entity_id = entity_id
+        # A latitude and a longitude sensor, for a vehicle without a device tracker.
+        self.coordinates = coordinates
+        self._pair_unsub = None
         self.soc_entity = soc_entity
         self.store: Store = Store(hass, 1, f"{DOMAIN}.{entry_id}.trips")
         # Every drive, oldest first.
@@ -262,7 +304,11 @@ class TripRecorder:
                 trip for trip in self.trips if dt_util.parse_datetime(trip["started"]) < since
             ]
         self._unsubs = [
-            async_track_state_change_event(self.hass, [self.entity_id], self._changed),
+            async_track_state_change_event(
+                self.hass,
+                list(self.coordinates) if self.coordinates else [self.entity_id],
+                self._coordinate_changed if self.coordinates else self._changed,
+            ),
             async_track_time_interval(self.hass, self._tick, timedelta(minutes=1)),
         ]
         if self.soc_entity:
@@ -277,6 +323,24 @@ class TripRecorder:
         for unsub in self._unsubs:
             unsub()
         self._unsubs = []
+        if self._pair_unsub is not None:
+            self._pair_unsub()
+            self._pair_unsub = None
+
+    @callback
+    def _coordinate_changed(self, event: Event) -> None:
+        """One of the two sensors changed: the other follows in a moment, or not at all."""
+        if self._pair_unsub is None:
+            self._pair_unsub = async_call_later(self.hass, PAIR, self._read_pair)
+
+    @callback
+    def _read_pair(self, now: datetime) -> None:
+        self._pair_unsub = None
+        latitude, longitude = (
+            number_of(self.hass.states.get(entity_id)) for entity_id in self.coordinates
+        )
+        if latitude is not None and longitude is not None:
+            self.add((dt_util.utcnow(), latitude, longitude))
 
     @callback
     def _changed(self, event: Event) -> None:
@@ -341,7 +405,11 @@ class TripRecorder:
     def import_states(self, states: list[State], now: datetime) -> int:
         """Drives from recorded states of the tracker. One still under way (moved within
         the last ten minutes) isn't kept yet: the live positions carry it on."""
-        points = sorted(point for point in map(position, states) if point is not None)
+        return self.import_points(
+            sorted(point for point in map(position, states) if point is not None), now
+        )
+
+    def import_points(self, points: list[Point], now: datetime) -> int:
         drives = split(points)
         if drives and now - drives[-1][-1][0] < PAUSE:
             under_way = drives.pop()
@@ -401,16 +469,18 @@ class TripRecorder:
         start = dt_util.utcnow() - timedelta(days=RECORDER_DAYS)
         if self.trips:
             start = max(start, dt_util.parse_datetime(self.trips[-1]["ended"]))
+        found: dict[str, list[State]] = {}
         try:
-            found = await get_instance(self.hass).async_add_executor_job(
-                partial(
-                    history.state_changes_during_period,
-                    self.hass,
-                    start,
-                    entity_id=self.entity_id,
-                    include_start_time_state=True,
+            for entity_id in self.coordinates or [self.entity_id]:
+                found |= await get_instance(self.hass).async_add_executor_job(
+                    partial(
+                        history.state_changes_during_period,
+                        self.hass,
+                        start,
+                        entity_id=entity_id,
+                        include_start_time_state=True,
+                    )
                 )
-            )
         except Exception:  # noqa: BLE001 - earlier drives are a bonus; never block charging
             _LOGGER.warning("Could not read earlier drives from the recorder")
             return
@@ -436,7 +506,11 @@ class TripRecorder:
                     if found is not None
                 )
         self._readings = sorted(readings + self._readings)
-        added = self.import_states(found.get(self.entity_id, []), dt_util.utcnow())
+        if self.coordinates:
+            latitude, longitude = (found.get(entity_id, []) for entity_id in self.coordinates)
+            added = self.import_points(paired(latitude, longitude), dt_util.utcnow())
+        else:
+            added = self.import_states(found.get(self.entity_id, []), dt_util.utcnow())
         filled = self.fill_battery_used(self._readings)
         self._forget_readings(dt_util.utcnow())
         if added or filled or self._rebuilt:

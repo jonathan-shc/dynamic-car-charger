@@ -11,6 +11,7 @@ from custom_components.dynamic_car_charger.trips import (
     PAUSE,
     TripRecorder,
     battery_used,
+    paired,
     record,
     simplify,
     split,
@@ -272,3 +273,30 @@ async def test_get_trips_service(recorder):
         )
     assert answer["total"] == 1
     assert answer["trips"][0]["distance_km"] == pytest.approx(1.11, abs=0.01)
+
+
+def test_latitude_and_longitude_sensors_pair_into_positions():
+    def state(seconds, value):
+        return SimpleNamespace(state=str(value), last_updated=T0 + timedelta(seconds=seconds))
+
+    latitudes = [state(0, 52.0), state(60, 52.001), state(120, 52.002), state(180, "unavailable")]
+    # Due north from 60 to 120 s: only the latitude changes.
+    longitudes = [state(0.2, 5.0), state(60.3, 5.001), state(181, 5.002)]
+    assert paired(latitudes, longitudes) == [
+        (T0 + timedelta(seconds=0.2), 52.0, 5.0),
+        (T0 + timedelta(seconds=60.3), 52.001, 5.001),
+        (T0 + timedelta(seconds=120), 52.002, 5.001),
+        (T0 + timedelta(seconds=181), 52.002, 5.002),
+    ]
+
+
+async def test_recorder_follows_latitude_and_longitude_sensors(tmp_path):
+    hass = HomeAssistant(str(tmp_path))
+    trips = TripRecorder(hass, "test", None, coordinates=("sensor.lat", "sensor.lon"))
+    hass.states.async_set("sensor.lat", "52.0")
+    hass.states.async_set("sensor.lon", "5.0")
+    trips._read_pair(T0)
+    hass.states.async_set("sensor.lat", "52.01")
+    trips._read_pair(T0)
+    assert len(trips._drive) == 2 and trips._drive[1][1:] == (52.01, 5.0)
+    await hass.async_stop(force=True)
