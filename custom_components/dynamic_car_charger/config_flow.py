@@ -31,13 +31,16 @@ def interval_default(values: dict[str, Any]) -> str:
     return str(int(float(values.get("interval_minutes", DEFAULTS["interval_minutes"]))))
 
 
+def optional(key: str, value: Any) -> vol.Optional:
+    """An optional field showing its current value. Suggested rather than a default: a
+    default would be filled in again when the field is emptied, so it could never be cleared."""
+    return vol.Optional(key, description={"suggested_value": value} if value else None)
+
+
 def schema(values: dict[str, Any], default_zone: str = "nl") -> vol.Schema:
     fields = {}
     # What is charged, when there is more than one scheduler: names its device and entities.
-    marker = (
-        vol.Optional("name", default=values["name"]) if values.get("name") else vol.Optional("name")
-    )
-    fields[marker] = selector.TextSelector()
+    fields[optional("name", values.get("name"))] = selector.TextSelector()
     for key in ("charger_entity", "price_entity", "power_entity"):
         marker = vol.Required(key, default=values[key]) if key in values else vol.Required(key)
         fields[marker] = selector.EntitySelector()
@@ -48,18 +51,14 @@ def schema(values: dict[str, Any], default_zone: str = "nl") -> vol.Schema:
         ("lock_entity", ["lock"]),
         ("location_entity", ["device_tracker"]),
     ):
-        marker = vol.Optional(key, default=values[key]) if values.get(key) else vol.Optional(key)
-        fields[marker] = selector.EntitySelector(selector.EntitySelectorConfig(domain=domain))
+        fields[optional(key, values.get(key))] = selector.EntitySelector(
+            selector.EntitySelectorConfig(domain=domain)
+        )
     # One entry per state: states such as "Locked, car connected" contain commas.
     default = values.get("connected_states")
     if isinstance(default, str):
         default = [part.strip() for part in default.split(",") if part.strip()]
-    marker = (
-        vol.Optional("connected_states", default=default)
-        if default
-        else vol.Optional("connected_states")
-    )
-    fields[marker] = selector.SelectSelector(
+    fields[optional("connected_states", default)] = selector.SelectSelector(
         selector.SelectSelectorConfig(options=[], multiple=True, custom_value=True)
     )
     # Units are part of the field labels; see strings.json.
