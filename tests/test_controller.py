@@ -1642,3 +1642,19 @@ async def test_a_scheduled_day_brings_its_own_target(rig):
     await c.async_change(target=70)
     await c.async_change(schedule_targets={})
     assert c.target == 70
+
+
+def test_an_emptied_optional_field_is_not_filled_in_again():
+    values = {"location_entity": "device_tracker.front_door", "name": "Scooter"}
+    form = schema(values)
+    filled = {
+        "charger_entity": "switch.charger",
+        "price_entity": "sensor.price",
+        "power_entity": "sensor.power",
+    }
+    # The form's answer leaves out what was emptied: the schema must not put it back.
+    answer = form(filled)
+    assert "location_entity" not in answer and "name" not in answer
+    # The current value is still shown.
+    shown = {str(key): key.description for key in form.schema}
+    assert shown["location_entity"] == {"suggested_value": "device_tracker.front_door"}
