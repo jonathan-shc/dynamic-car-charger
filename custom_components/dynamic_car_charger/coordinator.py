@@ -66,6 +66,24 @@ IDLE_STOP = "idle_stop"
 PENDING_STATUSES = ("unlocking_charger", "starting_charge", "stopping_charge")
 
 
+WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+def next_scheduled(days: dict[str, str], now: datetime) -> datetime | None:
+    """The next ready-by time of a weekly schedule ({"mon": "07:30", ...}) after now, in
+    now's time zone; None when no day has a time."""
+    for ahead in range(8):
+        day = now.date() + timedelta(days=ahead)
+        text = days.get(WEEKDAYS[day.weekday()])
+        if not text:
+            continue
+        hour, minute = (int(part) for part in text.split(":")[:2])
+        moment = datetime(day.year, day.month, day.day, hour, minute, tzinfo=now.tzinfo)
+        if moment > now:
+            return moment
+    return None
+
+
 class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Own the charging session for one charger."""
 
@@ -92,6 +110,9 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Sessions from before the log existed are imported once from the recorder.
         self._sessions_imported = False
         self.use_forecast = False
+        # A ready-by time per weekday ({"mon": "07:30"}); followed when switched on.
+        self.schedule: dict[str, str] = {}
+        self.schedule_enabled = False
         # Settings from before the bidding zone existed follow Home Assistant's country.
         bidding_zone = self.settings.get("bidding_zone") or zone_for_location(
             hass.config.country, hass.config.latitude, hass.config.longitude
@@ -169,6 +190,12 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.cheap_only = bool(saved.get("cheap_only", False))
         self.cheap_price = number(saved.get("cheap_price", 0.10), -1, 5)
         self.cheap_after_deadline = bool(saved.get("cheap_after_deadline", False))
+        self.schedule = {
+            day: str(time)
+            for day, time in (saved.get("schedule") or {}).items()
+            if day in WEEKDAYS and time
+        }
+        self.schedule_enabled = bool(saved.get("schedule_enabled", False))
         # Keep a live threshold change across restarts, unless the configured
         # threshold was changed in the options since it was saved.
         if (
@@ -351,6 +378,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "cheap_only": self.cheap_only,
             "cheap_price": self.cheap_price,
             "cheap_after_deadline": self.cheap_after_deadline,
+            "schedule": self.schedule,
+            "schedule_enabled": self.schedule_enabled,
             "energy_goal": self.energy_goal,
             "delivered_kwh": self._delivered_kwh,
         }
@@ -406,6 +435,9 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._pending_stop = False
             for key, value in changes.items():
                 setattr(self, key, value)
+            if self.schedule_enabled and ("schedule" in changes or "schedule_enabled" in changes):
+                # Switched on or changed: the next scheduled time counts from now on.
+                self.deadline = self._next_scheduled() or self.deadline
             self._changed_by_user()
             if "use_forecast" in changes:
                 self._set_forecast_tracking()
@@ -635,6 +667,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if self._stopping:
                 return
             now = dt_util.utcnow()
+            self._follow_schedule(now)
             desired = False
             prices: list[Slot] = []
             self._interval_kwh = 0.0
@@ -656,6 +689,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "cheap_only": self.cheap_only,
                 "cheap_price_eur_kwh": self.cheap_price,
                 "cheap_after_deadline": self.cheap_after_deadline,
+                "schedule": {"enabled": self.schedule_enabled, "days": dict(self.schedule)},
             }
             try:
                 if self.immediate_charging:
@@ -731,6 +765,22 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         slope as the estimates (VAT and, for another currency, the exchange rate)."""
         calibration = self.forecast_calibration
         return FORECAST_MARGIN_MARKET * calibration.slope if calibration else 0.0
+
+    def _next_scheduled(self) -> datetime | None:
+        moment = next_scheduled(self.schedule, dt_util.now())
+        return dt_util.as_utc(moment) if moment else None
+
+    def _follow_schedule(self, now: datetime) -> None:
+        """With the weekly schedule on, a ready-by time that passed makes way for the next
+        scheduled one; one set by hand counts until it has passed. A charge running on
+        after its deadline is first given its extension."""
+        if not self.schedule_enabled or (self.deadline is not None and now < self.deadline):
+            return
+        extended = (self.data or {}).get("deadline_extension_active")
+        if self.deadline is not None and extended and now < self.deadline + self._grace():
+            return
+        if (moment := self._next_scheduled()) is not None:
+            self.deadline = moment
 
     def _grace(self) -> timedelta:
         return timedelta(minutes=number(self.settings.get("deadline_grace_minutes", 60), 0, 720))

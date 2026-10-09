@@ -17,9 +17,10 @@ from .const import (
     SERVICE_ADD_SESSIONS,
     SERVICE_GET_SESSIONS,
     SERVICE_GET_TRIPS,
+    SERVICE_SET_SCHEDULE,
     SERVICE_SET_SESSION,
 )
-from .coordinator import ChargerCoordinator
+from .coordinator import WEEKDAYS, ChargerCoordinator
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -121,6 +122,33 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             }
         ),
         supports_response=SupportsResponse.ONLY,
+    )
+
+    async def set_schedule(call: ServiceCall) -> None:
+        """A ready-by time per weekday; a day left out or empty has none."""
+        coordinator = _coordinator_for(hass, call.data.get("config_entry_id"))
+        changes: dict = {}
+        if "days" in call.data:
+            changes["schedule"] = {
+                day: time.strftime("%H:%M") for day, time in call.data["days"].items() if time
+            }
+        if "enabled" in call.data:
+            changes["schedule_enabled"] = call.data["enabled"]
+        if not changes:
+            raise ServiceValidationError(translation_domain=DOMAIN, translation_key="no_changes")
+        await coordinator.async_change(**changes)
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SET_SCHEDULE,
+        set_schedule,
+        vol.Schema(
+            {
+                vol.Optional("config_entry_id"): cv.string,
+                vol.Optional("days"): {vol.In(WEEKDAYS): vol.Any(None, "", cv.time)},
+                vol.Optional("enabled"): cv.boolean,
+            }
+        ),
     )
     return True
 
