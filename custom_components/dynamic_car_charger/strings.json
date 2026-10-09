@@ -190,6 +190,9 @@
       },
       "cheap_after_deadline": {
         "name": "Charge when cheap after the deadline"
+      },
+      "weekly_schedule": {
+        "name": "Weekly schedule"
       }
     },
     "button": {
@@ -259,6 +262,24 @@
         "sessions": {
           "name": "Sessions",
           "description": "A list with started, ended, energy_kwh and cost for each session; optionally cost_complete, currency and reconstructed."
+        }
+      }
+    },
+    "set_schedule": {
+      "name": "Set weekly schedule",
+      "description": "Sets a ready-by time per weekday. With the weekly schedule switched on, each ready-by time that passes makes way for the next scheduled one.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Charger",
+          "description": "The Dynamic Car Charger entry. Can be left out when only one is set up."
+        },
+        "days": {
+          "name": "Days",
+          "description": "A time per weekday (mon, tue, wed, thu, fri, sat, sun), such as mon: \"07:30\". A day left out or empty has no ready-by time."
+        },
+        "enabled": {
+          "name": "Follow the schedule",
+          "description": "Switches the weekly schedule on or off."
         }
       }
     },

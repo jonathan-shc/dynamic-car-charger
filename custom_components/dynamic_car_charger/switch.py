@@ -17,6 +17,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
             PriceForecast(entry.runtime_data),
             CheapOnly(entry.runtime_data),
             CheapAfterDeadline(entry.runtime_data),
+            WeeklySchedule(entry.runtime_data),
         ]
     )
 
@@ -114,3 +115,27 @@ class CheapAfterDeadline(ChargerEntity, SwitchEntity):
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         await self.coordinator.async_change(cheap_after_deadline=False)
+
+
+class WeeklySchedule(ChargerEntity, SwitchEntity):
+    """Follow the weekly schedule: each ready-by time that passes makes way for the next
+    scheduled one. The times are set with the set_schedule action."""
+
+    _attr_icon = "mdi:calendar-week"
+
+    def __init__(self, coordinator):
+        super().__init__(coordinator, "weekly_schedule")
+
+    @property
+    def is_on(self) -> bool:
+        return self.coordinator.schedule_enabled
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {"days": dict(self.coordinator.schedule)}
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self.coordinator.async_change(schedule_enabled=True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self.coordinator.async_change(schedule_enabled=False)

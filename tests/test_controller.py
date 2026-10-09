@@ -17,7 +17,7 @@ from custom_components.dynamic_car_charger.config_flow import (
     validate,
 )
 from custom_components.dynamic_car_charger.const import DEFAULTS, EVENT_CAR_CONNECTED
-from custom_components.dynamic_car_charger.coordinator import ChargerCoordinator
+from custom_components.dynamic_car_charger.coordinator import ChargerCoordinator, next_scheduled
 from custom_components.dynamic_car_charger.forecaster import ForecastUnavailable
 from custom_components.dynamic_car_charger.planner import Slot, make_plan
 from custom_components.dynamic_car_charger.price_forecast import Calibration
@@ -1004,6 +1004,7 @@ EXPECTED_ENTITIES = {
         "price_forecast",
         "cheap_only",
         "cheap_after_deadline",
+        "weekly_schedule",
     },
     "button": {"tomorrow_0700", "tomorrow_0900", "day_after_tomorrow_0900"},
 }
@@ -1585,3 +1586,41 @@ async def test_options_flow_clears_an_emptied_optional_field(rig):
     flow.hass = SimpleNamespace(states=hass.states, config_entries=config_entries)
     result = await flow.async_step_init(dict(c.settings))
     assert {**data, **result["data"]}["location_entity"] is None
+
+
+def test_next_scheduled_takes_the_first_time_after_now():
+    zone = ZoneInfo("Europe/Amsterdam")
+    days = {"mon": "07:30", "fri": "09:00"}
+    friday = datetime(2026, 10, 9, 8, 0, tzinfo=zone)
+    assert next_scheduled(days, friday) == datetime(2026, 10, 9, 9, 0, tzinfo=zone)
+    assert next_scheduled(days, friday.replace(hour=9)) == datetime(
+        2026, 10, 12, 7, 30, tzinfo=zone
+    )
+    # Only today's time, already passed: next week's.
+    assert next_scheduled({"fri": "07:00"}, friday) == datetime(2026, 10, 16, 7, 0, tzinfo=zone)
+    assert next_scheduled({}, friday) is None
+
+
+async def test_weekly_schedule_sets_the_next_ready_by_time(rig):
+    _, c, _ = rig
+    by_hand = c.deadline
+    await c.async_change(
+        schedule={day: "07:30" for day in ("mon", "tue", "wed", "thu", "fri", "sat", "sun")}
+    )
+    assert c.deadline == by_hand  # not switched on yet
+    await c.async_change(schedule_enabled=True)
+    first = c.deadline
+    assert first != by_hand and dt_util.as_local(first).strftime("%H:%M") == "07:30"
+    assert c.data["schedule"] == {"enabled": True, "days": c.schedule}
+    # A time set by hand counts until it has passed.
+    await c.async_change(deadline=by_hand)
+    assert c.deadline == by_hand
+    # Passed: the next scheduled time takes over.
+    c.deadline = dt_util.utcnow() - timedelta(minutes=1)
+    await c.async_reconcile()
+    assert c.deadline == first
+    # Switched off, a passed time stays passed.
+    await c.async_change(schedule_enabled=False)
+    c.deadline = dt_util.utcnow() - timedelta(minutes=1)
+    await c.async_reconcile()
+    assert c.deadline < dt_util.utcnow()

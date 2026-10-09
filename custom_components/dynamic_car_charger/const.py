@@ -7,6 +7,7 @@ SERVICE_SET_SESSION = "set_session"
 SERVICE_GET_SESSIONS = "get_sessions"
 SERVICE_ADD_SESSIONS = "add_sessions"
 SERVICE_GET_TRIPS = "get_trips"
+SERVICE_SET_SCHEDULE = "set_schedule"
 PLATFORMS = ["sensor", "number", "datetime", "switch", "button"]
 DEFAULTS = {
     "capacity_kwh": 60.0,
