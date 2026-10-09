@@ -367,8 +367,15 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Update the live price threshold from the Number entity."""
         async with self._lock:
             self.settings["max_price_eur_kwh"] = number(value, 0, 5)
+            self._changed_by_user()
             await self.store.async_save(self._save_data())
         await self.async_reconcile()
+
+    def _changed_by_user(self) -> None:
+        """A change made by hand is one change, not a price update arriving in parts: when
+        it ends the running block, the charger stops at once, without the settling time."""
+        if self._active_charge_until is not None:
+            self._replan_stop_time = dt_util.utcnow() - REPLAN_SETTLE
 
     async def async_new_charge(self) -> None:
         """Energy mode: start counting the energy to charge from zero again."""
@@ -399,6 +406,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._pending_stop = False
             for key, value in changes.items():
                 setattr(self, key, value)
+            self._changed_by_user()
             if "use_forecast" in changes:
                 self._set_forecast_tracking()
             await self.store.async_save(self._save_data())
@@ -895,6 +903,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # or replanning must not create an off/on cycle at an hourly
             # price boundary.
             planned_now = True
+            self._replan_stop_time = None
         elif self._active_charge_until is not None and now < self._active_charge_until:
             # Price/deadline updates can arrive in several HA state changes.
             # Give the new plan one short settling window so an adjacent block
