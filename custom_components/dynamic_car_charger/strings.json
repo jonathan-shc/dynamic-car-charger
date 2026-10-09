@@ -277,6 +277,10 @@
           "name": "Days",
           "description": "A time per weekday (mon, tue, wed, thu, fri, sat, sun), such as mon: \"07:30\". A day left out or empty has no ready-by time."
         },
+        "targets": {
+          "name": "Targets",
+          "description": "A target percentage for a scheduled day, such as fri: 100. It becomes the target when that day's ready-by time is taken; a day left out keeps the target as it is."
+        },
         "enabled": {
           "name": "Follow the schedule",
           "description": "Switches the weekly schedule on or off."

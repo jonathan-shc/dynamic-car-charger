@@ -132,6 +132,10 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             changes["schedule"] = {
                 day: time.strftime("%H:%M") for day, time in call.data["days"].items() if time
             }
+        if "targets" in call.data:
+            changes["schedule_targets"] = {
+                day: target for day, target in call.data["targets"].items() if target is not None
+            }
         if "enabled" in call.data:
             changes["schedule_enabled"] = call.data["enabled"]
         if not changes:
@@ -146,6 +150,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             {
                 vol.Optional("config_entry_id"): cv.string,
                 vol.Optional("days"): {vol.In(WEEKDAYS): vol.Any(None, "", cv.time)},
+                vol.Optional("targets"): {
+                    vol.In(WEEKDAYS): vol.Any(None, vol.All(vol.Coerce(float), vol.Range(0, 100)))
+                },
                 vol.Optional("enabled"): cv.boolean,
             }
         ),
