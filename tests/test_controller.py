@@ -617,10 +617,8 @@ async def test_deadline_change_may_interrupt_active_run(rig):
     await c.async_change(enabled=True)
     assert calls == ["turn_on"]
 
+    # Changed by hand: no settling time.
     await c.async_change(deadline=now + timedelta(minutes=179))
-    assert c.data["charging_requested"] is True
-    c._replan_stop_time -= timedelta(seconds=31)
-    await c.async_reconcile()
     assert c.data["charging_requested"] is False
     assert calls == ["turn_on", "turn_off"]
 
