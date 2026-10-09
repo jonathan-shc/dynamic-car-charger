@@ -100,6 +100,15 @@ def parse_weather(data: dict, point: str, suffixes: list[str]) -> dict[datetime,
     return result
 
 
+def shared_forecaster(hass: HomeAssistant, bidding_zone: str | None) -> PriceForecaster:
+    """One forecaster per market: schedulers for a car and a scooter learn the same prices."""
+    forecasters = hass.data.setdefault(f"{DOMAIN}_forecasters", {})
+    code = zone(bidding_zone).code
+    if code not in forecasters:
+        forecasters[code] = PriceForecaster(hass, bidding_zone=bidding_zone)
+    return forecasters[code]
+
+
 class PriceForecaster:
     """Keeps market history, weather forecasts and a trained model in memory.
 

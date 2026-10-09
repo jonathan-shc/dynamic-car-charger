@@ -81,7 +81,7 @@ Keep the charger connected, with permission to pause/resume. Keep it unlocked, o
 
 Copy [the dashboard example](examples/dashboard.yaml) into a manual dashboard card. Adjust entity IDs to the ones created in your installation. The example uses built-in cards; no custom frontend package is required.
 
-Changing options reloads the integration and requests a pause. A completed deadline is one-off: choose another date to schedule another session. Multiple chargers are supported as separate entries; each needs its own sensor inputs.
+Changing options reloads the integration and requests a pause. A completed deadline is one-off: choose another date to schedule another session. Multiple chargers are supported as separate entries, for example a car on a wall box and a scooter on a smart plug with power metering; each needs its own sensor inputs. Give each a **Name**: it names the device and its entities, and is in the plan's `setup` as `name`. Entries in the same price forecast market share one forecast. With more than one entry the services need `config_entry_id`.
 
 ### Price threshold
 

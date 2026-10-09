@@ -985,13 +985,15 @@ async def test_forecast_switch_starts_updates_and_survives_restart(rig):
     c.forecaster.async_update.assert_awaited()
     assert c._forecast_unsub is not None
 
-    with patch("custom_components.dynamic_car_charger.coordinator.PriceForecaster", FakeForecaster):
+    with patch(
+        "custom_components.dynamic_car_charger.coordinator.shared_forecaster",
+        lambda *args: FakeForecaster(),
+    ):
         restarted = await _restart(hass, c)
     assert restarted.use_forecast is True
 
     await c.async_change(use_forecast=False)
     assert c._forecast_unsub is None
-    assert c.forecaster.status == "off"
 
 
 EXPECTED_ENTITIES = {
@@ -1532,3 +1534,37 @@ async def test_without_a_deadline_it_waits_for_the_cheap_price_if_chosen(rig):
     # A deadline set again plans for it.
     await c.async_change(deadline=dt_util.utcnow() + timedelta(minutes=90))
     assert c.data["planning_method"] == "published_prices"
+
+
+async def test_schedulers_in_one_market_share_the_price_forecast(rig):
+    hass, c, _ = rig
+    scooter = SimpleNamespace(**{**vars(c.entry), "entry_id": "scooter", "title": "Scooter"})
+    other = ChargerCoordinator(hass, scooter)
+    assert other.forecaster is c.forecaster
+    assert other._setup_details()["name"] == "Scooter"
+    assert c._setup_details()["name"] == "Dynamic Car Charger"
+    abroad = SimpleNamespace(**{**vars(scooter), "data": {**c.entry.data, "bidding_zone": "se3"}})
+    assert ChargerCoordinator(hass, abroad).forecaster is not c.forecaster
+
+
+async def test_options_flow_renames_the_scheduler(rig):
+    hass, c, _ = rig
+    entry = SimpleNamespace(
+        entry_id="test",
+        unique_id="switch.charger",
+        title="Dynamic Car Charger",
+        data=c.settings,
+        options={},
+    )
+    config_entries = SimpleNamespace(
+        async_entries=lambda domain: [entry], async_update_entry=Mock()
+    )
+
+    class Flow(OptionsFlow):
+        config_entry = entry
+
+    flow = Flow()
+    flow.hass = SimpleNamespace(states=hass.states, config_entries=config_entries)
+    result = await flow.async_step_init({**c.settings, "name": " Scooter "})
+    assert result["type"] == "create_entry"
+    config_entries.async_update_entry.assert_called_once_with(entry, title="Scooter")
