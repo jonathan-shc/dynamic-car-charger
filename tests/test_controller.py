@@ -1568,3 +1568,22 @@ async def test_options_flow_renames_the_scheduler(rig):
     result = await flow.async_step_init({**c.settings, "name": " Scooter "})
     assert result["type"] == "create_entry"
     config_entries.async_update_entry.assert_called_once_with(entry, title="Scooter")
+
+
+async def test_options_flow_clears_an_emptied_optional_field(rig):
+    hass, c, _ = rig
+    data = {**c.settings, "location_entity": "device_tracker.front_door"}
+    entry = SimpleNamespace(
+        entry_id="test", unique_id="switch.charger", title="Scooter", data=data, options={}
+    )
+    config_entries = SimpleNamespace(
+        async_entries=lambda domain: [entry], async_update_entry=Mock()
+    )
+
+    class Flow(OptionsFlow):
+        config_entry = entry
+
+    flow = Flow()
+    flow.hass = SimpleNamespace(states=hass.states, config_entries=config_entries)
+    result = await flow.async_step_init(dict(c.settings))
+    assert {**data, **result["data"]}["location_entity"] is None
