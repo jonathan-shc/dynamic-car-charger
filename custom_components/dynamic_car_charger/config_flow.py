@@ -75,8 +75,8 @@ def schema(values: dict[str, Any], default_zone: str = "nl") -> vol.Schema:
     )
     # Units are part of the field labels; see strings.json.
     for key, lo, hi, step in [
-        ("capacity_kwh", 1, 300, 0.1),
-        ("power_kw", 0.1, 50, 0.1),
+        ("capacity_kwh", 0.1, 300, 0.01),
+        ("power_kw", 0.01, 50, 0.001),
         ("efficiency", 0.5, 1, 0.01),
         ("price_adjustment", -2, 2, 0.001),
         ("max_price_eur_kwh", 0, 5, 0.01),

@@ -71,7 +71,7 @@ CALIBRATION_REUSE_WARNING = (
 )
 SESSION_END_STATUSES = ("set_deadline", "target_reached", "deadline_passed")
 # Below this measured power the charger counts as not charging.
-IDLE_POWER_KW = 0.1
+IDLE_POWER_KW = 0.1  # Maximum idle threshold; small chargers use 10% of rated power.
 FULL_CHARGE_IDLE_KW = 0.005
 FULL_CHARGE_CONFIRMATION = timedelta(minutes=3)
 # The pause isn't confirmed, but nothing flows: no error, and keep watching.
@@ -1573,7 +1573,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return (
             not self._power_report_old
             and self._sample_time is not None
-            and (self._sample_power < IDLE_POWER_KW)
+            and (self._sample_power < min(IDLE_POWER_KW, 0.1 * self.settings["power_kw"]))
         )
 
     async def _update_lock(self, now: datetime, requested: bool) -> None:
