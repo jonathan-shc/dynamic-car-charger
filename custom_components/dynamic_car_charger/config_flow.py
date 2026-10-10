@@ -56,6 +56,7 @@ def schema(values: dict[str, Any], default_zone: str = "nl") -> vol.Schema:
                 translation_key=key,
             )
         )
+    fields[vol.Required("offline_soc_estimation", default=values.get("offline_soc_estimation", False))] = selector.BooleanSelector()
     # Without a battery sensor the integration charges an amount of energy.
     for key, domain in (
         ("soc_entity", ["sensor", "input_number"]),

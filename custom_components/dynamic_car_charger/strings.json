@@ -25,7 +25,8 @@
           "bidding_zone": "Price forecast market",
           "location_entity": "Car location (optional)",
           "vehicle_type": "Vehicle type (optional)",
-          "charger_type": "Charger type (optional)"
+          "charger_type": "Charger type (optional)",
+          "offline_soc_estimation": "Estimate battery percentage while vehicle is offline"
         },
         "data_description": {
           "name": "What is charged, such as 'Scooter'. Only needed with more than one scheduler: it names the device and its entities.",
@@ -46,7 +47,8 @@
           "bidding_zone": "The day-ahead market of your electricity price, used only by the price forecast to learn prices before they are published.",
           "location_entity": "Optional. The car's device tracker, to keep its drives with their routes for the app. Left empty, the tracker on the same device as the battery sensor is used, or else that device's latitude and longitude sensors.",
           "vehicle_type": "What is charged; independent of its name.",
-          "charger_type": "Choose plug for a scooter on a smart plug, charger for a wall box."
+          "charger_type": "Choose plug for a scooter on a smart plug, charger for a wall box.",
+          "offline_soc_estimation": "Keep the last valid battery percentage and estimate charge using measured charger power when the battery sensor is unavailable. Disabled by default."
         }
       }
     },
@@ -89,7 +91,8 @@
           "bidding_zone": "Price forecast market",
           "location_entity": "Car location (optional)",
           "vehicle_type": "Vehicle type (optional)",
-          "charger_type": "Charger type (optional)"
+          "charger_type": "Charger type (optional)",
+          "offline_soc_estimation": "Estimate battery percentage while vehicle is offline"
         },
         "data_description": {
           "name": "What is charged, such as 'Scooter'. Only needed with more than one scheduler: it names the device and its entities.",
@@ -110,7 +113,8 @@
           "bidding_zone": "The day-ahead market of your electricity price, used only by the price forecast to learn prices before they are published.",
           "location_entity": "Optional. The car's device tracker, to keep its drives with their routes for the app. Left empty, the tracker on the same device as the battery sensor is used, or else that device's latitude and longitude sensors.",
           "vehicle_type": "What is charged; independent of its name.",
-          "charger_type": "Choose plug for a scooter on a smart plug, charger for a wall box."
+          "charger_type": "Choose plug for a scooter on a smart plug, charger for a wall box.",
+          "offline_soc_estimation": "Keep the last valid battery percentage and estimate charge using measured charger power when the battery sensor is unavailable. Disabled by default."
         }
       }
     },
@@ -128,8 +132,8 @@
   "selector": {
     "interval_minutes": {
       "options": {
-        "60": "60 minutes (hourly prices)",
-        "15": "15 minutes (quarter-hour prices)"
+        "15": "15 minutes (quarter-hour prices)",
+        "60": "60 minutes (hourly prices)"
       }
     },
     "bidding_zone": {
@@ -144,7 +148,7 @@
         "dk1": "Denmark west (DK1)",
         "dk2": "Denmark east (DK2)",
         "se3": "Sweden, Stockholm (SE3)",
-        "se4": "Sweden, Malm\u00f6 (SE4)",
+        "se4": "Sweden, Malmö (SE4)",
         "fi": "Finland (FI)"
       }
     },

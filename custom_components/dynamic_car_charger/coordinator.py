@@ -200,6 +200,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._lock_pending = bool(saved.get("lock_pending", False))
         self.deadline = timestamp(saved["deadline"]) if saved.get("deadline") else None
         self._observed_soc = saved.get("observed_soc")
+        self._soc_offline = False
         self._vehicle_completed = bool(saved.get("vehicle_completed", False))
         self._full_charge_seen_power = bool(saved.get("full_charge_seen_power", False))
         self._full_charge_idle_since = (
@@ -596,10 +597,26 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self.energy_mode:
             soc = None
         else:
-            soc_state = self._state("soc_entity")
-            if soc_state.attributes.get("unit_of_measurement") != "%":
-                raise ValueError("Battery sensor must report %")
-            soc = number(soc_state.state, 0, 100)
+            if self.settings.get("offline_soc_estimation", False):
+                state = self.hass.states.get(self.settings["soc_entity"])
+                valid = (state is not None and state.state not in ("unknown", "unavailable")
+                         and not state.attributes.get("restored"))
+                if valid and state.attributes.get("unit_of_measurement") != "%":
+                    raise ValueError("Battery sensor must report %")
+                if valid:
+                    soc = number(state.state, 0, 100)
+                    self._soc_offline = False
+                elif self._observed_soc is not None:
+                    soc = self._observed_soc
+                    self._soc_offline = True
+                else:
+                    raise ValueError("Battery sensor unavailable and no prior SoC saved")
+            else:
+                soc_state = self._state("soc_entity")
+                if soc_state.attributes.get("unit_of_measurement") != "%":
+                    raise ValueError("Battery sensor must report %")
+                soc = number(soc_state.state, 0, 100)
+                self._soc_offline = False
         power_state = self._state("power_entity")
         power = number(power_state.state, 0, 50_000)
         unit = power_state.attributes.get("unit_of_measurement")
@@ -635,9 +652,9 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             soc = min(100.0, 100 * self._delivered_kwh / self._capacity())
             prices = self._prices() if include_prices else []
             return soc, soc, prices
-        if soc != self._observed_soc:
+        if soc != self._observed_soc and not self._soc_offline:
             self._learn_taper(now, soc)
-        if soc != self._observed_soc or not self.enabled:
+        if not self._soc_offline and (soc != self._observed_soc or not self.enabled):
             self._observed_soc, self._credit_kwh = soc, 0.0
         else:
             self._credit_kwh += self._interval_kwh * self.settings["efficiency"]
@@ -696,14 +713,16 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "energy_delivered_kwh": round(self._delivered_kwh, 3),
                 "charging_power_report_old": self._power_report_old,
             }
-        reported = self.hass.states.get(self.settings["soc_entity"]).last_reported
-        age = now - reported
+        state = self.hass.states.get(self.settings["soc_entity"])
+        reported = state.last_reported if state is not None else None
+        age = now - reported if reported is not None else timedelta.max
         # The age is informational only: a battery percentage that does not
         # change is normal while parked and must not stop the plan.
         return {
-            "soc_reported_at": reported.isoformat(),
+            "soc_reported_at": reported.isoformat() if reported else None,
+            "soc_offline": self._soc_offline,
             "soc_report_old": age > timedelta(minutes=self.settings["soc_max_age_minutes"]),
-            "measured_soc": soc,
+            "measured_soc": None if self._soc_offline else soc,
             "estimated_soc": round(effective, 2),
             "charging_power_report_old": self._power_report_old,
             # How much longer a % takes from each battery %, and which are learned.
