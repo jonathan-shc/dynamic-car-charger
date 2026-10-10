@@ -1,14 +1,14 @@
 # Validation
 
-What has been checked for Dynamic Car Charger 0.15.4, and what still needs checking on real hardware.
+What has been checked for Dynamic Car Charger 0.15.5, and what still needs checking on real hardware.
 
 ## Automated checks
 
 Run on every push and pull request by [the Validate workflow](.github/workflows/validate.yml):
 
-| Check | Tool | Result for 0.15.4 |
+| Check | Tool | Result for 0.15.5 |
 | --- | --- | --- |
-| Unit and integration tests | `pytest` against Home Assistant 2026.9.2, Python 3.14 | 195 passed |
+| Unit and integration tests | `pytest` against Home Assistant 2026.9.2, Python 3.14 | 207 passed |
 | Lint | `ruff check` (rules ASYNC, B, E, F, I, SIM, UP, W) | Clean |
 | Formatting | `ruff format --check` | Clean |
 | Python 3.13 syntax | `compileall` on Python 3.13, for older Home Assistant versions | See the workflow run for this release |
@@ -57,3 +57,5 @@ Not verified by this project. Tick these off with your own setup and report resu
 - [ ] Behavior after a Home Assistant restart during a charging session.
 - [ ] Price forecast: estimates for the next days compared with the prices once published (every zone is backtested on history; see tools/backtest/results/zones.md).
 - [ ] Price forecast training time on a Raspberry Pi 4 (about 0.4 s on a laptop).
+
+- Near-full self-stop: suppress restart attempts at 99% after measured charging, confirm fresh near-zero power for three minutes, persist completion across restart, resume after a battery drop or explicit new charge. Tests cover ongoing trickle charging, scheduled pauses and stale readings.

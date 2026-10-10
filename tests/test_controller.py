@@ -1829,3 +1829,154 @@ def test_an_emptied_optional_field_is_not_filled_in_again():
     # The current value is still shown.
     shown = {str(key): key.description for key in form.schema}
     assert shown["location_entity"] == {"suggested_value": "device_tracker.front_door"}
+
+
+@pytest.mark.parametrize("mode", ["automatic", "immediate", "cheap"])
+async def test_vehicle_stopping_at_99_is_not_restarted(rig, mode):
+    hass, c, calls = rig
+    now = dt_util.utcnow()
+    c.target = 100
+    hass.states.async_set("sensor.battery", "98", {"unit_of_measurement": "%"})
+    if mode == "immediate":
+        await c.async_change(immediate_charging=True)
+    else:
+        await c.async_change(enabled=True, cheap_only=mode == "cheap", cheap_price=0.5)
+    hass.states.async_set("sensor.charging_power", "0.6", {"unit_of_measurement": "kW"})
+    await c.async_reconcile()
+    assert calls == ["turn_on"]
+    hass.states.async_set("sensor.battery", "99", {"unit_of_measurement": "%"})
+    hass.states.async_set("sensor.charging_power", "0", {"unit_of_measurement": "kW"})
+    hass.states.async_set("switch.charger", "off")
+    await c.async_reconcile()
+    assert c.data["status"] == "awaiting_soc_confirmation" and calls == ["turn_on"]
+    with patch(
+        "custom_components.dynamic_car_charger.coordinator.dt_util.utcnow",
+        return_value=now + timedelta(minutes=4),
+    ):
+        await c.async_reconcile()
+    assert c.data["status"] == "target_reached"
+    assert c.data["completion_reason"] == "vehicle_stopped_near_full"
+    assert c.data["measured_soc"] == 99 and not c.data["charging_requested"]
+    assert calls == ["turn_on"]
+    assert c._save_data()["vehicle_completed"] is True
+    with patch(
+        "custom_components.dynamic_car_charger.coordinator.dt_util.utcnow",
+        return_value=now + timedelta(minutes=8),
+    ):
+        await c.async_reconcile()
+    assert c.data["status"] == "target_reached" and calls == ["turn_on"]
+
+
+async def test_99_percent_keeps_charging_while_power_flows(rig):
+    hass, c, calls = rig
+    c.target = 100
+    hass.states.async_set("sensor.battery", "99", {"unit_of_measurement": "%"})
+    await c.async_change(immediate_charging=True)
+    hass.states.async_set("sensor.charging_power", "0.03", {"unit_of_measurement": "kW"})
+    await c.async_reconcile()
+    assert c.data["charging_requested"] and c.data["status"] == "charging"
+    assert not c._vehicle_completed and calls == ["turn_on"]
+
+
+async def test_99_without_observed_charging_does_not_mean_complete(rig):
+    hass, c, calls = rig
+    c.target = 100
+    hass.states.async_set("sensor.battery", "99", {"unit_of_measurement": "%"})
+    await c.async_change(immediate_charging=True)
+    assert c.data["charging_requested"] and not c._vehicle_completed
+    assert calls == ["turn_on"]
+
+
+async def test_charge_resuming_during_confirmation_cancels_completion(rig):
+    hass, c, _ = rig
+    c.target = 100
+    hass.states.async_set("sensor.battery", "99", {"unit_of_measurement": "%"})
+    await c.async_change(immediate_charging=True)
+    hass.states.async_set("sensor.charging_power", "0.6", {"unit_of_measurement": "kW"})
+    await c.async_reconcile()
+    hass.states.async_set("sensor.charging_power", "0", {"unit_of_measurement": "kW"})
+    await c.async_reconcile()
+    assert c._full_charge_idle_since is not None
+    hass.states.async_set("sensor.charging_power", "0.6", {"unit_of_measurement": "kW"})
+    await c.async_reconcile()
+    assert c._full_charge_idle_since is None and not c._vehicle_completed
+    assert c.data["charging_requested"]
+
+
+async def test_completed_vehicle_can_charge_after_battery_drops(rig):
+    hass, c, calls = rig
+    c.target = 100
+    c.enabled = True
+    c._vehicle_completed = True
+    hass.states.async_set("sensor.battery", "99", {"unit_of_measurement": "%"})
+    await c.async_reconcile()
+    assert calls == [] and c.data["status"] == "target_reached"
+    hass.states.async_set("sensor.battery", "98", {"unit_of_measurement": "%"})
+    await c.async_reconcile()
+    assert not c._vehicle_completed and calls == ["turn_on"]
+
+
+async def test_explicit_new_charge_clears_completion(rig):
+    hass, c, calls = rig
+    c.target = 100
+    c._vehicle_completed = True
+    hass.states.async_set("sensor.battery", "99", {"unit_of_measurement": "%"})
+    await c.async_change(immediate_charging=True)
+    assert not c._vehicle_completed and calls == ["turn_on"]
+
+
+async def test_near_full_completion_survives_restart(rig):
+    hass, c, calls = rig
+    c.target = 100
+    c.enabled = True
+    c._vehicle_completed = True
+    hass.states.async_set("sensor.battery", "99", {"unit_of_measurement": "%"})
+    await c.store.async_save(c._save_data())
+    restarted = await _restart(hass, c)
+    assert restarted._vehicle_completed
+    assert restarted.data["plan_status"] == "target_reached"
+    assert "turn_on" not in calls
+    assert restarted.data["slots"] == []
+
+
+async def test_scheduled_pause_at_99_does_not_mark_vehicle_complete(rig):
+    hass, c, calls = rig
+    c.target = 100
+    hass.states.async_set("sensor.battery", "99", {"unit_of_measurement": "%"})
+    await c.async_change(enabled=True)
+    hass.states.async_set("sensor.charging_power", "0.6", {"unit_of_measurement": "kW"})
+    await c.async_reconcile()
+    await c.async_change(cheap_only=True, cheap_price=0.05)
+    hass.states.async_set("sensor.charging_power", "0", {"unit_of_measurement": "kW"})
+    await c.async_reconcile()
+    assert not c._vehicle_completed and c._full_charge_idle_since is None
+    assert calls == ["turn_on", "turn_off"]
+
+
+async def test_stale_zero_power_is_not_proof_of_completion(rig):
+    hass, c, _ = rig
+    c.target = 100
+    hass.states.async_set("sensor.battery", "99", {"unit_of_measurement": "%"})
+    await c.async_change(immediate_charging=True)
+    hass.states.async_set("sensor.charging_power", "0.6", {"unit_of_measurement": "kW"})
+    await c.async_reconcile()
+    hass.states.async_set("sensor.charging_power", "0", {"unit_of_measurement": "kW"})
+    with patch(
+        "custom_components.dynamic_car_charger.coordinator.dt_util.utcnow",
+        return_value=dt_util.utcnow() + timedelta(minutes=6),
+    ):
+        await c.async_reconcile()
+    assert not c._vehicle_completed and c._full_charge_idle_since is None
+
+
+async def test_completion_candidate_does_not_turn_off_a_briefly_idle_charger(rig):
+    hass, c, calls = rig
+    c.target = 100
+    hass.states.async_set("sensor.battery", "99", {"unit_of_measurement": "%"})
+    await c.async_change(immediate_charging=True)
+    hass.states.async_set("sensor.charging_power", "0.6", {"unit_of_measurement": "kW"})
+    await c.async_reconcile()
+    hass.states.async_set("sensor.charging_power", "0", {"unit_of_measurement": "kW"})
+    await c.async_reconcile()
+    assert hass.states.get("switch.charger").state == "on"
+    assert calls == ["turn_on"] and not c._vehicle_completed
