@@ -10,6 +10,7 @@ SERVICE_GET_TRIPS = "get_trips"
 SERVICE_SET_SCHEDULE = "set_schedule"
 PLATFORMS = ["sensor", "number", "datetime", "switch", "button"]
 DEFAULTS = {
+    "bike_min_ride_distance_m": 100,
     "capacity_kwh": 60.0,
     "power_kw": 7.4,
     "efficiency": 0.9,

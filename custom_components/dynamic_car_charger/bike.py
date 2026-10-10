@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 class BikeObservation:
     live: bool = False
     speed: float | None = None
+    speed_report: datetime | None = None
     powered: bool | None = None
     rider_home: bool | None = None
     rider_configured: bool = False
@@ -22,7 +23,12 @@ class BikeObservation:
 
 
 class BikeLifecycle:
-    def __init__(self):
+    def __init__(self, min_ride_distance_m=100):
+        self.min_ride_distance_m = max(100, float(min_ride_distance_m))
+        self.ride_distance_m = 0.0
+        self.ride_motion_seconds = 0.0
+        self.ride_last_motion: datetime | None = None
+        self._speed_sample: tuple[datetime, float] | None = None
         self.state = "unknown"
         self.reason = "no_observation"
         self.home = False
@@ -52,7 +58,41 @@ class BikeLifecycle:
     def saved(self):
         return {"home": self.home, "away": self.away, "probe_owned": self.probe_owned}
 
+    @property
+    def ride_qualified(self):
+        return self.ride_distance_m >= self.min_ride_distance_m and self.ride_motion_seconds >= 30
+
+    def _reset_ride(self):
+        self.ride_distance_m = self.ride_motion_seconds = 0.0
+        self.ride_last_motion = None
+        self._speed_sample = None
+
+    def _observe_ride(self, now, o):
+        # Integrate only consecutive fresh moving samples. Gaps and retained
+        # values add neither distance nor time; display off/on preserves totals.
+        expiry = timedelta(hours=6) if self.away else timedelta(minutes=15)
+        if self.ride_last_motion and now - self.ride_last_motion > expiry:
+            self._reset_ride()
+        if not o.live or o.speed is None:
+            self._speed_sample = None
+            return
+        report = o.speed_report or now
+        if not timedelta(0) <= now - report <= timedelta(seconds=5):
+            return
+        if self._speed_sample:
+            previous_time, previous_speed = self._speed_sample
+            elapsed = (report - previous_time).total_seconds()
+            if elapsed <= 0:
+                return
+            if elapsed <= 5 and min(previous_speed, o.speed) >= 2:
+                self.ride_motion_seconds += elapsed
+                self.ride_distance_m += min(previous_speed, o.speed) / 3.6 * elapsed
+        self._speed_sample = (report, o.speed)
+        if o.speed >= 2:
+            self.ride_last_motion = report
+
     def update(self, now: datetime, o: BikeObservation):
+        self._observe_ride(now, o)
         previous = self.state
         moving = o.live and o.speed is not None and o.speed >= 2
         if moving:
@@ -80,9 +120,26 @@ class BikeLifecycle:
             if self.away:
                 self.state, self.reason = "arriving", "returned_to_home_bluetooth"
                 if self.still_since and now - self.still_since >= timedelta(seconds=30):
-                    self.arrived_at = now
+                    if self.ride_qualified:
+                        self.arrived_at = now
+                        self._reset_ride()
                     self.home, self.away = True, False
                     self.state, self.reason = "home_on", "arrival_settled"
+            elif (
+                not moving
+                and o.speed is not None
+                and self.ride_qualified
+                and o.rider_home is not False
+            ):
+                # A real local ride can remain inside both BLE range and the
+                # phone's home zone. Geographic away is not required to park.
+                self.state, self.reason = "arriving", "qualified_local_ride_stopping"
+                if self.still_since and now - self.still_since >= timedelta(seconds=30):
+                    self.arrived_at = now
+                    self.home, self.away = True, False
+                    self.departure_pending = False
+                    self.state, self.reason = "home_on", "qualified_local_ride_arrival"
+                    self._reset_ride()
             elif moving and self.moving_since and now - self.moving_since >= timedelta(seconds=10):
                 self.state, self.reason = "departing", "sustained_bike_motion"
                 self.home = True
@@ -99,7 +156,9 @@ class BikeLifecycle:
         elif o.powered is False and self.away and previous == "arriving":
             self.home, self.away = True, False
             self.departure_pending = False
-            self.arrived_at = now
+            if self.ride_qualified:
+                self.arrived_at = now
+                self._reset_ride()
             self.state, self.reason = "home_off", "returned_then_powered_off"
         elif o.powered is False and self.home and not self.departure_pending and previous != "away":
             self.state, self.reason = "home_off", "observed_power_off"
@@ -218,6 +277,10 @@ class BikeLifecycle:
             "cable": self.cable,
             "cable_evidence": self.cable_evidence,
             "cable_confirmed_at": self.cable_at.isoformat() if self.cable_at else None,
+            "ride_distance_m": round(self.ride_distance_m, 1),
+            "ride_motion_seconds": round(self.ride_motion_seconds, 1),
+            "ride_qualified": self.ride_qualified,
+            "minimum_ride_distance_m": self.min_ride_distance_m,
             "probe_active": self.probe_owned,
             "probe_result": self.probe_result,
         }
