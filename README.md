@@ -2,7 +2,7 @@
 
 A Home Assistant custom integration for deadline-based EV charging. Set **80% by Friday at 07:30** (or **20 kWh by Friday at 07:30**), inspect the charging plan, and let the integration pause and resume your charger during the cheapest published price intervals.
 
-It works with any charger that has an on/off switch in Home Assistant and any dynamic price sensor with today's and tomorrow's prices. With a car that reports its battery percentage it charges to a percentage; without one it charges an amount of energy. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Check compatibility with your own devices. Current version: 0.16.1 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
+It works with any charger that has an on/off switch in Home Assistant and any dynamic price sensor with today's and tomorrow's prices. With a car that reports its battery percentage it charges to a percentage; without one it charges an amount of energy. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Check compatibility with your own devices. Current version: 0.16.2 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
 
 ## What you get
 
@@ -304,3 +304,17 @@ with a fresh bicycle trip ≥0.5 km. GPS gaps >5 minutes or impossible cycling j
 reject it. Routes without a matching departure/return remain unclassified. Missing
 location permissions, an empty phone battery or trips with other riders can leave gaps.
 Personal entities, addresses and raw Bluetooth captures are not included in this repo.
+
+
+Cable discovery after parking requires a measured ride: at least **100 metres and
+30 seconds moving**, followed by 30 seconds stationary within home BLE coverage.
+The minimum distance can be increased in integration options (100–5000 m).
+Only consecutive fresh speed samples up to five seconds apart contribute; gaps
+are not extrapolated. A brief display power cycle preserves the measured totals;
+15 minutes without observed movement at home expires the episode; confirmed
+away rides retain evidence for up to six hours. A Home Assistant
+restart resets ride evidence. A qualified local ride can trigger arrival even
+when the rider phone stays inside the home zone; fresh phone-away evidence blocks
+this local arrival. Stationary wake-ups and short shed movements do not trigger a
+cable check. BLE speed cannot distinguish riding from sustained wheel rotation;
+these are conservative measured-motion thresholds, not independent GPS proof.

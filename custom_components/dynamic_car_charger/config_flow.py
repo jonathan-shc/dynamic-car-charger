@@ -93,6 +93,7 @@ def schema(values: dict[str, Any], default_zone: str = "nl") -> vol.Schema:
     )
     # Units are part of the field labels; see strings.json.
     for key, lo, hi, step in [
+        ("bike_min_ride_distance_m", 100, 5000, 10),
         ("capacity_kwh", 0.1, 300, 0.01),
         ("power_kw", 0.01, 50, 0.001),
         ("efficiency", 0.5, 1, 0.01),

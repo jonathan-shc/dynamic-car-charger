@@ -185,7 +185,11 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.cheap_after_deadline = False
         # The car's drives, when its location is known.
         self.trips: TripRecorder | None = None
-        self.bike = BikeLifecycle() if self.settings.get("vehicle_type") == "bicycle" else None
+        self.bike = (
+            BikeLifecycle(self.settings.get("bike_min_ride_distance_m", 100))
+            if self.settings.get("vehicle_type") == "bicycle"
+            else None
+        )
         self.data = {"status": "set_deadline", "slots": []}
 
     async def async_start(self) -> None:
@@ -613,6 +617,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return BikeObservation(
             live=live,
             speed=speed,
+            speed_report=speed_state.last_reported if speed_state else None,
             powered=(powered.state == "on") if powered else None,
             rider_home=rider_home,
             rider_configured=bool(self.settings.get("rider_location_entity")),
