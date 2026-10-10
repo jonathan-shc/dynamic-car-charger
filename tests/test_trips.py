@@ -86,8 +86,8 @@ def test_a_drive_after_a_night_asleep_starts_in_the_morning():
     assert record(drive)["started"] == drive[0][0].isoformat()
 
 
-@pytest.mark.parametrize("stop_seconds, expected", [(299, 1), (300, 2), (301, 2), (600, 2)])
-def test_five_minutes_or_more_starts_a_new_drive(stop_seconds, expected):
+@pytest.mark.parametrize("stop_seconds, expected", [(298, 1), (299, 2), (300, 2), (600, 2)])
+def test_299_seconds_or_more_starts_a_new_drive(stop_seconds, expected):
     points = [at(0, 0), at(10, 5), at(20, 10), at(20 + stop_seconds, 10), at(30 + stop_seconds, 15)]
     assert len(split(points)) == expected
 
@@ -109,7 +109,7 @@ def test_record_has_times_distance_and_route():
     assert kept["route"] == [[52.0, 5.0, 0], [52.01, 5.0, 120]]
 
 
-def test_live_positions_become_a_drive_after_five_minutes_parked(recorder):
+def test_live_positions_become_a_drive_after_299_seconds_parked(recorder):
     recorder.add(at(0, 0))
     recorder.add(at(20, 0.0001))  # wander: nothing yet
     assert recorder._drive == []
@@ -118,9 +118,9 @@ def test_live_positions_become_a_drive_after_five_minutes_parked(recorder):
     recorder.add(at(120, 10.0001))
     recorder.finish_if_parked(T0 + timedelta(seconds=120))
     assert recorder.trips == []  # parked for a minute: maybe a traffic light
-    recorder.finish_if_parked(T0 + timedelta(seconds=60 + 299))
+    recorder.finish_if_parked(T0 + timedelta(seconds=60 + 298))
     assert recorder.trips == []
-    recorder.finish_if_parked(T0 + timedelta(seconds=60 + 300))
+    recorder.finish_if_parked(T0 + timedelta(seconds=60 + 299))
     assert len(recorder.trips) == 1
     trip = recorder.trips[0]
     assert trip["started"] == (T0 + timedelta(seconds=20)).isoformat()
