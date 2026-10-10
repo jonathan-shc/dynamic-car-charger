@@ -1,7 +1,7 @@
 """Keep the car's drives: its positions while driving, cut into trips and kept for good.
 
 The car's device tracker is followed. A step of more than 40 m starts a drive (a parked
-car's GPS wanders less); a drive ends when the car hasn't moved for ten minutes, and keeps
+car's GPS wanders less); a drive ends when the car hasn't moved for five minutes, and keeps
 the positions of the two minutes after its last step, so the route ends where the car
 parked. Each drive is kept with its start, end, distance and route, the route simplified
 to a few metres so a drive costs a few kilobytes, and with how much of the battery it
@@ -37,7 +37,7 @@ from .const import DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 # Not moving for this long ends a drive; a shorter stop is part of it.
-PAUSE = timedelta(minutes=10)
+PAUSE = timedelta(minutes=5)
 # Positions this long after the last step still belong to the drive: slowing down,
 # parking, and where the car stands.
 SETTLE = timedelta(minutes=2)
@@ -85,7 +85,7 @@ def split(points: list[Point]) -> list[list[Point]]:
     for index in range(1, len(points)):
         if metres(points[index - 1], points[index]) <= STEP_METRES:
             continue
-        if moves and points[index - 1][0] - points[moves[-1][1]][0] <= PAUSE:
+        if moves and points[index - 1][0] - points[moves[-1][1]][0] < PAUSE:
             moves[-1][1] = index
         else:
             moves.append([index - 1, index])
@@ -383,7 +383,7 @@ class TripRecorder:
         self._last = point
 
     def finish_if_parked(self, now: datetime) -> None:
-        """Keep the drive under way once the car hasn't moved for ten minutes."""
+        """Keep the drive under way once the car hasn't moved for five minutes."""
         if not self._drive or self._moved_at is None or now - self._moved_at < PAUSE:
             return
         drive, self._drive = self._drive, []
@@ -408,7 +408,7 @@ class TripRecorder:
 
     def import_states(self, states: list[State], now: datetime) -> int:
         """Drives from recorded states of the tracker. One still under way (moved within
-        the last ten minutes) isn't kept yet: the live positions carry it on."""
+        the last five minutes) isn't kept yet: the live positions carry it on."""
         return self.import_points(
             sorted(point for point in map(position, states) if point is not None), now
         )
