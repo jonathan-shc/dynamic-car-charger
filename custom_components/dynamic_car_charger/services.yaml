@@ -79,3 +79,12 @@ set_schedule:
     enabled:
       selector:
         boolean:
+
+rebuild_today_trips:
+  description: Reprocess today's recorded GPS trips using the current stop rules. Older trips are preserved.
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: dynamic_car_charger
