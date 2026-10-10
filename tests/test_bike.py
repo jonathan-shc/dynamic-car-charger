@@ -158,3 +158,22 @@ def test_configured_but_stale_phone_does_not_confirm_departure():
     assert b.state == "home_unreachable"
     b.update(NOW + timedelta(seconds=120), BikeObservation(rider_configured=True, rider_home=False))
     assert b.state == "away"
+
+
+def test_short_bluetooth_motion_is_enough_with_fresh_rider_away():
+    b = BikeLifecycle()
+    b.update(NOW, BikeObservation(live=True, speed=0))
+    b.update(
+        NOW + timedelta(seconds=1), BikeObservation(live=True, speed=15, rider_configured=True)
+    )
+    b.update(NOW + timedelta(seconds=5), BikeObservation(rider_configured=True))
+    b.update(NOW + timedelta(seconds=65), BikeObservation(rider_configured=True, rider_home=False))
+    assert b.state == "away"
+
+
+def test_short_motion_alone_cannot_confirm_departure():
+    b = BikeLifecycle()
+    b.update(NOW, BikeObservation(live=True, speed=0))
+    b.update(NOW + timedelta(seconds=1), BikeObservation(live=True, speed=15))
+    b.update(NOW + timedelta(seconds=65), BikeObservation())
+    assert b.state == "home_unreachable"
