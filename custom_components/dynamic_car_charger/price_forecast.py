@@ -46,6 +46,8 @@ class Calibration:
     slope: float
     offset: float
     points: int
+    # Latest matched market interval; repeated old inputs must not renew the cache.
+    matched_until: datetime | None = None
 
     def apply(self, market: float) -> float:
         return self.slope * market + self.offset

@@ -18,7 +18,10 @@ from custom_components.dynamic_car_charger.config_flow import (
 )
 from custom_components.dynamic_car_charger.const import DEFAULTS, EVENT_CAR_CONNECTED
 from custom_components.dynamic_car_charger.coordinator import ChargerCoordinator, next_scheduled
-from custom_components.dynamic_car_charger.forecaster import ForecastUnavailable
+from custom_components.dynamic_car_charger.forecaster import (
+    CalibrationDataUnavailable,
+    ForecastUnavailable,
+)
 from custom_components.dynamic_car_charger.planner import Slot, make_plan
 from custom_components.dynamic_car_charger.price_forecast import Calibration
 from custom_components.dynamic_car_charger.zones import zone
@@ -902,11 +905,13 @@ class FakeForecaster:
         self.fail = error
         self.async_update = AsyncMock()
 
-    def estimate(self, known, deadline, currency="EUR"):
-        return self.slots, self.calibration(known, currency)
+    def estimate(self, known, deadline, currency="EUR", *, calibration=None):
+        return self.slots, calibration or self.calibration(known, currency)
 
     def calibration(self, known, currency="EUR"):
         if self.fail:
+            if isinstance(self.fail, Exception):
+                raise self.fail
             raise ForecastUnavailable(self.fail)
         return Calibration(1.21, 0.1327, 48)
 
@@ -933,6 +938,153 @@ async def test_forecast_waits_for_cheaper_estimated_hour(rig):
     assert [s["estimated"] for s in c.data["slots"]] == [True]
     assert c.data["slots"][0]["start"] == cheap.start.isoformat()
     assert calls == []
+
+
+async def test_forecast_reuses_saved_tariff_and_recovers(rig):
+    _, c, calls = rig
+    _forecast_rig(c)
+    c.use_forecast = True
+    await c.async_change(enabled=True)
+    saved = c._save_data()["forecast_calibration"].copy()
+    c.forecaster.fail = CalibrationDataUnavailable("Insufficient matching market prices")
+    await c.async_reconcile()
+    assert c.data["planning_method"] == "forecast"
+    assert "previous tariff calibration" in c.data["forecast_warning"]
+    assert c.data["forecast_error"] is None
+    assert c._save_data()["forecast_calibration"] == saved
+    assert calls == []  # An estimated cheap interval never starts charging.
+
+    c.forecaster.fail = None
+    await c.async_reconcile()
+    assert c.data["planning_method"] == "forecast"
+    assert c.data["forecast_warning"] is None
+
+
+async def test_tariff_calibration_reuse_survives_restart(rig):
+    hass, c, _ = rig
+    _forecast_rig(c)
+    await c.async_change(use_forecast=True)
+    await c.store.async_save(c._save_data())
+    saved = c._save_data()["forecast_calibration"].copy()
+    c.forecaster.fail = CalibrationDataUnavailable("Insufficient matching market prices")
+    with patch(
+        "custom_components.dynamic_car_charger.coordinator.shared_forecaster",
+        return_value=c.forecaster,
+    ):
+        restarted = await _restart(hass, c)
+    assert restarted._save_data()["forecast_calibration"] == saved
+    assert restarted.data["planning_method"] == "forecast"
+    assert restarted.data["forecast_warning"]
+
+
+@pytest.mark.parametrize("age", [timedelta(hours=48), timedelta(hours=49), timedelta(minutes=-1)])
+async def test_expired_or_future_tariff_calibration_falls_back(rig, age):
+    _, c, _ = rig
+    _forecast_rig(c)
+    c.use_forecast = True
+    await c.async_reconcile()
+    c._saved_forecast_calibration["validated_at"] = (dt_util.utcnow() - age).isoformat()
+    c.forecaster.fail = CalibrationDataUnavailable("Insufficient matching market prices")
+    await c.async_reconcile()
+    assert c.data["planning_method"] == "threshold"
+    assert "last 48 hours" in c.data["forecast_error"]
+    assert c.forecast_calibration is None
+    assert c.data["forecast_warning"] is None
+
+
+@pytest.mark.parametrize(
+    "setting,value",
+    [
+        ("price_adjustment", 0.05),
+        ("interval_minutes", 15),
+    ],
+)
+async def test_changed_tariff_settings_cannot_reuse_calibration(rig, setting, value):
+    _, c, _ = rig
+    _forecast_rig(c)
+    c.use_forecast = True
+    await c.async_reconcile()
+    c.settings[setting] = value
+    c.forecaster.fail = CalibrationDataUnavailable("Insufficient matching market prices")
+    await c.async_reconcile()
+    assert c.data["planning_method"] == "threshold"
+    assert c._saved_forecast_calibration is None
+
+
+@pytest.mark.parametrize(
+    "context,value",
+    [
+        ("price_entity", "sensor.other_price"),
+        ("currency", "SEK"),
+        ("bidding_zone", "BE"),
+    ],
+)
+async def test_calibration_from_another_source_currency_or_market_is_rejected(rig, context, value):
+    _, c, _ = rig
+    _forecast_rig(c)
+    c.use_forecast = True
+    await c.async_reconcile()
+    c._saved_forecast_calibration["context"][context] = value
+    c.forecaster.fail = CalibrationDataUnavailable("Insufficient matching market prices")
+    await c.async_reconcile()
+    assert c.data["planning_method"] == "threshold"
+    assert c._saved_forecast_calibration is None
+
+
+async def test_tariff_mismatch_invalidates_saved_calibration(rig):
+    _, c, _ = rig
+    _forecast_rig(c)
+    c.use_forecast = True
+    await c.async_reconcile()
+    c.forecaster.fail = "Published prices do not match market prices"
+    await c.async_reconcile()
+    assert c.data["planning_method"] == "threshold"
+    assert c._saved_forecast_calibration is None
+    c.forecaster.fail = CalibrationDataUnavailable("Insufficient matching market prices")
+    await c.async_reconcile()
+    assert c.data["planning_method"] == "threshold"
+
+
+async def test_historical_matches_do_not_extend_calibration_lifetime(rig):
+    _, c, _ = rig
+    _forecast_rig(c)
+    c.use_forecast = True
+    last_match = dt_util.utcnow() - timedelta(hours=24)
+    c.forecaster.calibration = Mock(return_value=Calibration(1.21, 0.1327, 24, last_match))
+    await c.async_reconcile()
+    assert c._saved_forecast_calibration["validated_at"] == last_match.isoformat()
+    await c.async_reconcile()
+    assert c._saved_forecast_calibration["validated_at"] == last_match.isoformat()
+
+
+async def test_cheap_only_also_reports_reused_calibration(rig):
+    _, c, _ = rig
+    _forecast_rig(c)
+    c.use_forecast = True
+    c.cheap_only = True
+    await c.async_reconcile()
+    c.forecaster.fail = CalibrationDataUnavailable("Insufficient matching market prices")
+    await c.async_reconcile()
+    assert c.data["forecast_warning"]
+
+
+async def test_shared_market_does_not_share_supplier_calibration(rig):
+    hass, c, _ = rig
+    _forecast_rig(c)
+    c.use_forecast = True
+    await c.async_reconcile()
+    c.forecaster.fail = CalibrationDataUnavailable("Insufficient matching market prices")
+    with patch(
+        "custom_components.dynamic_car_charger.coordinator.shared_forecaster",
+        return_value=c.forecaster,
+    ):
+        other = ChargerCoordinator(hass, c.entry)
+    other.use_forecast = True
+    other.deadline = c.deadline
+    await other.async_reconcile()
+    assert c._saved_forecast_calibration is not None
+    assert other._saved_forecast_calibration is None
+    assert other.data["planning_method"] == "threshold"
 
 
 async def test_threshold_charges_in_the_same_situation(rig):
