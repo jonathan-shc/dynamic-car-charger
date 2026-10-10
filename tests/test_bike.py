@@ -371,3 +371,13 @@ def test_unknown_speed_breaks_stationary_arrival_timer():
         BikeObservation(live=True, speed=0, trip_km=0.64, trip_report=NOW + timedelta(seconds=65)),
     )
     assert b.arrived_at is not None
+
+
+def test_reconnect_waits_for_actual_trip_before_comparing_reset():
+    b = BikeLifecycle()
+    park(b, 0, 0.64)
+    off = BikeObservation(powered=False)
+    b.update(NOW + timedelta(seconds=40), off)
+    b.control(NOW + timedelta(seconds=40), off, scheduled=False, allow_probe=True, cancel=False)
+    b.update(NOW + timedelta(seconds=50), BikeObservation(live=True, speed=0))
+    assert park(b, 51, 0.2) == (True, True)

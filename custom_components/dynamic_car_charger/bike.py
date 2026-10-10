@@ -104,7 +104,8 @@ class BikeLifecycle:
         # Only source packet timestamps establish freshness. Re-publishing a
         # retained trip in HA cannot manufacture arrival evidence.
         new_connection = o.live and not self._trip_live
-        self._trip_live = o.live
+        if not o.live:
+            self._trip_live = False
         self.ride_distance_m = 0.0
         if (
             not o.live
@@ -114,6 +115,7 @@ class BikeLifecycle:
             or not timedelta(0) <= now - o.trip_report <= timedelta(seconds=30)
         ):
             return
+        self._trip_live = True
         self._latest_trip_km = o.trip_km
         if o.trip_km == 0 or (new_connection and o.trip_km < self._trip_base_km):
             self._trip_base_km = 0.0
