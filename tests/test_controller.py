@@ -1980,3 +1980,109 @@ async def test_completion_candidate_does_not_turn_off_a_briefly_idle_charger(rig
     await c.async_reconcile()
     assert hass.states.get("switch.charger").state == "on"
     assert calls == ["turn_on"] and not c._vehicle_completed
+
+
+async def test_power_boost_never_sends_start_or_unlock_retries(rig):
+    hass, c, calls = rig
+    now = dt_util.utcnow()
+    c.settings["connected_entity"] = "sensor.wallbox_status"
+    c.settings["lock_entity"] = "lock.charger"
+    hass.states.async_set("sensor.wallbox_status", "Waiting in queue by Power Boost")
+    hass.states.async_set("lock.charger", "locked")
+    await c.async_change(enabled=True)
+    assert calls == []
+    assert c.data["status"] == "waiting_for_power" and c.data["error"] is None
+    for minutes in [2, 6, 20]:
+        with patch(
+            "custom_components.dynamic_car_charger.coordinator.dt_util.utcnow",
+            return_value=now + timedelta(minutes=minutes),
+        ):
+            await c.async_reconcile()
+        assert calls == [] and c.data["status"] == "waiting_for_power"
+        assert c.data["wait_reason"] == "household_load"
+        assert c._command_time is None
+
+
+async def test_power_boost_resumes_without_sending_start(rig):
+    hass, c, calls = rig
+    c.settings["connected_entity"] = "sensor.wallbox_status"
+    hass.states.async_set("sensor.wallbox_status", "Waiting in queue by Power Boost")
+    await c.async_change(enabled=True)
+    # The status changes first: wait for the corresponding switch state.
+    hass.states.async_set("sensor.wallbox_status", "Charging")
+    await c.async_reconcile()
+    assert calls == [] and c.data["status"] == "waiting_for_power"
+    hass.states.async_set("switch.charger", "on")
+    await c.async_reconcile()
+    assert calls == [] and c.data["status"] == "charging"
+
+
+async def test_power_boost_still_allows_user_stop(rig):
+    hass, c, calls = rig
+    c.settings["connected_entity"] = "sensor.wallbox_status"
+    hass.states.async_set("sensor.wallbox_status", "Waiting in queue by Power Boost")
+    hass.states.async_set("switch.charger", "on")
+    await c.async_change(enabled=True)
+    assert calls == []
+    await c.async_change(enabled=False)
+    assert calls == ["turn_off"]
+
+
+async def test_power_boost_does_not_complete_a_99_percent_battery(rig):
+    hass, c, calls = rig
+    now = dt_util.utcnow()
+    c.target = 100
+    c.settings["connected_entity"] = "sensor.wallbox_status"
+    hass.states.async_set("sensor.wallbox_status", "Charging")
+    hass.states.async_set("sensor.battery", "99", {"unit_of_measurement": "%"})
+    await c.async_change(immediate_charging=True)
+    hass.states.async_set("sensor.charging_power", "0.6", {"unit_of_measurement": "kW"})
+    await c.async_reconcile()
+    hass.states.async_set("sensor.wallbox_status", "Waiting in queue by Power Boost")
+    hass.states.async_set("switch.charger", "off")
+    hass.states.async_set("sensor.charging_power", "0", {"unit_of_measurement": "kW"})
+    await c.async_reconcile()
+    with patch(
+        "custom_components.dynamic_car_charger.coordinator.dt_util.utcnow",
+        return_value=now + timedelta(minutes=4),
+    ):
+        await c.async_reconcile()
+    assert not c._vehicle_completed and c._full_charge_idle_since is None
+    assert c.immediate_charging and c.data["status"] == "waiting_for_power"
+    assert calls == ["turn_on"]
+
+
+async def test_power_boost_cancels_an_existing_full_charge_confirmation(rig):
+    hass, c, _ = rig
+    c.target = 100
+    c.settings["connected_entity"] = "sensor.wallbox_status"
+    hass.states.async_set("sensor.wallbox_status", "Charging")
+    hass.states.async_set("sensor.battery", "99", {"unit_of_measurement": "%"})
+    await c.async_change(immediate_charging=True)
+    hass.states.async_set("sensor.charging_power", "0.6", {"unit_of_measurement": "kW"})
+    await c.async_reconcile()
+    hass.states.async_set("sensor.charging_power", "0", {"unit_of_measurement": "kW"})
+    await c.async_reconcile()
+    assert c._full_charge_idle_since is not None
+    hass.states.async_set("sensor.wallbox_status", "Waiting in queue by Power Boost")
+    await c.async_reconcile()
+    assert c._full_charge_idle_since is None and not c._vehicle_completed
+    assert c.data["status"] == "waiting_for_power"
+
+
+async def test_start_timeout_restarts_fresh_after_power_boost(rig):
+    hass, c, calls = rig
+    now = dt_util.utcnow()
+    c.settings["connected_entity"] = "sensor.wallbox_status"
+    c._command = True
+    c._command_time = now - timedelta(minutes=10)
+    hass.states.async_set("sensor.wallbox_status", "Waiting in queue by Power Boost")
+    await c.async_change(enabled=True)
+    hass.states.async_set("sensor.wallbox_status", "Paused")
+    with patch(
+        "custom_components.dynamic_car_charger.coordinator.dt_util.utcnow",
+        return_value=now + timedelta(seconds=46),
+    ):
+        await c.async_reconcile()
+    assert calls == ["turn_on"]
+    assert c.data["status"] == "starting_charge" and c.data["error"] is None

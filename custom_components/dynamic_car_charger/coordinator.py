@@ -56,6 +56,7 @@ FORECAST_MARGIN_MARKET = 0.004
 CONFIRM_TIMEOUT = timedelta(minutes=5)
 RETRY_INTERVAL = timedelta(seconds=120)
 REPLAN_SETTLE = timedelta(seconds=30)
+LOAD_MANAGEMENT_SETTLE = timedelta(seconds=45)
 # Maximum charging after the power estimate reaches the target while the car
 # has not yet reported the target percentage.
 SOC_CONFIRMATION_LIMIT = timedelta(minutes=30)
@@ -151,6 +152,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._full_charge_seen_power = False
         self._full_charge_idle_since: datetime | None = None
         self._vehicle_completed = False
+        self._load_management_release: datetime | None = None
         self._command: bool | None = None
         self._command_time: datetime | None = None
         self._command_attempt_time: datetime | None = None
@@ -719,6 +721,15 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._replan_stop_time = None
         self._soc_confirmation_since = None
 
+    def _load_management_waiting(self) -> bool:
+        """Respect the charger's own household load protection."""
+        entity_id = self.settings.get("connected_entity")
+        state = self.hass.states.get(entity_id) if entity_id else None
+        return self._state_text(state) == "waiting in queue by power boost"
+
+    def _load_management_settling(self, now: datetime) -> bool:
+        return self._load_management_release is not None and now < self._load_management_release
+
     def _vehicle_charge_completion(
         self, now: datetime, data: dict[str, Any], desired: bool
     ) -> str | None:
@@ -742,6 +753,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             or self._power_report_old
             or self._sample_power >= FULL_CHARGE_IDLE_KW
             or data.get("status") == "input_error"
+            or self._load_management_waiting()
+            or self._load_management_settling(now)
         ):
             self._full_charge_idle_since = None
             return None
@@ -842,6 +855,10 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 error = await self._control(desired and control_enabled, now, force_stop)
                 if error == IDLE_STOP:
                     pass  # not an error; a pending stop stays pending until confirmed
+                elif error == "waiting_for_power":
+                    data.update(
+                        status="waiting_for_power", error=None, wait_reason="household_load"
+                    )
                 elif error == "waiting_for_car":
                     data.update(status="waiting_for_car", error=None, charging_requested=False)
                 elif error in PENDING_STATUSES:
@@ -1451,6 +1468,22 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._issue_id = issue_id
 
     async def _control(self, desired: bool, now: datetime, force: bool = False) -> str | None:
+        if desired and self._load_management_waiting():
+            # Wallbox reports its pause/resume switch as off during Power Boost.
+            # It owns this pause and resumes itself; repeated starts are rejected.
+            self._load_management_release = now + LOAD_MANAGEMENT_SETTLE
+            self._command = None
+            self._command_time = None
+            self._command_attempt_time = None
+            return "waiting_for_power"
+        charger = self.hass.states.get(self.settings["charger_entity"])
+        if (
+            desired
+            and self._load_management_settling(now)
+            and (charger is None or charger.state != "on")
+        ):
+            # Status and switch updates can arrive separately when Wallbox resumes.
+            return "waiting_for_power"
         if desired:
             unlock_status = await self._ensure_unlocked(now)
             if unlock_status is not None:
