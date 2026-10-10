@@ -1,14 +1,14 @@
 # Validation
 
-What has been checked for Dynamic Car Charger 0.6.1, and what still needs checking on real hardware.
+What has been checked for Dynamic Car Charger 0.15.4, and what still needs checking on real hardware.
 
 ## Automated checks
 
 Run on every push and pull request by [the Validate workflow](.github/workflows/validate.yml):
 
-| Check | Tool | Result for 0.6.1 |
+| Check | Tool | Result for 0.15.4 |
 | --- | --- | --- |
-| Unit and integration tests | `pytest` against Home Assistant 2026.9.2, Python 3.14 | 85 passed |
+| Unit and integration tests | `pytest` against Home Assistant 2026.9.2, Python 3.14 | 195 passed |
 | Lint | `ruff check` (rules ASYNC, B, E, F, I, SIM, UP, W) | Clean |
 | Formatting | `ruff format --check` | Clean |
 | Python 3.13 syntax | `compileall` on Python 3.13, for older Home Assistant versions | See the workflow run for this release |
@@ -18,6 +18,9 @@ Run on every push and pull request by [the Validate workflow](.github/workflows/
 The tests run the real coordinator against Home Assistant's state machine and service registry. The charger, lock, battery, power and price sources are simulated entities.
 
 ### Covered by tests
+
+- Complete 23-, 24- and 25-hour market days; partial days are fetched again.
+- Corrected historical prices rebuild the model; diagnostics exclude identifying data.
 
 - Least-cost allocation, fractional and partial intervals, charging losses, negative prices, equal prices.
 - Price gaps, overlapping or conflicting rows, naive timestamps, unit checks, quarter-hour and hourly prices.

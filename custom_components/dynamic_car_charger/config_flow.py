@@ -20,6 +20,8 @@ OPTIONAL_KEYS = (
     "connected_states",
     "lock_entity",
     "location_entity",
+    "vehicle_type",
+    "charger_type",
 )
 
 
@@ -44,6 +46,16 @@ def schema(values: dict[str, Any], default_zone: str = "nl") -> vol.Schema:
     for key in ("charger_entity", "price_entity", "power_entity"):
         marker = vol.Required(key, default=values[key]) if key in values else vol.Required(key)
         fields[marker] = selector.EntitySelector()
+    for key in ("vehicle_type", "charger_type"):
+        fields[optional(key, values.get(key))] = selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=["car", "scooter", "other"]
+                if key == "vehicle_type"
+                else ["charger", "plug"],
+                mode=selector.SelectSelectorMode.DROPDOWN,
+                translation_key=key,
+            )
+        )
     # Without a battery sensor the integration charges an amount of energy.
     for key, domain in (
         ("soc_entity", ["sensor", "input_number"]),

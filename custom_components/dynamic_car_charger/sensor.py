@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
@@ -10,6 +10,7 @@ from homeassistant.const import EntityCategory
 from homeassistant.util import dt as dt_util
 
 from .entity import ChargerEntity
+from .forecaster import forecast_error_code
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -121,6 +122,7 @@ class PriceForecastSensor(ChargerEntity, SensorEntity):
         model = forecaster.model
         attributes: dict[str, Any] = {
             "error": forecaster.error,
+            "error_code": forecast_error_code(forecaster.error),
             "trained_at": forecaster.trained_at.isoformat() if forecaster.trained_at else None,
             "estimated_at": (
                 forecaster.estimated_at.isoformat() if forecaster.estimated_at else None
@@ -149,12 +151,32 @@ class PriceForecastSensor(ChargerEntity, SensorEntity):
                 {"start": hour.isoformat(), "price_eur_kwh": round(calibration.apply(price), 4)}
                 for hour, price in sorted(forecaster.estimates.items())
                 if (
-                    hour >= published_until
+                    (hour >= published_until or self._has_price_gap(hour))
                     if published_until
                     else model.local_date(hour) > model.last_known_day
                 )
             ]
         return attributes
+
+    def _has_price_gap(self, hour: datetime) -> bool:
+        """Include an estimate whenever any interval inside this hour is unpublished."""
+        end = hour + timedelta(hours=1)
+        cursor = hour
+        intervals = []
+        for row in (self.coordinator.data or {}).get("prices") or []:
+            start, stop = (
+                dt_util.parse_datetime(row.get("start", "")),
+                dt_util.parse_datetime(row.get("end", "")),
+            )
+            if start is not None and stop is not None and start < end and stop > hour:
+                intervals.append((start, stop))
+        for start, stop in sorted(intervals):
+            if start > cursor:
+                return True
+            cursor = max(cursor, stop)
+            if cursor >= end:
+                return False
+        return cursor < end
 
     def _published_until(self) -> datetime | None:
         """The end of the last all-in price the price sensor has, from the plan."""

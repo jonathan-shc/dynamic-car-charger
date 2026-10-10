@@ -20,7 +20,12 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, EVENT_CAR_CONNECTED, NAME
-from .forecaster import CalibrationDataUnavailable, ForecastUnavailable, shared_forecaster
+from .forecaster import (
+    CalibrationDataUnavailable,
+    ForecastUnavailable,
+    forecast_error_code,
+    shared_forecaster,
+)
 from .planner import (
     DEFAULT_TAPER,
     Plan,
@@ -517,6 +522,9 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # What is charged, to tell schedulers apart: "Dynamic Car Charger" or a given name.
         details["name"] = self.entry.title
         details["mode"] = "energy" if self.energy_mode else "battery"
+        details["schema_version"] = 1
+        details["vehicle_type"] = self.settings.get("vehicle_type")
+        details["charger_type"] = self.settings.get("charger_type")
         details["currency"] = self.currency
         # The market the price forecast learns from, as stored in the options.
         details["bidding_zone"] = self.forecaster.zone.code.lower()
@@ -692,6 +700,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             prices: list[Slot] = []
             self._interval_kwh = 0.0
             data: dict[str, Any] = {
+                "schema_version": 1,
+                "updated_at": now.isoformat(),
                 "status": "set_deadline",
                 "slots": [],
                 "enabled": self.enabled,
@@ -754,6 +764,16 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._update_repair_issue(now, data, control_enabled)
             # The currency is only known once the price sensor has been read.
             data["currency"] = data["setup"]["currency"] = self.currency
+            error = data.get("error")
+            data["error_code"] = (
+                "input_unavailable"
+                if error and str(error).endswith(" is unavailable")
+                else "invalid_input"
+                if data["status"] == "input_error"
+                else "charger_control"
+                if data["status"] == "control_error"
+                else None
+            )
             self.async_set_updated_data(data)
             self.store.async_delay_save(self._save_data, 30)
 
@@ -943,6 +963,9 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         data["threshold_safety_mode"] = safety_mode
         data["forecast_status"] = self.forecaster.status if self.use_forecast else "off"
         data["forecast_error"] = None
+        data["forecast_error_code"] = (
+            forecast_error_code(self.forecaster.error) if self.use_forecast else None
+        )
         if self.use_forecast:
             # Kept current even when the plan doesn't need the forecast: the forecast
             # sensor shows its estimates in all-in prices only with a calibration.
@@ -962,6 +985,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 estimated = self._estimate_forecast(prices, self.deadline)
             except ForecastUnavailable as err:
                 data["forecast_error"] = str(err)
+                data["forecast_error_code"] = forecast_error_code(str(err))
             else:
                 data["planning_method"] = "forecast"
                 return (

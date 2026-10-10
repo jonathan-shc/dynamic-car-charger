@@ -32,6 +32,7 @@ from .price_forecast import (
     Calibration,
     PriceModel,
     fit_calibration,
+    has_complete_day,
 )
 from .zones import WEATHER_POINTS, zone
 
@@ -71,6 +72,19 @@ RETRY_AFTER = timedelta(minutes=15)
 ENERGY_CHARTS, SMARD = "energy-charts", "smard"
 
 FetchJson = Callable[[str, dict[str, Any]], Awaitable[Any]]
+
+
+def forecast_error_code(error: str | None) -> str | None:
+    """Stable public codes; keep detailed source errors out of client messages."""
+    if not error:
+        return None
+    if error == "Published prices do not match market prices":
+        return "tariff_mismatch"
+    if "matching market prices" in error or "overlap" in error.lower():
+        return "calibration_data_incomplete"
+    if error == "Price forecast is not ready":
+        return "not_ready"
+    return "source_unavailable"
 
 
 class ForecastUnavailable(Exception):
@@ -168,7 +182,7 @@ class PriceForecaster:
 
     def _has_day(self, prices: dict[datetime, float], day: date) -> bool:
         """Whether the prices reach into a day of the bidding zone."""
-        return bool(prices) and max(prices) >= self.zone_start(day)
+        return has_complete_day(prices, day, self.zone.tz)
 
     def _sources_due(self, now: datetime) -> set[str]:
         """Which sources to ask for market prices now."""
@@ -234,9 +248,9 @@ class PriceForecaster:
                 if not self._loaded:
                     await self._load_saved()
                 if due := self._sources_due(now):
-                    before = (len(self.market), max(self.market, default=None))
+                    before = dict(self.market)
                     market_error = await self._refresh_market(now, due)
-                    retrain = before != (len(self.market), max(self.market, default=None))
+                    retrain = before != self.market
                 if self._archive_at is None or now - self._archive_at >= HISTORY_REFRESH:
                     await self._fetch_archive(now)
                     retrain = True

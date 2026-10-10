@@ -529,3 +529,69 @@ async def test_both_sources_are_asked_after_publication_and_their_arrivals_noted
     calls.clear()
     await forecaster.async_update(clock[0] + timedelta(minutes=5))
     assert "energy-charts" not in calls and "smard" not in calls
+
+
+@pytest.mark.parametrize(
+    "day, expected", [(date(2026, 10, 10), 24), (date(2026, 3, 29), 23), (date(2026, 10, 25), 25)]
+)
+def test_complete_market_days_require_every_hour(day, expected):
+    from custom_components.dynamic_car_charger.price_forecast import has_complete_day
+
+    start = datetime(day.year, day.month, day.day, tzinfo=AMS).astimezone(UTC)
+    next_day = day + timedelta(days=1)
+    end = datetime(next_day.year, next_day.month, next_day.day, tzinfo=AMS).astimezone(UTC)
+    assert int((end - start) / HOUR) == expected
+    prices = {start + i * HOUR: 0.1 for i in range(expected)}
+    assert has_complete_day(prices, day, AMS)
+    model = PriceModel(AMS, prices, {})
+    assert model.last_known_day == day
+    del prices[start + HOUR]
+    assert not has_complete_day(prices, day, AMS)
+    assert PriceModel(AMS, prices, {}).last_known_day is None
+
+
+async def test_partial_market_day_keeps_polling(hass):
+    forecaster = PriceForecaster(hass)
+    now = datetime(2026, 10, 10, 14, tzinfo=UTC)
+    tomorrow = forecaster._tomorrow(now)
+    forecaster.market = {forecaster.zone_start(tomorrow): 0.1}
+    forecaster._market_at = now
+    forecaster._polled_at = now - timedelta(minutes=30)
+    assert not forecaster._has_day(forecaster.market, tomorrow)
+    assert forecaster._sources_due(now) == {"energy-charts", "smard"}
+
+
+async def test_corrected_prices_rebuild_model_without_new_timestamps(hass):
+    from unittest.mock import AsyncMock
+
+    forecaster = PriceForecaster(hass, lambda *_: None)
+    now = datetime(2026, 3, 11, 9, tzinfo=UTC)
+    forecaster._loaded = True
+    forecaster.market = {h: market_price(h) for h in hours(START, END)}
+    forecaster.archive = {h: weather_row(h, ARCHIVE_SUFFIXES) for h in hours(START, END)}
+    forecaster.model = PriceModel(AMS, forecaster.market, forecaster.archive)
+    old_model = forecaster.model
+    forecaster._archive_at = forecaster._live_at = now
+    corrected = next(iter(forecaster.market))
+
+    async def refresh(*_):
+        forecaster.market[corrected] += 0.05
+        return None
+
+    forecaster._refresh_market = refresh
+    forecaster._estimate = AsyncMock()
+    await forecaster.async_update(now)
+    assert forecaster.model is not old_model
+    assert forecaster.model.market[corrected] == old_model.market[corrected] + 0.05
+
+
+def test_forecast_error_codes_are_stable():
+    from custom_components.dynamic_car_charger.forecaster import forecast_error_code
+
+    assert forecast_error_code(None) is None
+    assert forecast_error_code("Published prices do not match market prices") == "tariff_mismatch"
+    assert (
+        forecast_error_code("Insufficient matching market prices (3 hours; at least 12 needed)")
+        == "calibration_data_incomplete"
+    )
+    assert forecast_error_code("Timeout: private source detail") == "source_unavailable"

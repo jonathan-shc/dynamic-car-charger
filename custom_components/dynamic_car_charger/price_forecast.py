@@ -34,6 +34,14 @@ MIN_TRAIN_HOURS = 30 * 24
 RIDGE_ALPHA = 3.0
 
 
+def has_complete_day(prices: dict[datetime, float], day: date, tz: tzinfo) -> bool:
+    """Every UTC hour between two local midnights, including DST days."""
+    start = datetime(day.year, day.month, day.day, tzinfo=tz).astimezone(UTC)
+    tomorrow = day + DAY
+    end = datetime(tomorrow.year, tomorrow.month, tomorrow.day, tzinfo=tz).astimezone(UTC)
+    return all(start + i * HOUR in prices for i in range(int((end - start) / HOUR)))
+
+
 def is_day_off(day: date, code: str | None = None) -> bool:
     """Weekends and public holidays behave alike on the power market."""
     return zone_for(code).is_day_off(day)
@@ -89,13 +97,15 @@ class PriceModel:
     ) -> None:
         self.tz = tz
         self.zone = zone or zone_for(None)
-        self.market = market
+        self.market = dict(market)
         self.archive = archive
         by_day: dict[date, list[float]] = {}
         for hour, price in market.items():
             by_day.setdefault(self.local_date(hour), []).append(price)
         # A complete local day has 23 to 25 hours around daylight-saving changes.
-        self.day_mean = {day: sum(v) / len(v) for day, v in by_day.items() if len(v) >= 23}
+        self.day_mean = {
+            day: sum(v) / len(v) for day, v in by_day.items() if has_complete_day(market, day, tz)
+        }
         self.last_known_day = max(self.day_mean) if self.day_mean else None
         self._models: dict[tuple[int, int], tuple[np.ndarray, ...] | None] = {}
 
