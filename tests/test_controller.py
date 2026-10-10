@@ -1656,10 +1656,29 @@ async def test_forecast_sensor_estimates_start_where_published_prices_end(rig):
         last_known_day=(hour + timedelta(days=1)).date(),
         local_date=lambda h: h.date(),
     )
-    c.forecaster.estimates = {hour - timedelta(hours=2): 0.2, hour + timedelta(hours=1): 0.05}
+    c.forecaster.estimates = {hour - timedelta(hours=1): 0.2, hour + timedelta(hours=1): 0.05}
     attributes = PriceForecastSensor(c).extra_state_attributes
     assert attributes["estimates"] == [
         {"start": (hour + timedelta(hours=1)).isoformat(), "price_eur_kwh": 0.15}
+    ]
+
+
+async def test_forecast_sensor_includes_a_partial_hour_before_the_last_price(rig):
+    """A later official price must not hide a missing quarter-hour earlier in the day."""
+    _, c, _ = rig
+    from custom_components.dynamic_car_charger.sensor import PriceForecastSensor
+
+    await c.async_reconcile()
+    row = c.data["prices"][0]
+    hour = dt_util.parse_datetime(row["start"]).replace(minute=0, second=0, microsecond=0)
+    row["start"] = (hour + timedelta(minutes=15)).isoformat()
+    c.use_forecast = True
+    c.forecast_calibration = Calibration(1.0, 0.1, 48)
+    c.forecaster = FakeForecaster()
+    c.forecaster.model = SimpleNamespace(last_known_day=hour.date(), local_date=lambda h: h.date())
+    c.forecaster.estimates = {hour: 0.2}
+    assert PriceForecastSensor(c).extra_state_attributes["estimates"] == [
+        {"start": hour.isoformat(), "price_eur_kwh": 0.3}
     ]
 
 
