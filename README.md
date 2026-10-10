@@ -273,8 +273,9 @@ sensors are optional. A rider phone tracker is optional and must provide GPS acc
 The bike status separates `home_on`, `home_off` (an actual shutdown event),
 `home_unreachable` (radio loss without a departure), `departing`, `away`, `arriving`
 and `unknown`. Sustained speed ≥2 km/h for ten seconds arms departure; radio loss
-for sixty seconds confirms an inferred departure unless a fresh phone report still
-places the rider at home. Return to home BLE coverage followed by thirty stationary
+for sixty seconds after the last motion confirms an inferred departure. When a
+rider tracker is configured, a fresh away report is required; a stale phone location
+leaves departure unconfirmed. Without a tracker this is explicitly an inference. Return to home BLE coverage followed by thirty stationary
 seconds confirms arrival. A stationary switch-on does not start a cable check.
 The Bluetooth receiver must cover the shed/home, not a remote location.
 

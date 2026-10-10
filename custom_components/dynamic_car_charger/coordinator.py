@@ -614,6 +614,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             speed=speed,
             powered=(powered.state == "on") if powered else None,
             rider_home=rider_home,
+            rider_configured=bool(self.settings.get("rider_location_entity")),
             charging=(charging.state == "on") if charging else None,
             watts=watts,
             plug_on=bool(plug and plug.state == "on"),

@@ -138,3 +138,23 @@ def test_fresh_phone_home_prevents_false_departure_after_wheel_test():
     b.update(NOW + timedelta(seconds=12), BikeObservation(live=True, speed=5))
     b.update(NOW + timedelta(seconds=90), BikeObservation(rider_home=True))
     assert b.state == "home_unreachable"
+
+
+def test_contrary_phone_home_cancels_departure_intent_permanently():
+    b = BikeLifecycle()
+    b.update(NOW, BikeObservation(live=True, speed=5))
+    b.update(NOW + timedelta(seconds=12), BikeObservation(live=True, speed=5))
+    b.update(NOW + timedelta(seconds=90), BikeObservation(rider_home=True))
+    b.update(NOW + timedelta(minutes=10), BikeObservation())
+    assert b.state == "home_unreachable"
+    assert not b.away
+
+
+def test_configured_but_stale_phone_does_not_confirm_departure():
+    b = BikeLifecycle()
+    b.update(NOW, BikeObservation(live=True, speed=5))
+    b.update(NOW + timedelta(seconds=12), BikeObservation(live=True, speed=5))
+    b.update(NOW + timedelta(seconds=90), BikeObservation(rider_configured=True))
+    assert b.state == "home_unreachable"
+    b.update(NOW + timedelta(seconds=120), BikeObservation(rider_configured=True, rider_home=False))
+    assert b.state == "away"

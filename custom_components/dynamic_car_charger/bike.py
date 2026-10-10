@@ -14,6 +14,7 @@ class BikeObservation:
     speed: float | None = None
     powered: bool | None = None
     rider_home: bool | None = None
+    rider_configured: bool = False
     charging: bool | None = None
     watts: float | None = None
     plug_on: bool = False
@@ -64,6 +65,14 @@ class BikeLifecycle:
                 self.still_since = self.still_since or now
             elif not o.live:
                 self.still_since = None
+        if not o.live and self.departure_pending and self.last_motion:
+            elapsed = now - self.last_motion
+            if elapsed > timedelta(minutes=3) or (
+                elapsed >= timedelta(seconds=60) and o.rider_home is True
+            ):
+                # Contrary home evidence/expired intent must not turn a later
+                # stale phone update into a delayed, false departure.
+                self.departure_pending = False
         if o.live:
             # Reappearance after a credible departure is arrival, even when the
             # first speed frame is already zero. A stationary wake-up isn't arrival.
@@ -96,7 +105,8 @@ class BikeLifecycle:
         elif (
             self.last_motion
             and now - self.last_motion >= timedelta(seconds=60)
-            and (self.departure_pending and (o.rider_home is not True))
+            and self.departure_pending
+            and (o.rider_home is False if o.rider_configured else o.rider_home is not True)
         ):
             self.home, self.away = False, True
             self.departure_pending = False
