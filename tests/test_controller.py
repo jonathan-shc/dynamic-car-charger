@@ -2129,3 +2129,49 @@ async def test_bike_retained_soc_is_not_a_new_measurement(rig):
     soc, _effective, _prices = c._read(dt_util.utcnow())
     assert soc == 19  # retained battery sensor says 20: don't reset offline energy credit
     assert c._soc_offline
+
+
+async def test_bike_trip_requires_a_fresh_packet_timestamp(rig):
+    hass, c, _ = rig
+    c.settings.update(
+        bike_live_entity="binary_sensor.bike_live", bike_trip_entity="sensor.bike_trip"
+    )
+    hass.states.async_set("binary_sensor.bike_live", "on")
+    hass.states.async_set("sensor.bike_trip", "0.64", {"unit_of_measurement": "km"})
+    assert c._bike_observation(dt_util.utcnow()).trip_km is None
+    old = dt_util.utcnow() - timedelta(minutes=1)
+    hass.states.async_set(
+        "sensor.bike_trip", "0.64", {"unit_of_measurement": "km", "observed_at": old.isoformat()}
+    )
+    assert c._bike_observation(dt_util.utcnow()).trip_km is None
+    now = dt_util.utcnow()
+    hass.states.async_set(
+        "sensor.bike_trip", "0.64", {"unit_of_measurement": "km", "observed_at": now.isoformat()}
+    )
+    assert c._bike_observation(dt_util.utcnow()).trip_km == 0.64
+
+
+async def test_detected_cable_turns_probe_off_even_during_completion_check(rig):
+    from custom_components.dynamic_car_charger.bike import BikeLifecycle
+
+    hass, c, calls = rig
+    c.settings.update(
+        vehicle_type="bicycle",
+        charger_type="plug",
+        bike_arrival_probe=True,
+        bike_live_entity="binary_sensor.bike_live",
+        bike_speed_entity="sensor.bike_speed",
+        bike_charging_entity="binary_sensor.bike_charging",
+    )
+    c.bike = BikeLifecycle()
+    c.bike.home = True
+    c.bike.arrived_at = dt_util.utcnow()
+    hass.states.async_set("binary_sensor.bike_live", "on")
+    hass.states.async_set("sensor.bike_speed", "0", {"unit_of_measurement": "km/h"})
+    await c.async_reconcile()
+    assert calls == ["turn_on"]
+    hass.states.async_set("binary_sensor.bike_charging", "on")
+    with patch.object(c, "_vehicle_charge_completion", return_value="checking"):
+        await c.async_reconcile()
+    assert calls == ["turn_on", "turn_off"]
+    assert c.bike.cable == "connected"

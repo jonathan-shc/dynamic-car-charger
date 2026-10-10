@@ -2,7 +2,7 @@
 
 A Home Assistant custom integration for deadline-based EV charging. Set **80% by Friday at 07:30** (or **20 kWh by Friday at 07:30**), inspect the charging plan, and let the integration pause and resume your charger during the cheapest published price intervals.
 
-It works with any charger that has an on/off switch in Home Assistant and any dynamic price sensor with today's and tomorrow's prices. With a car that reports its battery percentage it charges to a percentage; without one it charges an amount of energy. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Check compatibility with your own devices. Current version: 0.16.3 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
+It works with any charger that has an on/off switch in Home Assistant and any dynamic price sensor with today's and tomorrow's prices. With a car that reports its battery percentage it charges to a percentage; without one it charges an amount of energy. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Check compatibility with your own devices. Current version: 0.16.4 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
 
 ## What you get
 
@@ -267,8 +267,7 @@ When the configured connected/status sensor reports `Waiting in queue by Power B
 ## Bicycle presence and cable detection
 
 Select vehicle type **Bicycle** and charger type **Plug**. Configure the BLE integration's
-live-data and speed (km/h) entities. Observed display power, BLE charging and trip
-sensors are optional. A rider phone tracker is optional and must provide GPS accuracy.
+live-data and speed (km/h) entities. Observed display power, BLE charging sensors are optional; the trip sensor is required for arrival probing. A rider phone tracker is optional and must provide GPS accuracy.
 
 The bike status separates `home_on`, `home_off` (an actual shutdown event),
 `home_unreachable` (radio loss without a departure), `departing`, `away`, `arriving`
@@ -284,7 +283,7 @@ seconds confirms arrival. A stationary switch-on does not start a cable check.
 The Bluetooth receiver must cover the shed/home, not a remote location.
 
 **Check cable on arrival** is opt-in. It enables an otherwise-off plug once per
-arrival, for up to ninety seconds of checking. Fresh BLE charging or at least 10 W
+arrival, for up to five minutes of checking. Fresh BLE charging or at least 10 W
 reported after the plug has been powered for ten seconds confirms a cable. The probe
 ends on confirmation, timeout, lost telemetry, motion or manual stop; an active
 charging plan takes over. Plug-off commands are retried if not confirmed. Persisted
@@ -306,23 +305,25 @@ location permissions, an empty phone battery or trips with other riders can leav
 Personal entities, addresses and raw Bluetooth captures are not included in this repo.
 
 
-Cable discovery after parking requires a measured ride: at least **100 metres and
-30 seconds moving**, followed by 30 seconds stationary within home BLE coverage.
-The minimum distance can be increased in integration options (100–5000 m).
-Only consecutive fresh speed samples up to five seconds apart contribute; gaps
-are not extrapolated. A brief display power cycle preserves the measured totals;
-15 minutes without observed movement at home expires the episode; confirmed
-away rides retain evidence for up to six hours. A Home Assistant
-restart resets ride evidence. A qualified local ride can trigger arrival even
-when the rider phone stays inside the home zone; fresh phone-away evidence blocks
-this local arrival. Stationary wake-ups and short shed movements do not trigger a
-cable check. BLE speed cannot distinguish riding from sustained wheel rotation;
-these are conservative measured-motion thresholds, not independent GPS proof.
+Cable discovery after parking uses the **fresh Bluetooth trip counter**, with a
+default minimum of **0.1 km**, followed by 30 seconds stationary. There is no
+30-second moving requirement or need to leave the phone home zone. Ten seconds
+of return BLE can suffice if the fresh trip proves the required distance. The
+minimum distance is configurable (100–5000 m). The trip sensor must expose the
+actual packet timestamp `observed_at`, not just an HA publication timestamp.
+Veloretti Ace Two BLE v0.2.6 provides it; older/missing/stale trip evidence does
+not start a probe. The last checked counter is retained so stationary wake-up or
+restart with the same trip does not repeatedly probe. A zero/reset counter or
+sufficient additional distance can establish a new ride; short shed movement
+cannot reuse a previously checked distance. Counter reset semantics remain
+experimental and should be verified on the bicycle.
 
+The otherwise-off plug is powered for at most **five minutes**, and switched off
+as soon as a cable is detected unless a charging session is currently active.
+Motion, unavailable speed/live telemetry or manual stop aborts sooner. An active
+schedule or charge-now request takes priority; a future planned session does not
+keep the cable check powered.
 
-Last-confirmed cable connection and its evidence timestamp survive a Home
-Assistant restart and stationary display wake-up. These are historical evidence,
-not a fresh physical cable measurement. Fresh bike motion invalidates them.
-An unknown inbound ride with only ten seconds of observed movement cannot meet
-the 100 m / 30 s threshold. A previously qualified away ride can arrive after
-only ten seconds of return Bluetooth and then 30 stationary seconds.
+Last-confirmed cable connection and its evidence timestamp survive restart and
+stationary wake-up. These are historical evidence, not a fresh physical cable
+measurement. Fresh bike motion invalidates them.

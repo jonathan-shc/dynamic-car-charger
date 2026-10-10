@@ -13,6 +13,8 @@ class BikeObservation:
     live: bool = False
     speed: float | None = None
     speed_report: datetime | None = None
+    trip_km: float | None = None
+    trip_report: datetime | None = None
     powered: bool | None = None
     rider_home: bool | None = None
     rider_configured: bool = False
@@ -26,9 +28,11 @@ class BikeLifecycle:
     def __init__(self, min_ride_distance_m=100):
         self.min_ride_distance_m = max(100, float(min_ride_distance_m))
         self.ride_distance_m = 0.0
-        self.ride_motion_seconds = 0.0
-        self.ride_last_motion: datetime | None = None
-        self._speed_sample: tuple[datetime, float] | None = None
+        self._trip_consumed = False
+        self._consumed_trip_km: float | None = None
+        self._trip_live = False
+        self._trip_base_km = 0.0
+        self._latest_trip_km: float | None = None
         self.state = "unknown"
         self.reason = "no_observation"
         self.home = False
@@ -53,6 +57,11 @@ class BikeLifecycle:
         self.home = bool(saved.get("home"))
         self.away = bool(saved.get("away"))
         self.recover_stop = bool(saved.get("probe_owned"))
+        consumed = saved.get("consumed_trip_km")
+        if isinstance(consumed, (int, float)) and 0 <= consumed <= 655.35:
+            self._consumed_trip_km = float(consumed)
+            self._trip_consumed = True
+            self._trip_base_km = float(consumed)
         self.cable = "unknown"
         # Historical connection evidence survives restart; it is never a new
         # measurement. Ride/motion invalidates it, not a stationary wake-up.
@@ -79,43 +88,49 @@ class BikeLifecycle:
             "cable": self.cable,
             "cable_confirmed_at": self.cable_at.isoformat() if self.cable_at else None,
             "cable_evidence": self.cable_evidence,
+            "consumed_trip_km": self._consumed_trip_km,
         }
 
     @property
     def ride_qualified(self):
-        return self.ride_distance_m >= self.min_ride_distance_m and self.ride_motion_seconds >= 30
+        return not self._trip_consumed and self.ride_distance_m >= self.min_ride_distance_m - 1e-6
 
     def _reset_ride(self):
-        self.ride_distance_m = self.ride_motion_seconds = 0.0
-        self.ride_last_motion = None
-        self._speed_sample = None
+        self._consumed_trip_km = self._latest_trip_km
+        self._trip_consumed = True
+        self._trip_base_km = self._consumed_trip_km or 0.0
 
-    def _observe_ride(self, now, o):
-        # Integrate only consecutive fresh moving samples. Gaps and retained
-        # values add neither distance nor time; display off/on preserves totals.
-        expiry = timedelta(hours=6) if self.away else timedelta(minutes=15)
-        if self.ride_last_motion and now - self.ride_last_motion > expiry:
-            self._reset_ride()
-        if not o.live or o.speed is None:
-            self._speed_sample = None
+    def _observe_trip(self, now, o):
+        # Only source packet timestamps establish freshness. Re-publishing a
+        # retained trip in HA cannot manufacture arrival evidence.
+        new_connection = o.live and not self._trip_live
+        if not o.live:
+            self._trip_live = False
+        self.ride_distance_m = 0.0
+        if (
+            not o.live
+            or o.trip_km is None
+            or o.trip_report is None
+            or not 0 <= o.trip_km <= 655.35
+            or not timedelta(0) <= now - o.trip_report <= timedelta(seconds=30)
+        ):
             return
-        report = o.speed_report or now
-        if not timedelta(0) <= now - report <= timedelta(seconds=5):
-            return
-        if self._speed_sample:
-            previous_time, previous_speed = self._speed_sample
-            elapsed = (report - previous_time).total_seconds()
-            if elapsed <= 0:
-                return
-            if elapsed <= 5 and min(previous_speed, o.speed) >= 2:
-                self.ride_motion_seconds += elapsed
-                self.ride_distance_m += min(previous_speed, o.speed) / 3.6 * elapsed
-        self._speed_sample = (report, o.speed)
-        if o.speed >= 2:
-            self.ride_last_motion = report
+        self._trip_live = True
+        self._latest_trip_km = o.trip_km
+        if o.trip_km == 0 or (new_connection and o.trip_km < self._trip_base_km):
+            self._trip_base_km = 0.0
+            self._trip_consumed = False
+        elif new_connection and o.trip_km != self._consumed_trip_km:
+            self._trip_consumed = False
+        elif o.speed is not None and o.speed >= 2 and self._trip_consumed:
+            # Further movement must add a new minimum distance, not reuse the
+            # already-checked trip for a short move within the shed.
+            self._trip_base_km = self._consumed_trip_km or 0.0
+            self._trip_consumed = False
+        self.ride_distance_m = max(0.0, o.trip_km - self._trip_base_km) * 1000
 
     def update(self, now: datetime, o: BikeObservation):
-        self._observe_ride(now, o)
+        self._observe_trip(now, o)
         previous = self.state
         moving = o.live and o.speed is not None and o.speed >= 2
         if moving:
@@ -127,7 +142,7 @@ class BikeLifecycle:
             self.moving_since = None
             if o.live and o.speed is not None and o.speed < 2:
                 self.still_since = self.still_since or now
-            elif not o.live:
+            else:
                 self.still_since = None
         if not o.live and self.departure_pending and self.last_motion:
             elapsed = now - self.last_motion
@@ -148,20 +163,15 @@ class BikeLifecycle:
                         self._reset_ride()
                     self.home, self.away = True, False
                     self.state, self.reason = "home_on", "arrival_settled"
-            elif (
-                not moving
-                and o.speed is not None
-                and self.ride_qualified
-                and o.rider_home is not False
-            ):
-                # A real local ride can remain inside both BLE range and the
-                # phone's home zone. Geographic away is not required to park.
-                self.state, self.reason = "arriving", "qualified_local_ride_stopping"
+            elif not moving and o.speed is not None and self.ride_qualified:
+                # A fresh trip proves riding even when only the last metres
+                # were in home BLE coverage. Phone GPS is not a cable gate.
+                self.state, self.reason = "arriving", "fresh_trip_stopping"
                 if self.still_since and now - self.still_since >= timedelta(seconds=30):
                     self.arrived_at = now
                     self.home, self.away = True, False
                     self.departure_pending = False
-                    self.state, self.reason = "home_on", "qualified_local_ride_arrival"
+                    self.state, self.reason = "home_on", "fresh_trip_arrival"
                     self._reset_ride()
             elif moving and self.moving_since and now - self.moving_since >= timedelta(seconds=10):
                 self.state, self.reason = "departing", "sustained_bike_motion"
@@ -262,7 +272,7 @@ class BikeLifecycle:
                 or not o.live
                 or self.state != "home_on"
                 or self.cable == "connected"
-                or now - self.probe_started >= timedelta(seconds=90)
+                or now - self.probe_started >= timedelta(minutes=5)
             )
             if stop:
                 self.probe_result = "connected" if self.cable == "connected" else "inconclusive"
@@ -300,7 +310,7 @@ class BikeLifecycle:
             "cable_evidence": self.cable_evidence,
             "cable_confirmed_at": self.cable_at.isoformat() if self.cable_at else None,
             "ride_distance_m": round(self.ride_distance_m, 1),
-            "ride_motion_seconds": round(self.ride_motion_seconds, 1),
+            "ride_evidence": "bluetooth_trip",
             "ride_qualified": self.ride_qualified,
             "minimum_ride_distance_m": self.min_ride_distance_m,
             "probe_active": self.probe_owned,

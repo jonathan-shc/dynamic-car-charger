@@ -569,6 +569,19 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             speed = None
         if speed is not None and not 0 <= speed <= 100:
             speed = None
+        trip_state = fresh("bike_trip_entity") if live else None
+        trip_km = None
+        trip_report = None
+        if trip_state and trip_state.attributes.get("unit_of_measurement") == "km":
+            observed = dt_util.parse_datetime(str(trip_state.attributes.get("observed_at", "")))
+            if (
+                observed
+                and observed >= self._boot
+                and timedelta(0) <= now - observed <= timedelta(seconds=30)
+            ):
+                with contextlib.suppress(ValueError):
+                    trip_km = float(trip_state.state)
+                    trip_report = observed
         powered = fresh("bike_powered_entity")
         # Explicit off is useful after radio loss; its source timestamp prevents
         # a restored or old shutdown event overriding a later live connection.
@@ -618,6 +631,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             live=live,
             speed=speed,
             speed_report=speed_state.last_reported if speed_state else None,
+            trip_km=trip_km,
+            trip_report=trip_report,
             powered=(powered.state == "on") if powered else None,
             rider_home=rider_home,
             rider_configured=bool(self.settings.get("rider_location_entity")),
@@ -1010,7 +1025,10 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 data["bike"] = self.bike.details()
                 data["car_connected"] = self._car_connected()
             if (control_enabled or force_stop or self._pending_stop or probe_control) and (
-                completion != "checking" or force_stop or self._pending_stop
+                completion != "checking"
+                or force_stop
+                or self._pending_stop
+                or (probe_control and not control_demand)
             ):
                 error = await self._control(control_demand, now, force_stop)
                 if error == IDLE_STOP:
