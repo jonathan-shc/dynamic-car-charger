@@ -2,7 +2,7 @@
 
 A Home Assistant custom integration for deadline-based EV charging. Set **80% by Friday at 07:30** (or **20 kWh by Friday at 07:30**), inspect the charging plan, and let the integration pause and resume your charger during the cheapest published price intervals.
 
-It works with any charger that has an on/off switch in Home Assistant and any dynamic price sensor with today's and tomorrow's prices. With a car that reports its battery percentage it charges to a percentage; without one it charges an amount of energy. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Check compatibility with your own devices. Current version: 0.15.3 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
+It works with any charger that has an on/off switch in Home Assistant and any dynamic price sensor with today's and tomorrow's prices. With a car that reports its battery percentage it charges to a percentage; without one it charges an amount of energy. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Check compatibility with your own devices. Current version: 0.16.0 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
 
 ## What you get
 
@@ -263,3 +263,39 @@ For a 100% target, a vehicle that has demonstrably charged and then stops drawin
 ### Wallbox Power Boost
 
 When the configured connected/status sensor reports `Waiting in queue by Power Boost`, the coordinator respects the Wallbox household load controller. It does not send resume or unlock commands, or report a charger failure. The plan sensor shows `waiting_for_power` with `wait_reason: household_load`. Wallbox resumes automatically when power becomes available. A 45-second settling window accommodates status and switch updates arriving separately; a real resume clears the wait immediately. Explicit stop commands still work. This load-management pause is excluded from the 99% completion detector. The electrical limits are not changed.
+
+## Bicycle presence and cable detection
+
+Select vehicle type **Bicycle** and charger type **Plug**. Configure the BLE integration's
+live-data and speed (km/h) entities. Observed display power, BLE charging and trip
+sensors are optional. A rider phone tracker is optional and must provide GPS accuracy.
+
+The bike status separates `home_on`, `home_off` (an actual shutdown event),
+`home_unreachable` (radio loss without a departure), `departing`, `away`, `arriving`
+and `unknown`. Sustained speed ≥2 km/h for ten seconds arms departure; radio loss
+for sixty seconds confirms an inferred departure unless a fresh phone report still
+places the rider at home. Return to home BLE coverage followed by thirty stationary
+seconds confirms arrival. A stationary switch-on does not start a cable check.
+The Bluetooth receiver must cover the shed/home, not a remote location.
+
+**Check cable on arrival** is opt-in. It enables an otherwise-off plug once per
+arrival, for up to ninety seconds of checking. Fresh BLE charging or at least 10 W
+reported after the plug has been powered for ten seconds confirms a cable. The probe
+ends on confirmation, timeout, lost telemetry, motion or manual stop; an active
+charging plan takes over. Plug-off commands are retried if not confirmed. Persisted
+probe ownership cleans up the plug after a restart instead of restarting the check.
+Idle/full batteries cannot prove a missing cable: cable status stays **unknown**.
+A confirmed connection is explicitly **last confirmed**, since unplugging an
+unpowered charger cannot be sensed. Departure invalidates that confirmation.
+
+Bike battery values retained by the BLE integration are treated as offline while
+live telemetry is absent; measured plug energy continues the existing SoC estimate.
+
+Phone routes are estimates, not GPS measured by the bike. No historical phone trips
+are imported. Tracking opens with observed bike departure and closes after ten
+stationary minutes, arrival or six hours. A later return candidate is accepted only
+when recent, accurate phone points end at home and their distance agrees within 20%
+with a fresh bicycle trip ≥0.5 km. GPS gaps >5 minutes or impossible cycling jumps
+reject it. Routes without a matching departure/return remain unclassified. Missing
+location permissions, an empty phone battery or trips with other riders can leave gaps.
+Personal entities, addresses and raw Bluetooth captures are not included in this repo.

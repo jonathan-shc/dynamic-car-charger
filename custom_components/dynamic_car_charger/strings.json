@@ -26,7 +26,14 @@
           "location_entity": "Car location (optional)",
           "vehicle_type": "Vehicle type (optional)",
           "charger_type": "Charger type (optional)",
-          "offline_soc_estimation": "Estimate battery percentage while vehicle is offline"
+          "offline_soc_estimation": "Estimate battery percentage while vehicle is offline",
+          "bike_live_entity": "Bicycle: live Bluetooth data",
+          "bike_speed_entity": "Bicycle: speed sensor",
+          "bike_powered_entity": "Bicycle: observed power state (optional)",
+          "bike_charging_entity": "Bicycle: Bluetooth charging status (optional)",
+          "rider_location_entity": "Bicycle: rider phone tracker (optional)",
+          "bike_arrival_probe": "Bicycle: check cable on arrival (up to 90 seconds)",
+          "bike_trip_entity": "Bicycle: trip distance sensor (optional)"
         },
         "data_description": {
           "name": "What is charged, such as 'Scooter'. Only needed with more than one scheduler: it names the device and its entities.",
@@ -60,7 +67,10 @@
       "charger_in_use": "This charger already has a scheduler.",
       "own_switch": "Select the charger's switch, not this integration's own automatic charging switch.",
       "wrong_domain": "Select an entity from the correct domain.",
-      "states_required": "Enter the states that apply, or choose a binary sensor."
+      "states_required": "Enter the states that apply, or choose a binary sensor.",
+      "bike_sensor_required": "Select live Bluetooth and speed sensors for a bicycle.",
+      "bike_requires_plug": "Bicycle cable detection requires a smart plug.",
+      "bike_speed_unit": "Bicycle speed must be reported in km/h."
     },
     "abort": {
       "already_configured": "This charger is already configured."
@@ -92,7 +102,14 @@
           "location_entity": "Car location (optional)",
           "vehicle_type": "Vehicle type (optional)",
           "charger_type": "Charger type (optional)",
-          "offline_soc_estimation": "Estimate battery percentage while vehicle is offline"
+          "offline_soc_estimation": "Estimate battery percentage while vehicle is offline",
+          "bike_live_entity": "Bicycle: live Bluetooth data",
+          "bike_speed_entity": "Bicycle: speed sensor",
+          "bike_powered_entity": "Bicycle: observed power state (optional)",
+          "bike_charging_entity": "Bicycle: Bluetooth charging status (optional)",
+          "rider_location_entity": "Bicycle: rider phone tracker (optional)",
+          "bike_arrival_probe": "Bicycle: check cable on arrival (up to 90 seconds)",
+          "bike_trip_entity": "Bicycle: trip distance sensor (optional)"
         },
         "data_description": {
           "name": "What is charged, such as 'Scooter'. Only needed with more than one scheduler: it names the device and its entities.",
@@ -126,7 +143,10 @@
       "charger_in_use": "This charger already has a scheduler.",
       "own_switch": "Select the charger's switch, not this integration's own automatic charging switch.",
       "wrong_domain": "Select an entity from the correct domain.",
-      "states_required": "Enter the states that apply, or choose a binary sensor."
+      "states_required": "Enter the states that apply, or choose a binary sensor.",
+      "bike_sensor_required": "Select live Bluetooth and speed sensors for a bicycle.",
+      "bike_requires_plug": "Bicycle cable detection requires a smart plug.",
+      "bike_speed_unit": "Bicycle speed must be reported in km/h."
     }
   },
   "selector": {
@@ -156,7 +176,8 @@
       "options": {
         "car": "Car",
         "scooter": "Scooter",
-        "other": "Other"
+        "other": "Other",
+        "bicycle": "Bicycle"
       }
     },
     "charger_type": {
@@ -179,6 +200,26 @@
       },
       "price_forecast_status": {
         "name": "Price forecast"
+      },
+      "bike_state": {
+        "name": "Bicycle status",
+        "state": {
+          "unknown": "Unknown",
+          "home_on": "Home · on",
+          "home_off": "Home · off",
+          "home_unreachable": "Home · no Bluetooth",
+          "departing": "Departing",
+          "away": "Away",
+          "arriving": "Arriving"
+        }
+      },
+      "bike_cable": {
+        "name": "Bicycle cable",
+        "state": {
+          "unknown": "Unknown",
+          "connected": "Connected (last confirmed)",
+          "disconnected": "Disconnected"
+        }
       }
     },
     "number": {

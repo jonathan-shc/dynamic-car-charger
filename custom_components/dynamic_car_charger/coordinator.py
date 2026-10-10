@@ -19,6 +19,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
+from .bike import BikeLifecycle, BikeObservation
 from .const import DOMAIN, EVENT_CAR_CONNECTED, NAME
 from .forecaster import (
     CalibrationDataUnavailable,
@@ -38,7 +39,7 @@ from .planner import (
     timestamp,
 )
 from .price_forecast import Calibration
-from .trips import TripRecorder
+from .trips import BikeTripRecorder, TripRecorder
 from .zones import zone_for_location
 
 _LOGGER = logging.getLogger(__name__)
@@ -184,10 +185,13 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.cheap_after_deadline = False
         # The car's drives, when its location is known.
         self.trips: TripRecorder | None = None
+        self.bike = BikeLifecycle() if self.settings.get("vehicle_type") == "bicycle" else None
         self.data = {"status": "set_deadline", "slots": []}
 
     async def async_start(self) -> None:
         saved = await self.store.async_load() or {}
+        if self.bike:
+            self.bike.restore(saved.get("bike") or {})
         calibration = saved.get("forecast_calibration")
         self._saved_forecast_calibration = calibration if isinstance(calibration, dict) else None
         self.target = number(saved.get("target", 80), 0, 100)
@@ -248,7 +252,16 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ]
         tracked_entities.extend(
             self.settings[key]
-            for key in ("connected_entity", "lock_entity")
+            for key in (
+                "connected_entity",
+                "lock_entity",
+                "bike_live_entity",
+                "bike_speed_entity",
+                "bike_trip_entity",
+                "bike_powered_entity",
+                "bike_charging_entity",
+                "rider_location_entity",
+            )
             if self.settings.get(key)
         )
         self._stop_unsub = self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, self._shutdown)
@@ -261,9 +274,10 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._async_import_recorded_sessions(), f"{DOMAIN} import recorded sessions"
         )
         location = self.location_entity()
-        coordinates = None if location else self.location_sensors()
+        coordinates = None if location or self.bike else self.location_sensors()
         if location or coordinates:
-            self.trips = TripRecorder(
+            recorder = BikeTripRecorder if self.bike else TripRecorder
+            self.trips = recorder(
                 self.hass,
                 self.entry.entry_id,
                 location,
@@ -276,6 +290,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def location_entity(self) -> str | None:
         """The car's device tracker: as set in the options, or the one on the same device
         as the battery sensor."""
+        if self.bike:
+            return self.settings.get("rider_location_entity")
         if configured := self.settings.get("location_entity"):
             return configured
         soc_entity = self.settings.get("soc_entity")
@@ -378,6 +394,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _car_connected(self) -> bool | None:
         """Whether a car is plugged in, or None without a connected sensor."""
+        if self.bike:
+            return {"connected": True, "disconnected": False}.get(self.bike.cable)
         entity_id = self.settings.get("connected_entity")
         if not entity_id:
             return None
@@ -395,6 +413,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _save_data(self) -> dict[str, Any]:
         return {
+            "bike": self.bike.saved() if self.bike else None,
             "target": self.target,
             "enabled": self.enabled,
             "immediate_charging": self.immediate_charging,
@@ -526,6 +545,81 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise ValueError(f"{key} is unavailable")
         return state
 
+    def _bike_observation(self, now: datetime) -> BikeObservation:
+        def fresh(key):
+            state = self.hass.states.get(self.settings.get(key, ""))
+            if (
+                not self._is_available(state)
+                or state.attributes.get("restored")
+                or not timedelta(0) <= now - state.last_reported <= timedelta(seconds=30)
+            ):
+                return None
+            return state
+
+        live_state = fresh("bike_live_entity")
+        live = bool(live_state and live_state.state == "on")
+        speed_state = fresh("bike_speed_entity") if live else None
+        try:
+            speed = float(speed_state.state) if speed_state else None
+        except ValueError:
+            speed = None
+        if speed is not None and not 0 <= speed <= 100:
+            speed = None
+        powered = fresh("bike_powered_entity")
+        # Explicit off is useful after radio loss; its source timestamp prevents
+        # a restored or old shutdown event overriding a later live connection.
+        if powered is None:
+            candidate = self.hass.states.get(self.settings.get("bike_powered_entity", ""))
+            observed = (
+                dt_util.parse_datetime(str(candidate.attributes.get("observed_at", "")))
+                if candidate
+                else None
+            )
+            if (
+                candidate
+                and candidate.state == "off"
+                and observed
+                and timedelta(0) <= now - observed <= timedelta(hours=12)
+            ):
+                powered = candidate
+        # A just-observed shutdown can precede the battery freshness timeout.
+        # Ignore shutdown events from before the current connection became live.
+        if powered and powered.state == "off":
+            observed = dt_util.parse_datetime(str(powered.attributes.get("observed_at", "")))
+            if observed and (not live_state or observed >= live_state.last_changed):
+                live = False
+                speed = None
+        charging = fresh("bike_charging_entity") if live else None
+        rider = self.hass.states.get(self.settings.get("rider_location_entity", ""))
+        rider_home = None
+        accuracy = rider.attributes.get("gps_accuracy") if rider else None
+        if (
+            self._is_available(rider)
+            and not rider.attributes.get("restored")
+            and timedelta(0) <= now - rider.last_reported <= timedelta(minutes=5)
+            and isinstance(accuracy, int | float)
+            and 0 <= accuracy <= 100
+        ):
+            rider_home = rider.state == "home"
+        power = fresh("power_entity")
+        watts = None
+        if power:
+            with contextlib.suppress(ValueError):
+                watts = float(power.state) * (
+                    1000 if power.attributes.get("unit_of_measurement") == "kW" else 1
+                )
+        plug = self.hass.states.get(self.settings["charger_entity"])
+        return BikeObservation(
+            live=live,
+            speed=speed,
+            powered=(powered.state == "on") if powered else None,
+            rider_home=rider_home,
+            charging=(charging.state == "on") if charging else None,
+            watts=watts,
+            plug_on=bool(plug and plug.state == "on"),
+            power_report=power.last_reported if power else None,
+        )
+
     def _prices(self) -> list[Slot]:
         price_state = self._state("price_entity")
         scale, self.currency = price_unit(price_state.attributes)
@@ -545,6 +639,11 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "power_entity",
             "connected_entity",
             "lock_entity",
+            "bike_live_entity",
+            "bike_speed_entity",
+            "bike_trip_entity",
+            "bike_charging_entity",
+            "bike_powered_entity",
         )
         details: dict[str, Any] = {key: self.settings.get(key) for key in keys}
         # What is charged, to tell schedulers apart: "Dynamic Car Charger" or a given name.
@@ -552,6 +651,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         details["mode"] = "energy" if self.energy_mode else "battery"
         details["schema_version"] = 1
         details["vehicle_type"] = self.settings.get("vehicle_type")
+        details["rider_location_entity"] = self.settings.get("rider_location_entity")
         details["charger_type"] = self.settings.get("charger_type")
         details["currency"] = self.currency
         # The market the price forecast learns from, as stored in the options.
@@ -597,10 +697,15 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self.energy_mode:
             soc = None
         else:
-            if self.settings.get("offline_soc_estimation", False):
+            if self.settings.get("offline_soc_estimation", False) or self.bike:
                 state = self.hass.states.get(self.settings["soc_entity"])
-                valid = (state is not None and state.state not in ("unknown", "unavailable")
-                         and not state.attributes.get("restored"))
+                valid = (
+                    state is not None
+                    and state.state not in ("unknown", "unavailable")
+                    and not state.attributes.get("restored")
+                )
+                if self.bike:
+                    valid = valid and self._bike_observation(now).live
                 if valid and state.attributes.get("unit_of_measurement") != "%":
                     raise ValueError("Battery sensor must report %")
                 if valid:
@@ -794,6 +899,16 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if self._stopping:
                 return
             now = dt_util.utcnow()
+            bike_observation = self._bike_observation(now) if self.bike else None
+            if self.bike:
+                self.bike.update(now, bike_observation)
+                if isinstance(self.trips, BikeTripRecorder):
+                    trip_sensor = self.hass.states.get(self.settings.get("bike_trip_entity", ""))
+                    trip_km = None
+                    if bike_observation.live and self._is_available(trip_sensor):
+                        with contextlib.suppress(ValueError):
+                            trip_km = float(trip_sensor.state)
+                    self.trips.set_bike_state(self.bike.state, now, trip_km)
             self._follow_schedule(now)
             desired = False
             prices: list[Slot] = []
@@ -867,11 +982,30 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
             plan_status = data.get("plan_status", data["status"])
             control_enabled = self.enabled or self.immediate_charging
-            data["charging_requested"] = desired and control_enabled
-            if (control_enabled or force_stop or self._pending_stop) and (
+            data["charging_requested"] = desired and control_enabled and not force_stop
+            control_demand = desired and control_enabled and not force_stop
+            if self.bike and self.bike.state not in ("home_on", "home_off", "home_unreachable"):
+                control_demand = False
+                if desired and control_enabled:
+                    data.update(status="waiting_for_car", charging_requested=False)
+            probe_control = False
+            if self.bike:
+                control_demand, probe_control = self.bike.control(
+                    now,
+                    bike_observation,
+                    scheduled=control_demand,
+                    allow_probe=self.settings.get("bike_arrival_probe", False),
+                    cancel=force_stop or self._pending_stop or self._stopped_by_user,
+                )
+                # Persist ownership before turning on: a restart cleans up the probe.
+                if probe_control:
+                    await self.store.async_save(self._save_data())
+                data["bike"] = self.bike.details()
+                data["car_connected"] = self._car_connected()
+            if (control_enabled or force_stop or self._pending_stop or probe_control) and (
                 completion != "checking" or force_stop or self._pending_stop
             ):
-                error = await self._control(desired and control_enabled, now, force_stop)
+                error = await self._control(control_demand, now, force_stop)
                 if error == IDLE_STOP:
                     pass  # not an error; a pending stop stays pending until confirmed
                 elif error == "waiting_for_power":
@@ -880,6 +1014,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     )
                 elif error == "waiting_for_car":
                     data.update(status="waiting_for_car", error=None, charging_requested=False)
+                elif probe_control and not data["charging_requested"] and error in PENDING_STATUSES:
+                    pass  # a cable check is not a scheduled charging window
                 elif error in PENDING_STATUSES:
                     data.update(status=error, error=None)
                 elif error:
@@ -1528,7 +1664,12 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # e.g. when it is full, and keep showing the switch as on. After one
         # attempt, don't insist and don't report it: nothing flows. Once power
         # flows again, the pause is sent (and checked) as usual.
-        idle_stop = not desired and not force and self._charger_idle()
+        idle_stop = (
+            not desired
+            and not force
+            and self._charger_idle()
+            and not (self.bike and (self.bike.probe_owned or self.bike.recover_stop))
+        )
         if idle_stop and self._command_attempt_time is not None:
             return IDLE_STOP
 

@@ -22,6 +22,12 @@ OPTIONAL_KEYS = (
     "location_entity",
     "vehicle_type",
     "charger_type",
+    "bike_live_entity",
+    "bike_speed_entity",
+    "bike_trip_entity",
+    "bike_powered_entity",
+    "bike_charging_entity",
+    "rider_location_entity",
 )
 
 
@@ -49,24 +55,35 @@ def schema(values: dict[str, Any], default_zone: str = "nl") -> vol.Schema:
     for key in ("vehicle_type", "charger_type"):
         fields[optional(key, values.get(key))] = selector.SelectSelector(
             selector.SelectSelectorConfig(
-                options=["car", "scooter", "other"]
+                options=["car", "scooter", "bicycle", "other"]
                 if key == "vehicle_type"
                 else ["charger", "plug"],
                 mode=selector.SelectSelectorMode.DROPDOWN,
                 translation_key=key,
             )
         )
-    fields[vol.Required("offline_soc_estimation", default=values.get("offline_soc_estimation", False))] = selector.BooleanSelector()
+    fields[
+        vol.Required("offline_soc_estimation", default=values.get("offline_soc_estimation", False))
+    ] = selector.BooleanSelector()
     # Without a battery sensor the integration charges an amount of energy.
     for key, domain in (
         ("soc_entity", ["sensor", "input_number"]),
         ("connected_entity", ["sensor", "binary_sensor"]),
         ("lock_entity", ["lock"]),
         ("location_entity", ["device_tracker"]),
+        ("bike_live_entity", ["binary_sensor"]),
+        ("bike_speed_entity", ["sensor"]),
+        ("bike_trip_entity", ["sensor"]),
+        ("bike_powered_entity", ["binary_sensor"]),
+        ("bike_charging_entity", ["binary_sensor"]),
+        ("rider_location_entity", ["device_tracker"]),
     ):
         fields[optional(key, values.get(key))] = selector.EntitySelector(
             selector.EntitySelectorConfig(domain=domain)
         )
+    fields[vol.Required("bike_arrival_probe", default=values.get("bike_arrival_probe", False))] = (
+        selector.BooleanSelector()
+    )
     # One entry per state: states such as "Locked, car connected" contain commas.
     default = values.get("connected_states")
     if isinstance(default, str):
@@ -120,6 +137,12 @@ def validate(hass, data: dict[str, Any]) -> dict[str, str]:
         "connected_entity": {"sensor", "binary_sensor"},
         "lock_entity": {"lock"},
         "location_entity": {"device_tracker"},
+        "bike_live_entity": {"binary_sensor"},
+        "bike_speed_entity": {"sensor"},
+        "bike_trip_entity": {"sensor"},
+        "bike_powered_entity": {"binary_sensor"},
+        "bike_charging_entity": {"binary_sensor"},
+        "rider_location_entity": {"device_tracker"},
     }
     for key in ("charger_entity", "soc_entity", "price_entity", "power_entity"):
         entity_id = data.get(key)
@@ -140,7 +163,17 @@ def validate(hass, data: dict[str, Any]) -> dict[str, str]:
                 price_unit(state.attributes)
             except ValueError:
                 return {key: "price_unit"}
-    for key in ("connected_entity", "lock_entity", "location_entity"):
+    for key in (
+        "connected_entity",
+        "lock_entity",
+        "location_entity",
+        "bike_live_entity",
+        "bike_speed_entity",
+        "bike_trip_entity",
+        "bike_powered_entity",
+        "bike_charging_entity",
+        "rider_location_entity",
+    ):
         entity_id = data.get(key)
         if not entity_id:
             continue
@@ -148,6 +181,15 @@ def validate(hass, data: dict[str, Any]) -> dict[str, str]:
             return {key: "entity_missing"}
         if entity_id.split(".", 1)[0] not in expected_domains[key]:
             return {key: "wrong_domain"}
+    if data.get("vehicle_type") == "bicycle":
+        for key in ("bike_live_entity", "bike_speed_entity"):
+            if not data.get(key):
+                return {key: "bike_sensor_required"}
+        speed = hass.states.get(data["bike_speed_entity"])
+        if speed.attributes.get("unit_of_measurement") != "km/h":
+            return {"bike_speed_entity": "bike_speed_unit"}
+        if data.get("charger_type") != "plug":
+            return {"charger_type": "bike_requires_plug"}
     # A sensor other than a binary sensor needs the states that mean connected.
     entity_id = data.get("connected_entity")
     given = data.get("connected_states") or []

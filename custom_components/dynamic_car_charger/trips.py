@@ -274,7 +274,10 @@ class TripRecorder:
         entity_id: str | None,
         soc_entity: str | None = None,
         coordinates: tuple[str, str] | None = None,
+        *,
+        import_history: bool = True,
     ) -> None:
+        self.import_history = import_history
         self.hass = hass
         self.entity_id = entity_id
         # A latitude and a longitude sensor, for a vehicle without a device tracker.
@@ -315,9 +318,10 @@ class TripRecorder:
             self._unsubs.append(
                 async_track_state_change_event(self.hass, [self.soc_entity], self._soc_changed)
             )
-        self.hass.async_create_task(
-            self._async_import_recorded(), f"{DOMAIN} import recorded trips"
-        )
+        if self.import_history:
+            self.hass.async_create_task(
+                self._async_import_recorded(), f"{DOMAIN} import recorded trips"
+            )
 
     async def async_stop(self) -> None:
         for unsub in self._unsubs:
@@ -516,3 +520,111 @@ class TripRecorder:
         if added or filled or self._rebuilt:
             self._save()
             _LOGGER.info("Kept %d drives from the recorder", added)
+
+
+class BikeTripRecorder(TripRecorder):
+    """Phone routes only inside a bike-departure window, always labelled estimated.
+
+    Never import arbitrary phone history. Arrival can confirm the return, but a
+    phone-only journey without a witnessed bike departure cannot identify a ride.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs, import_history=False)
+        self.tracking = False
+        self._opened_at: datetime | None = None
+        self._recent: list[Point] = []
+        self._bike_away = False
+
+    def set_bike_state(self, state: str, now: datetime, trip_km: float | None = None):
+        if state == "away":
+            self._bike_away = True
+        if state in ("home_on", "home_off") and self._bike_away:
+            self._bike_away = False
+            if not self.tracking and trip_km is not None and trip_km >= 0.5:
+                self._return_route(now, trip_km)
+        if state == "departing" and not self.tracking:
+            self.tracking, self._opened_at = True, now
+            point = position(self.hass.states.get(self.entity_id))
+            if point and timedelta(0) <= now - point[0] <= timedelta(minutes=5):
+                self._last = (now, point[1], point[2])
+        elif (
+            state in ("home_on", "home_off")
+            and self.tracking
+            or self._opened_at
+            and now - self._opened_at > timedelta(hours=6)
+        ):
+            self._finish()
+
+    @callback
+    def _changed(self, event: Event) -> None:
+        state = event.data.get("new_state")
+        if (
+            state
+            and isinstance(state.attributes.get("gps_accuracy"), int | float)
+            and 0 <= state.attributes["gps_accuracy"] <= 50
+            and not state.attributes.get("restored")
+            and (point := position(state)) is not None
+            and timedelta(0) <= dt_util.utcnow() - point[0] <= timedelta(minutes=2)
+        ):
+            self._recent.append(point)
+            self._recent = [
+                p for p in self._recent[-2000:] if point[0] - p[0] <= timedelta(hours=6)
+            ]
+            if not self.tracking:
+                return
+            if self._last:
+                seconds = (point[0] - self._last[0]).total_seconds()
+                if seconds <= 0 or metres(self._last, point) / seconds > 15:
+                    return  # impossible cycling jump or out-of-order report
+            self.add(point)
+
+    def _return_route(self, now, expected_km):
+        # Only a tail ending at home and matching the fresh bike trip can be a
+        # return candidate. Phone locations never become exact bicycle telemetry.
+        points = [p for p in self._recent if now - p[0] <= timedelta(hours=6)]
+        if len(points) < 2 or now - points[-1][0] > timedelta(minutes=5):
+            return
+        home = next((z for z in zones_of(self.hass) if z["entity_id"] == "zone.home"), None)
+        if not home or zone_at(points[-1], [home]) is None:
+            return
+        distance = 0.0
+        for index in range(len(points) - 2, -1, -1):
+            a, b = points[index], points[index + 1]
+            seconds = (b[0] - a[0]).total_seconds()
+            step = metres(a, b)
+            if seconds <= 0 or seconds > 300 or step / seconds > 15:
+                return
+            distance += step / 1000
+            if distance >= expected_km * 0.8:
+                route = points[index:]
+                duration = (route[-1][0] - route[0][0]).total_seconds()
+                if (
+                    distance <= expected_km * 1.2
+                    and duration > 0
+                    and distance / duration * 3600 >= 3
+                ) and self.keep([route]):
+                    self.trips[-1].update(
+                        distance_km=round(expected_km, 2),
+                        distance_source="bluetooth_trip",
+                        confidence="estimated",
+                    )
+                    self._save()
+                return
+
+    def _finish(self):
+        if self._drive and self.keep(split(self._drive)):
+            self._save()
+        self._drive, self._last, self._moved_at = [], None, None
+        self.tracking, self._opened_at = False, None
+
+    def finish_if_parked(self, now: datetime):
+        if self.tracking and self._moved_at and now - self._moved_at >= PAUSE:
+            self._finish()  # don't attribute later walking/driving to this bike
+
+    def keep(self, drives):
+        start = len(self.trips)
+        added = super().keep(drives)
+        for trip in self.trips[start:]:
+            trip.update(source="rider_phone", confidence="estimated", distance_source="gps")
+        return added
