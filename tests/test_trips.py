@@ -46,9 +46,9 @@ def test_split_finds_drives_and_ignores_a_parked_cars_wander():
         at(60, 6),
         at(70, 10),
         at(80, 10.0002),
-        # A 5-minute stop at traffic lights or a shop, then on: the same drive.
-        at(370, 10.0001),
-        at(380, 12),
+        # A stop shorter than five minutes at traffic lights or a shop, then on: the same drive.
+        at(250, 10.0001),
+        at(260, 12),
         # Parked for an hour, then a 30 m shuffle: not a drive.
         at(4000, 12.0003),
         at(4010, 12.3),
@@ -56,8 +56,8 @@ def test_split_finds_drives_and_ignores_a_parked_cars_wander():
     drives = split(points)
     assert len(drives) == 1
     assert drives[0][0] == at(30, 0.0002)
-    assert drives[0][-1] == at(380, 12)
-    assert at(370, 10.0001) in drives[0]
+    assert drives[0][-1] == at(260, 12)
+    assert at(250, 10.0001) in drives[0]
 
 
 def test_a_drive_ends_where_the_car_parked_and_keeps_slow_parts():
@@ -86,9 +86,10 @@ def test_a_drive_after_a_night_asleep_starts_in_the_morning():
     assert record(drive)["started"] == drive[0][0].isoformat()
 
 
-def test_a_long_stop_starts_a_new_drive():
-    points = [at(0, 0), at(10, 5), at(20, 10), at(20 + 11 * 60, 10), at(20 + 11 * 60 + 10, 15)]
-    assert len(split(points)) == 2
+@pytest.mark.parametrize("stop_seconds, expected", [(299, 1), (300, 2), (301, 2), (600, 2)])
+def test_five_minutes_or_more_starts_a_new_drive(stop_seconds, expected):
+    points = [at(0, 0), at(10, 5), at(20, 10), at(20 + stop_seconds, 10), at(30 + stop_seconds, 15)]
+    assert len(split(points)) == expected
 
 
 def test_simplify_keeps_the_shape_with_fewer_points():
@@ -108,7 +109,7 @@ def test_record_has_times_distance_and_route():
     assert kept["route"] == [[52.0, 5.0, 0], [52.01, 5.0, 120]]
 
 
-def test_live_positions_become_a_drive_after_ten_minutes_parked(recorder):
+def test_live_positions_become_a_drive_after_five_minutes_parked(recorder):
     recorder.add(at(0, 0))
     recorder.add(at(20, 0.0001))  # wander: nothing yet
     assert recorder._drive == []
@@ -117,7 +118,9 @@ def test_live_positions_become_a_drive_after_ten_minutes_parked(recorder):
     recorder.add(at(120, 10.0001))
     recorder.finish_if_parked(T0 + timedelta(seconds=120))
     assert recorder.trips == []  # parked for a minute: maybe a traffic light
-    recorder.finish_if_parked(T0 + timedelta(seconds=60) + PAUSE)
+    recorder.finish_if_parked(T0 + timedelta(seconds=60 + 299))
+    assert recorder.trips == []
+    recorder.finish_if_parked(T0 + timedelta(seconds=60 + 300))
     assert len(recorder.trips) == 1
     trip = recorder.trips[0]
     assert trip["started"] == (T0 + timedelta(seconds=20)).isoformat()
