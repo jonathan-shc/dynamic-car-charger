@@ -44,7 +44,7 @@ SETTLE = timedelta(minutes=2)
 # A step longer than this counts as moving.
 STEP_METRES = 40.0
 # Shorter drives (moving the car on the drive, a GPS jump) aren't kept.
-MIN_KM = 0.5
+MIN_KM = 0.3
 # The route is kept to within this many metres of the positions.
 SIMPLIFY_METRES = 8.0
 # How far back the recorder is read at start; it usually keeps ten days.
@@ -77,7 +77,7 @@ def metres(a: Point, b: Point) -> float:
 
 
 def split(points: list[Point]) -> list[list[Point]]:
-    """The drives in a series of positions, each at least half a kilometre long: from the
+    """The drives in a series of positions, each at least 300 metres long: from the
     position before the first step of more than 40 m to the last such step with no pause
     between steps, every position in between (slow traffic too), and the positions of
     the two minutes after it."""
@@ -554,7 +554,7 @@ class BikeTripRecorder(TripRecorder):
             self._bike_away = True
         if state in ("home_on", "home_off") and self._bike_away:
             self._bike_away = False
-            if not self.tracking and trip_km is not None and trip_km >= 0.5:
+            if not self.tracking and trip_km is not None and trip_km >= 0.3:
                 self._return_route(now, trip_km)
         if (state == "departing" or newly_away) and not self.tracking:
             self.tracking, self._opened_at = True, now
