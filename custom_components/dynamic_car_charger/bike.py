@@ -58,6 +58,7 @@ class BikeLifecycle:
         if moving:
             self.moving_since = self.moving_since or now
             self.last_motion = now
+            self.departure_pending = True
             self.still_since = None
         else:
             self.moving_since = None
@@ -106,6 +107,11 @@ class BikeLifecycle:
             self.last_motion
             and now - self.last_motion >= timedelta(seconds=60)
             and self.departure_pending
+            and (
+                o.rider_configured
+                or previous == "departing"
+                or self.reason == "motion_awaiting_radio_confirmation"
+            )
             and (o.rider_home is False if o.rider_configured else o.rider_home is not True)
         ):
             self.home, self.away = False, True
@@ -115,7 +121,17 @@ class BikeLifecycle:
         elif self.away:
             self.state, self.reason = "away", "last_confirmed_departure"
         elif self.home:
-            self.state, self.reason = "home_unreachable", "radio_loss_without_departure"
+            self.state, self.reason = (
+                "home_unreachable",
+                (
+                    "motion_awaiting_radio_confirmation"
+                    if self.departure_pending and previous == "departing"
+                    else self.reason
+                    if self.reason == "motion_awaiting_radio_confirmation"
+                    and self.departure_pending
+                    else "radio_loss_without_departure"
+                ),
+            )
         else:
             self.state, self.reason = "unknown", "no_home_evidence"
         # Fresh charging proves a cable. Measured power must follow plug activation
@@ -161,6 +177,7 @@ class BikeLifecycle:
                 externally_stopped
                 or cancel
                 or o.speed is None
+                or o.speed >= 2
                 or not o.live
                 or self.state != "home_on"
                 or self.cable == "connected"

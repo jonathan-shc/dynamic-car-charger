@@ -2,7 +2,7 @@
 
 A Home Assistant custom integration for deadline-based EV charging. Set **80% by Friday at 07:30** (or **20 kWh by Friday at 07:30**), inspect the charging plan, and let the integration pause and resume your charger during the cheapest published price intervals.
 
-It works with any charger that has an on/off switch in Home Assistant and any dynamic price sensor with today's and tomorrow's prices. With a car that reports its battery percentage it charges to a percentage; without one it charges an amount of energy. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Check compatibility with your own devices. Current version: 0.16.0 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
+It works with any charger that has an on/off switch in Home Assistant and any dynamic price sensor with today's and tomorrow's prices. With a car that reports its battery percentage it charges to a percentage; without one it charges an amount of energy. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Check compatibility with your own devices. Current version: 0.16.1 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
 
 ## What you get
 
@@ -275,7 +275,11 @@ The bike status separates `home_on`, `home_off` (an actual shutdown event),
 and `unknown`. Sustained speed ≥2 km/h for ten seconds arms departure; radio loss
 for sixty seconds after the last motion confirms an inferred departure. When a
 rider tracker is configured, a fresh away report is required; a stale phone location
-leaves departure unconfirmed. Without a tracker this is explicitly an inference. Return to home BLE coverage followed by thirty stationary
+leaves departure unconfirmed. A single fresh motion frame can be enough when
+a fresh rider-away report corroborates it, since leaving short Bluetooth range
+may take less than ten seconds. Without a tracker, sustained motion remains required
+and departure is explicitly an inference. Phone fixes from before integration startup
+are ignored, so restart-restored positions cannot confirm departure. Return to home BLE coverage followed by thirty stationary
 seconds confirms arrival. A stationary switch-on does not start a cable check.
 The Bluetooth receiver must cover the shed/home, not a remote location.
 

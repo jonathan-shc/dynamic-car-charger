@@ -596,6 +596,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if (
             self._is_available(rider)
             and not rider.attributes.get("restored")
+            and rider.last_reported >= self._boot
             and timedelta(0) <= now - rider.last_reported <= timedelta(minutes=5)
             and isinstance(accuracy, int | float)
             and 0 <= accuracy <= 100

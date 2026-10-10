@@ -537,16 +537,26 @@ class BikeTripRecorder(TripRecorder):
         self._bike_away = False
 
     def set_bike_state(self, state: str, now: datetime, trip_km: float | None = None):
+        newly_away = state == "away" and not self._bike_away
         if state == "away":
             self._bike_away = True
         if state in ("home_on", "home_off") and self._bike_away:
             self._bike_away = False
             if not self.tracking and trip_km is not None and trip_km >= 0.5:
                 self._return_route(now, trip_km)
-        if state == "departing" and not self.tracking:
+        if (state == "departing" or newly_away) and not self.tracking:
             self.tracking, self._opened_at = True, now
+            # A short BLE departure may only be confirmed after radio loss and
+            # the phone's away report. Include the recent departure GPS tail.
+            if newly_away:
+                recent = [
+                    p for p in self._recent if timedelta(0) <= now - p[0] <= timedelta(minutes=3)
+                ]
+                self._last = None
+                for point in recent:
+                    self.add(point)
             point = position(self.hass.states.get(self.entity_id))
-            if point and timedelta(0) <= now - point[0] <= timedelta(minutes=5):
+            if not self._last and point and timedelta(0) <= now - point[0] <= timedelta(minutes=5):
                 self._last = (now, point[1], point[2])
         elif (
             state in ("home_on", "home_off")
