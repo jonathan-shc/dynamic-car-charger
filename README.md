@@ -258,3 +258,8 @@ See [VALIDATION.md](VALIDATION.md) for the actual results and remaining hardware
 ### Vehicles that finish at 99%
 
 For a 100% target, a vehicle that has demonstrably charged and then stops drawing power at a measured 99% is not restarted while completion is checked. After three minutes of fresh readings below 5 W, the session is marked `target_reached` with `completion_reason: vehicle_stopped_near_full`. The actual battery reading remains 99%. Completion survives a Home Assistant restart. It clears when the battery drops to 98% or below, or when a new charge, target or deadline is explicitly requested. A scheduled pause, stale power reading or ongoing trickle charge does not count as the vehicle finishing. Energy-only charging is unchanged.
+
+
+### Wallbox Power Boost
+
+When the configured connected/status sensor reports `Waiting in queue by Power Boost`, the coordinator respects the Wallbox household load controller. It does not send resume or unlock commands, or report a charger failure. The plan sensor shows `waiting_for_power` with `wait_reason: household_load`. Wallbox resumes automatically when power becomes available. A 45-second settling window accommodates status and switch updates arriving separately; a real resume clears the wait immediately. Explicit stop commands still work. This load-management pause is excluded from the 99% completion detector. The electrical limits are not changed.
