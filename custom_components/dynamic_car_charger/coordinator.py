@@ -71,7 +71,7 @@ CALIBRATION_REUSE_WARNING = (
 )
 SESSION_END_STATUSES = ("set_deadline", "target_reached", "deadline_passed")
 # Below this measured power the charger counts as not charging.
-IDLE_POWER_KW = 0.1
+IDLE_POWER_KW = 0.01
 FULL_CHARGE_IDLE_KW = 0.005
 FULL_CHARGE_CONFIRMATION = timedelta(minutes=3)
 # The pause isn't confirmed, but nothing flows: no error, and keep watching.
