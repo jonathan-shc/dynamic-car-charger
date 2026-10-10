@@ -32,9 +32,9 @@
           "bike_powered_entity": "Bicycle: observed power state (optional)",
           "bike_charging_entity": "Bicycle: Bluetooth charging status (optional)",
           "rider_location_entity": "Bicycle: rider phone tracker (optional)",
-          "bike_arrival_probe": "Bicycle: check cable on arrival (up to 90 seconds)",
-          "bike_trip_entity": "Bicycle: trip distance sensor (optional)",
-          "bike_min_ride_distance_m": "Bicycle: minimum ridden distance before cable check (m; also requires 30 seconds moving)"
+          "bike_arrival_probe": "Bicycle: check cable on arrival (up to 5 minutes)",
+          "bike_trip_entity": "Bicycle: trip distance sensor (required for arrival cable check)",
+          "bike_min_ride_distance_m": "Bicycle: minimum trip distance before cable check (m)"
         },
         "data_description": {
           "name": "What is charged, such as 'Scooter'. Only needed with more than one scheduler: it names the device and its entities.",
@@ -109,9 +109,9 @@
           "bike_powered_entity": "Bicycle: observed power state (optional)",
           "bike_charging_entity": "Bicycle: Bluetooth charging status (optional)",
           "rider_location_entity": "Bicycle: rider phone tracker (optional)",
-          "bike_arrival_probe": "Bicycle: check cable on arrival (up to 90 seconds)",
-          "bike_trip_entity": "Bicycle: trip distance sensor (optional)",
-          "bike_min_ride_distance_m": "Bicycle: minimum ridden distance before cable check (m; also requires 30 seconds moving)"
+          "bike_arrival_probe": "Bicycle: check cable on arrival (up to 5 minutes)",
+          "bike_trip_entity": "Bicycle: trip distance sensor (required for arrival cable check)",
+          "bike_min_ride_distance_m": "Bicycle: minimum trip distance before cable check (m)"
         },
         "data_description": {
           "name": "What is charged, such as 'Scooter'. Only needed with more than one scheduler: it names the device and its entities.",

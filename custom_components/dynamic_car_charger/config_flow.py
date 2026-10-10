@@ -183,7 +183,10 @@ def validate(hass, data: dict[str, Any]) -> dict[str, str]:
         if entity_id.split(".", 1)[0] not in expected_domains[key]:
             return {key: "wrong_domain"}
     if data.get("vehicle_type") == "bicycle":
-        for key in ("bike_live_entity", "bike_speed_entity"):
+        required = ["bike_live_entity", "bike_speed_entity"]
+        if data.get("bike_arrival_probe"):
+            required.append("bike_trip_entity")
+        for key in required:
             if not data.get(key):
                 return {key: "bike_sensor_required"}
         speed = hass.states.get(data["bike_speed_entity"])

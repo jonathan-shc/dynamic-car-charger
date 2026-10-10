@@ -21,9 +21,15 @@ def arrival(b):
     departure(b)
     for second in range(100, 136):
         b.update(NOW + timedelta(seconds=second), BikeObservation(live=True, speed=15))
-    b.update(NOW + timedelta(seconds=200), BikeObservation(live=True, speed=0))
+    b.update(
+        NOW + timedelta(seconds=200),
+        BikeObservation(live=True, speed=0, trip_km=0.64, trip_report=NOW + timedelta(seconds=200)),
+    )
     assert b.state == "arriving"
-    b.update(NOW + timedelta(seconds=231), BikeObservation(live=True, speed=0))
+    b.update(
+        NOW + timedelta(seconds=231),
+        BikeObservation(live=True, speed=0, trip_km=0.64, trip_report=NOW + timedelta(seconds=231)),
+    )
     assert b.state == "home_on"
     return NOW + timedelta(seconds=231)
 
@@ -83,10 +89,10 @@ def test_timeout_is_inconclusive_not_disconnected():
     t = arrival(b)
     o = BikeObservation(live=True, speed=0)
     b.control(t, o, scheduled=False, allow_probe=True, cancel=False)
-    o.plug_on, o.watts, o.power_report = True, 0, t + timedelta(seconds=90)
-    b.update(t + timedelta(seconds=90), o)
+    o.plug_on, o.watts, o.power_report = True, 0, t + timedelta(seconds=300)
+    b.update(t + timedelta(seconds=300), o)
     assert b.control(
-        t + timedelta(seconds=90), o, scheduled=False, allow_probe=True, cancel=False
+        t + timedelta(seconds=300), o, scheduled=False, allow_probe=True, cancel=False
     ) == (False, True)
     assert b.cable == "unknown"
     assert b.probe_result == "inconclusive"
@@ -181,99 +187,92 @@ def test_short_motion_alone_cannot_confirm_departure():
     assert b.state == "home_unreachable"
 
 
-def local_ride(b, start=0, seconds=36, speed=12):
+def inbound(b, trip, start=0, seconds=10):
     for second in range(start, start + seconds + 1):
-        b.update(
-            NOW + timedelta(seconds=second),
-            BikeObservation(live=True, speed=speed, rider_home=True, rider_configured=True),
-        )
+        now = NOW + timedelta(seconds=second)
+        b.update(now, BikeObservation(live=True, speed=12, trip_km=trip, trip_report=now))
 
 
-def park(b, second):
-    o = BikeObservation(live=True, speed=0, rider_home=True, rider_configured=True)
-    b.update(NOW + timedelta(seconds=second), o)
-    b.update(NOW + timedelta(seconds=second + 31), o)
-    return b.control(
-        NOW + timedelta(seconds=second + 31), o, scheduled=False, allow_probe=True, cancel=False
-    )
+def park(b, second, trip=0.64):
+    for tick in range(second, second + 31):
+        now = NOW + timedelta(seconds=tick)
+        o = BikeObservation(live=True, speed=0, trip_km=trip, trip_report=now)
+        b.update(now, o)
+    return b.control(now, o, scheduled=False, allow_probe=True, cancel=False)
 
 
-def test_local_ride_inside_home_zone_triggers_once():
+def test_inbound_ten_seconds_and_fresh_trip_triggers_probe():
     b = BikeLifecycle()
-    local_ride(b)
-    assert b.ride_qualified
-    assert park(b, 37) == (True, True)
-    assert b.reason == "qualified_local_ride_arrival"
-    assert not b.ride_qualified
+    inbound(b, 0.64)
+    assert park(b, 11) == (True, True)
+    assert b.reason == "fresh_trip_arrival"
 
 
-def test_shed_movement_and_fast_short_motion_do_not_probe():
-    for seconds, speed in [(40, 3), (10, 45), (36, 8)]:
+def test_zero_and_short_trip_do_not_probe():
+    for trip in [0, 0.01, 0.09]:
         b = BikeLifecycle()
-        local_ride(b, seconds=seconds, speed=speed)
-        assert park(b, seconds + 1) == (False, False)
+        inbound(b, trip)
+        assert park(b, 11, trip) == (False, False)
         assert b.arrived_at is None
 
 
-def test_short_power_cycle_retains_measured_ride():
+def test_old_trip_packet_and_missing_timestamp_do_not_qualify():
+    for reported in [None, NOW - timedelta(minutes=1)]:
+        b = BikeLifecycle()
+        for second in range(45):
+            b.update(
+                NOW + timedelta(seconds=second),
+                BikeObservation(live=True, speed=0, trip_km=0.64, trip_report=reported),
+            )
+        assert b.arrived_at is None
+        assert not b.ride_qualified
+
+
+def test_same_trip_does_not_probe_again_after_wake_or_restart():
     b = BikeLifecycle()
-    local_ride(b, seconds=20)
-    b.update(NOW + timedelta(seconds=21), BikeObservation(powered=False, rider_home=True))
-    local_ride(b, start=55, seconds=20)
-    assert b.ride_qualified
-    assert park(b, 76) == (True, True)
-
-
-def test_repeated_speed_or_radio_gap_cannot_manufacture_ride():
-    b = BikeLifecycle()
-    for second in range(50):
-        b.update(
-            NOW + timedelta(seconds=second), BikeObservation(live=True, speed=15, speed_report=NOW)
-        )
-    assert b.ride_distance_m == 0
-    assert b.ride_motion_seconds == 0
-    b.update(NOW + timedelta(seconds=60), BikeObservation(live=True, speed=15))
-    b.update(NOW + timedelta(seconds=80), BikeObservation(live=True, speed=15))
-    assert b.ride_distance_m == 0
-    assert park(b, 81) == (False, False)
-
-
-def test_higher_configured_distance_and_old_episode():
-    b = BikeLifecycle(200)
-    local_ride(b)
-    assert not b.ride_qualified
-    assert park(b, 37) == (False, False)
-    b.update(NOW + timedelta(minutes=16), BikeObservation(powered=False))
-    assert b.ride_distance_m == 0
-
-
-def test_restart_cannot_restore_qualified_local_ride():
-    b = BikeLifecycle()
-    local_ride(b)
+    assert park(b, 0) == (True, True)
+    off = BikeObservation(powered=False)
+    b.update(NOW + timedelta(seconds=50), off)
+    b.control(NOW + timedelta(seconds=50), off, scheduled=False, allow_probe=True, cancel=False)
+    assert park(b, 60) == (False, False)
     restarted = BikeLifecycle()
     restarted.restore(b.saved())
-    assert park(restarted, 37) == (False, False)
+    assert park(restarted, 100) == (False, False)
 
 
-def test_phone_away_blocks_local_arrival_probe():
+def test_trip_reset_then_another_ride_allows_new_probe():
     b = BikeLifecycle()
-    local_ride(b)
-    for second in (37, 68):
+    park(b, 0)
+    b.update(
+        NOW + timedelta(seconds=40),
+        BikeObservation(live=True, speed=0, trip_km=0, trip_report=NOW + timedelta(seconds=40)),
+    )
+    inbound(b, 0.2, start=50)
+    assert park(b, 61, 0.2) == (True, True)
+
+
+def test_phone_away_does_not_block_fresh_bike_trip_arrival():
+    b = BikeLifecycle()
+    for second in range(31):
+        now = NOW + timedelta(seconds=second)
         b.update(
-            NOW + timedelta(seconds=second),
-            BikeObservation(live=True, speed=0, rider_home=False, rider_configured=True),
+            now,
+            BikeObservation(
+                live=True,
+                speed=0,
+                trip_km=0.64,
+                trip_report=now,
+                rider_home=False,
+                rider_configured=True,
+            ),
         )
-    assert b.arrived_at is None
+    assert b.arrived_at is not None
 
 
-def test_qualified_away_ride_survives_normal_ride_duration():
-    b = BikeLifecycle()
-    local_ride(b)
-    b.update(NOW + timedelta(seconds=110), BikeObservation(rider_home=False, rider_configured=True))
-    assert b.away
-    b.update(NOW + timedelta(hours=1), BikeObservation(rider_home=False, rider_configured=True))
-    assert b.ride_qualified
-    assert park(b, 3601) == (True, True)
+def test_configured_minimum_trip_distance():
+    b = BikeLifecycle(1000)
+    inbound(b, 0.64)
+    assert park(b, 11) == (False, False)
 
 
 def test_cable_confirmation_survives_restart_and_stationary_wake():
@@ -314,19 +313,40 @@ def test_invalid_or_away_saved_confirmation_is_not_restored():
         assert b.cable == "unknown"
 
 
-def test_known_qualified_away_ride_accepts_ten_seconds_of_return_bluetooth():
+def test_probe_waits_five_minutes_but_stops_immediately_on_cable():
     b = BikeLifecycle()
-    local_ride(b)
-    b.update(NOW + timedelta(seconds=110), BikeObservation(rider_home=False, rider_configured=True))
-    assert b.away
-    for second in range(200, 210):
-        b.update(
-            NOW + timedelta(seconds=second), BikeObservation(live=True, speed=10, rider_home=True)
-        )
-    assert park(b, 210) == (True, True)
+    t = arrival(b)
+    o = BikeObservation(live=True, speed=0, plug_on=False)
+    b.control(t, o, scheduled=False, allow_probe=True, cancel=False)
+    o.plug_on = True
+    assert b.control(
+        t + timedelta(seconds=299), o, scheduled=False, allow_probe=True, cancel=False
+    ) == (True, True)
+    o.charging = True
+    b.update(t + timedelta(seconds=299), o)
+    assert b.control(
+        t + timedelta(seconds=299), o, scheduled=False, allow_probe=True, cancel=False
+    ) == (False, True)
+    assert b.control(
+        t + timedelta(seconds=299), o, scheduled=True, allow_probe=True, cancel=False
+    ) == (True, True)
 
 
-def test_unknown_inbound_ride_with_only_ten_seconds_does_not_bypass_threshold():
+def test_short_movement_after_checked_trip_cannot_reuse_old_distance():
     b = BikeLifecycle()
-    local_ride(b, seconds=10, speed=12)
-    assert park(b, 11) == (False, False)
+    park(b, 0)
+    off = BikeObservation(powered=False)
+    b.update(NOW + timedelta(seconds=40), off)
+    b.control(NOW + timedelta(seconds=40), off, scheduled=False, allow_probe=True, cancel=False)
+    inbound(b, 0.65, start=50)
+    assert park(b, 61, 0.65) == (False, False)
+
+
+def test_new_hundred_metres_after_checked_trip_counts_exact_threshold():
+    b = BikeLifecycle()
+    park(b, 0, 0.64)
+    off = BikeObservation(powered=False)
+    b.update(NOW + timedelta(seconds=40), off)
+    b.control(NOW + timedelta(seconds=40), off, scheduled=False, allow_probe=True, cancel=False)
+    inbound(b, 0.74, start=50)
+    assert park(b, 61, 0.74) == (True, True)
