@@ -350,3 +350,24 @@ def test_new_hundred_metres_after_checked_trip_counts_exact_threshold():
     b.control(NOW + timedelta(seconds=40), off, scheduled=False, allow_probe=True, cancel=False)
     inbound(b, 0.74, start=50)
     assert park(b, 61, 0.74) == (True, True)
+
+
+def test_unknown_speed_breaks_stationary_arrival_timer():
+    b = BikeLifecycle()
+    b.update(NOW, BikeObservation(live=True, speed=0, trip_km=0.64, trip_report=NOW))
+    b.update(
+        NOW + timedelta(seconds=20),
+        BikeObservation(
+            live=True, speed=None, trip_km=0.64, trip_report=NOW + timedelta(seconds=20)
+        ),
+    )
+    b.update(
+        NOW + timedelta(seconds=35),
+        BikeObservation(live=True, speed=0, trip_km=0.64, trip_report=NOW + timedelta(seconds=35)),
+    )
+    assert b.arrived_at is None
+    b.update(
+        NOW + timedelta(seconds=65),
+        BikeObservation(live=True, speed=0, trip_km=0.64, trip_report=NOW + timedelta(seconds=65)),
+    )
+    assert b.arrived_at is not None

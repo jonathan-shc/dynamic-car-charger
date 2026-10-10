@@ -140,7 +140,7 @@ class BikeLifecycle:
             self.moving_since = None
             if o.live and o.speed is not None and o.speed < 2:
                 self.still_since = self.still_since or now
-            elif not o.live:
+            else:
                 self.still_since = None
         if not o.live and self.departure_pending and self.last_motion:
             elapsed = now - self.last_motion
