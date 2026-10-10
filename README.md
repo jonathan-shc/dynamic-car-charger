@@ -2,7 +2,7 @@
 
 A Home Assistant custom integration for deadline-based EV charging. Set **80% by Friday at 07:30** (or **20 kWh by Friday at 07:30**), inspect the charging plan, and let the integration pause and resume your charger during the cheapest published price intervals.
 
-It works with any charger that has an on/off switch in Home Assistant and any dynamic price sensor with today's and tomorrow's prices. With a car that reports its battery percentage it charges to a percentage; without one it charges an amount of energy. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Check compatibility with your own devices. Current version: 0.16.2 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
+It works with any charger that has an on/off switch in Home Assistant and any dynamic price sensor with today's and tomorrow's prices. With a car that reports its battery percentage it charges to a percentage; without one it charges an amount of energy. It connects to **existing Home Assistant entities**; it does not log into the car, charger or energy provider itself. Check compatibility with your own devices. Current version: 0.16.3 (see [releases](https://github.com/jonathan-shc/dynamic-car-charger/releases)).
 
 ## What you get
 
@@ -318,3 +318,11 @@ when the rider phone stays inside the home zone; fresh phone-away evidence block
 this local arrival. Stationary wake-ups and short shed movements do not trigger a
 cable check. BLE speed cannot distinguish riding from sustained wheel rotation;
 these are conservative measured-motion thresholds, not independent GPS proof.
+
+
+Last-confirmed cable connection and its evidence timestamp survive a Home
+Assistant restart and stationary display wake-up. These are historical evidence,
+not a fresh physical cable measurement. Fresh bike motion invalidates them.
+An unknown inbound ride with only ten seconds of observed movement cannot meet
+the 100 m / 30 s threshold. A previously qualified away ride can arrive after
+only ten seconds of return Bluetooth and then 30 stationary seconds.

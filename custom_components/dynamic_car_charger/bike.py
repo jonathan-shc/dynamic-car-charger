@@ -54,9 +54,32 @@ class BikeLifecycle:
         self.away = bool(saved.get("away"))
         self.recover_stop = bool(saved.get("probe_owned"))
         self.cable = "unknown"
+        # Historical connection evidence survives restart; it is never a new
+        # measurement. Ride/motion invalidates it, not a stationary wake-up.
+        try:
+            confirmed = datetime.fromisoformat(saved.get("cable_confirmed_at") or "")
+        except (ValueError, TypeError):
+            confirmed = None
+        evidence = saved.get("cable_evidence")
+        if (
+            self.home
+            and not self.away
+            and saved.get("cable") == "connected"
+            and confirmed is not None
+            and confirmed.tzinfo is not None
+            and evidence in ("ble_charging", "measured_power")
+        ):
+            self.cable, self.cable_at, self.cable_evidence = "connected", confirmed, evidence
 
     def saved(self):
-        return {"home": self.home, "away": self.away, "probe_owned": self.probe_owned}
+        return {
+            "home": self.home,
+            "away": self.away,
+            "probe_owned": self.probe_owned,
+            "cable": self.cable,
+            "cable_confirmed_at": self.cable_at.isoformat() if self.cable_at else None,
+            "cable_evidence": self.cable_evidence,
+        }
 
     @property
     def ride_qualified(self):
@@ -209,14 +232,13 @@ class BikeLifecycle:
                 )
             )
         )
-        if o.charging is True or power_proof:
+        if moving:
+            self.cable, self.cable_evidence, self.cable_at = "unknown", "bike_moving", None
+        elif o.charging is True or power_proof:
             self.cable, self.cable_at = "connected", now
             self.cable_evidence = "ble_charging" if o.charging is True else "measured_power"
         elif self.state == "departing":
             self.cable, self.cable_evidence = "unknown", "bike_moving"
-        # A retained cable confirmation must never survive a new arrival/wake-up.
-        elif previous in ("away", "home_off", "home_unreachable") and o.live:
-            self.cable, self.cable_evidence = "unknown", "connection_needs_check"
 
     def control(self, now, o, *, scheduled, allow_probe, cancel):
         """Return (plug demand, own control). Normal plan always has priority."""

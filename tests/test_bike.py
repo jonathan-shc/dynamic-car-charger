@@ -274,3 +274,59 @@ def test_qualified_away_ride_survives_normal_ride_duration():
     b.update(NOW + timedelta(hours=1), BikeObservation(rider_home=False, rider_configured=True))
     assert b.ride_qualified
     assert park(b, 3601) == (True, True)
+
+
+def test_cable_confirmation_survives_restart_and_stationary_wake():
+    b = BikeLifecycle()
+    b.update(NOW, BikeObservation(live=True, speed=0, charging=True))
+    restarted = BikeLifecycle()
+    restarted.restore(b.saved())
+    assert restarted.cable == "connected"
+    assert restarted.cable_at == NOW
+    restarted.update(NOW + timedelta(minutes=3), BikeObservation())
+    assert restarted.cable == "connected"
+    restarted.update(NOW + timedelta(minutes=4), BikeObservation(live=True, speed=0))
+    assert restarted.cable == "connected" and restarted.cable_at == NOW
+    restarted.update(NOW + timedelta(minutes=5), BikeObservation(live=True, speed=3))
+    assert restarted.cable == "unknown"
+    again = BikeLifecycle()
+    again.restore(restarted.saved())
+    assert again.cable == "unknown"
+
+
+def test_invalid_or_away_saved_confirmation_is_not_restored():
+    for extra in [
+        {"cable_confirmed_at": "bad"},
+        {"cable_confirmed_at": "2026-10-10"},
+        {"away": True},
+        {"cable_evidence": "bike_moving"},
+    ]:
+        b = BikeLifecycle()
+        b.restore(
+            {
+                "home": True,
+                "cable": "connected",
+                "cable_confirmed_at": NOW.isoformat(),
+                "cable_evidence": "ble_charging",
+                **extra,
+            }
+        )
+        assert b.cable == "unknown"
+
+
+def test_known_qualified_away_ride_accepts_ten_seconds_of_return_bluetooth():
+    b = BikeLifecycle()
+    local_ride(b)
+    b.update(NOW + timedelta(seconds=110), BikeObservation(rider_home=False, rider_configured=True))
+    assert b.away
+    for second in range(200, 210):
+        b.update(
+            NOW + timedelta(seconds=second), BikeObservation(live=True, speed=10, rider_home=True)
+        )
+    assert park(b, 210) == (True, True)
+
+
+def test_unknown_inbound_ride_with_only_ten_seconds_does_not_bypass_threshold():
+    b = BikeLifecycle()
+    local_ride(b, seconds=10, speed=12)
+    assert park(b, 11) == (False, False)
