@@ -71,6 +71,8 @@ CALIBRATION_REUSE_WARNING = (
 SESSION_END_STATUSES = ("set_deadline", "target_reached", "deadline_passed")
 # Below this measured power the charger counts as not charging.
 IDLE_POWER_KW = 0.1
+FULL_CHARGE_IDLE_KW = 0.005
+FULL_CHARGE_CONFIRMATION = timedelta(minutes=3)
 # The pause isn't confirmed, but nothing flows: no error, and keep watching.
 IDLE_STOP = "idle_stop"
 PENDING_STATUSES = ("unlocking_charger", "starting_charge", "stopping_charge")
@@ -146,6 +148,9 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._sample_time: datetime | None = None
         self._sample_power = 0.0
         self._power_report_old = False
+        self._full_charge_seen_power = False
+        self._full_charge_idle_since: datetime | None = None
+        self._vehicle_completed = False
         self._command: bool | None = None
         self._command_time: datetime | None = None
         self._command_attempt_time: datetime | None = None
@@ -193,6 +198,13 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._lock_pending = bool(saved.get("lock_pending", False))
         self.deadline = timestamp(saved["deadline"]) if saved.get("deadline") else None
         self._observed_soc = saved.get("observed_soc")
+        self._vehicle_completed = bool(saved.get("vehicle_completed", False))
+        self._full_charge_seen_power = bool(saved.get("full_charge_seen_power", False))
+        self._full_charge_idle_since = (
+            timestamp(saved["full_charge_idle_since"])
+            if saved.get("full_charge_idle_since")
+            else None
+        )
         for start, (weighted, points) in (saved.get("taper") or {}).items():
             self._taper_learned[float(start)] = [number(weighted, 0), number(points, 0)]
         self._credit_kwh = number(saved.get("credit_kwh", 0), 0)
@@ -385,6 +397,11 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "immediate_charging": self.immediate_charging,
             "deadline": self.deadline.isoformat() if self.deadline else None,
             "observed_soc": self._observed_soc,
+            "vehicle_completed": self._vehicle_completed,
+            "full_charge_seen_power": self._full_charge_seen_power,
+            "full_charge_idle_since": (
+                self._full_charge_idle_since.isoformat() if self._full_charge_idle_since else None
+            ),
             "taper": {str(start): values for start, values in self._taper_learned.items()},
             "credit_kwh": self._credit_kwh,
             "pending_stop": self._pending_stop,
@@ -438,6 +455,14 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def async_change(self, **changes: Any) -> None:
         async with self._lock:
+            if (
+                changes.get("enabled") is True
+                or changes.get("immediate_charging") is True
+                or any(key in changes for key in ("target", "deadline"))
+            ):
+                self._vehicle_completed = False
+                self._full_charge_seen_power = False
+                self._full_charge_idle_since = None
             if (
                 self.energy_mode
                 and "deadline" in changes
@@ -598,6 +623,10 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if 0 <= elapsed <= 60:
                 self._interval_kwh = self._sample_power * elapsed / 3600
         self._sample_time, self._sample_power = now, power
+        if not self.energy_mode and not self._power_report_old and power >= FULL_CHARGE_IDLE_KW:
+            charger = self.hass.states.get(self.settings["charger_entity"])
+            if (self.enabled or self.immediate_charging) and charger and charger.state == "on":
+                self._full_charge_seen_power = True
         if self.energy_mode:
             # Progress is the measured energy as a share of the energy to charge.
             self._delivered_kwh += self._interval_kwh
@@ -690,6 +719,44 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._replan_stop_time = None
         self._soc_confirmation_since = None
 
+    def _vehicle_charge_completion(
+        self, now: datetime, data: dict[str, Any], desired: bool
+    ) -> str | None:
+        """A vehicle can finish at a rounded 99%; never restart it while confirming."""
+        soc = data.get("measured_soc")
+        if self.energy_mode or soc is None:
+            return None
+        if soc <= 98 or self.target < 100:
+            if self._vehicle_completed or self.target < 100:
+                self._full_charge_seen_power = False
+            self._vehicle_completed = False
+            self._full_charge_idle_since = None
+            return None
+        if self._vehicle_completed:
+            return "complete"
+        if (
+            soc < 99
+            or self.target < 100
+            or not (self.enabled or self.immediate_charging)
+            or not self._full_charge_seen_power
+            or self._power_report_old
+            or self._sample_power >= FULL_CHARGE_IDLE_KW
+            or data.get("status") == "input_error"
+        ):
+            self._full_charge_idle_since = None
+            return None
+        if self._full_charge_idle_since is None:
+            # A scheduled pause or a stop we sent is not the vehicle finishing.
+            if not desired or not self._charge_requested or self._command is False:
+                return None
+            self._full_charge_idle_since = now
+        confirm_at = self._full_charge_idle_since + FULL_CHARGE_CONFIRMATION
+        if now < confirm_at:
+            data["completion_confirmation_until"] = confirm_at.isoformat()
+            return "checking"
+        self._vehicle_completed = True
+        return "complete"
+
     async def async_reconcile(self, force_stop: bool = False) -> None:
         async with self._lock:
             if self._stopping:
@@ -741,10 +808,37 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 data.update(status="input_error", error=str(err))
                 self._sample_time = None
                 desired = False
+            previously_completed = self._vehicle_completed
+            completion = self._vehicle_charge_completion(now, data, desired)
+            if completion == "complete":
+                desired = False
+                self._clear_active_run()
+                if self.immediate_charging and not self.enabled:
+                    self._pending_stop = True
+                self.immediate_charging = False
+                data.update(
+                    status="target_reached",
+                    plan_status="target_reached",
+                    immediate_charging=False,
+                    completion_reason="vehicle_stopped_near_full",
+                    slots=[],
+                    required_grid_kwh=0.0,
+                    planned_grid_kwh=0.0,
+                    shortfall_kwh=0.0,
+                    estimated_cost_eur=0.0,
+                    active_charge_until=None,
+                )
+            elif completion == "checking":
+                desired = False
+                data.update(
+                    status="awaiting_soc_confirmation", plan_status="awaiting_soc_confirmation"
+                )
             plan_status = data.get("plan_status", data["status"])
             control_enabled = self.enabled or self.immediate_charging
             data["charging_requested"] = desired and control_enabled
-            if control_enabled or force_stop or self._pending_stop:
+            if (control_enabled or force_stop or self._pending_stop) and (
+                completion != "checking" or force_stop or self._pending_stop
+            ):
                 error = await self._control(desired and control_enabled, now, force_stop)
                 if error == IDLE_STOP:
                     pass  # not an error; a pending stop stays pending until confirmed
@@ -757,7 +851,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 elif not self.enabled:
                     self._pending_stop = False
             # What the plan wants, also while waiting for the car or the charger.
-            await self._update_lock(now, desired and control_enabled)
+            if completion != "checking":
+                await self._update_lock(now, desired and control_enabled)
             self._update_session(
                 now, prices, data["charging_requested"], control_enabled, plan_status
             )
@@ -775,7 +870,10 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 else None
             )
             self.async_set_updated_data(data)
-            self.store.async_delay_save(self._save_data, 30)
+            if self._vehicle_completed and not previously_completed:
+                await self.store.async_save(self._save_data())
+            else:
+                self.store.async_delay_save(self._save_data, 30)
 
     def _reconcile_immediate(self, now: datetime, data: dict[str, Any]) -> bool:
         soc, effective, _prices = self._read(now, include_prices=False)

@@ -253,3 +253,8 @@ Tests cover cost allocation, fractional intervals, losses, negative prices, gaps
 3. The release workflow checks that the tag matches the manifest version and publishes a GitHub release with generated notes. HACS offers that release to users.
 
 See [VALIDATION.md](VALIDATION.md) for the actual results and remaining hardware checks. No credentials, vehicle identifiers or household consumption data belong in issues. Share only the relevant redacted configuration and plan attributes when reporting a problem.
+
+
+### Vehicles that finish at 99%
+
+For a 100% target, a vehicle that has demonstrably charged and then stops drawing power at a measured 99% is not restarted while completion is checked. After three minutes of fresh readings below 5 W, the session is marked `target_reached` with `completion_reason: vehicle_stopped_near_full`. The actual battery reading remains 99%. Completion survives a Home Assistant restart. It clears when the battery drops to 98% or below, or when a new charge, target or deadline is explicitly requested. A scheduled pause, stale power reading or ongoing trickle charge does not count as the vehicle finishing. Energy-only charging is unchanged.
