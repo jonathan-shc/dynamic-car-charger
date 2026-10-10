@@ -465,13 +465,15 @@ class TripRecorder:
     def _save(self) -> None:
         self.store.async_delay_save(lambda: {"version": VERSION, "trips": self.trips}, 1)
 
-    async def _async_import_recorded(self) -> None:
+    async def _async_import_recorded(self, rebuild_since: datetime | None = None) -> bool:
         if "recorder" not in self.hass.config.components:
-            return
+            return False
         from homeassistant.components.recorder import get_instance, history
 
         start = dt_util.utcnow() - timedelta(days=RECORDER_DAYS)
-        if self.trips:
+        if rebuild_since is not None:
+            start = max(start, rebuild_since)
+        elif self.trips:
             start = max(start, dt_util.parse_datetime(self.trips[-1]["ended"]))
         found: dict[str, list[State]] = {}
         try:
@@ -487,7 +489,7 @@ class TripRecorder:
                 )
         except Exception:  # noqa: BLE001 - earlier drives are a bonus; never block charging
             _LOGGER.warning("Could not read earlier drives from the recorder")
-            return
+            return False
         # Battery readings: taken first, so drives imported now have them too.
         readings: list[Reading] = []
         if self.soc_entity:
@@ -510,6 +512,15 @@ class TripRecorder:
                     if found is not None
                 )
         self._readings = sorted(readings + self._readings)
+        if rebuild_since is not None:
+            self.trips = [
+                trip
+                for trip in self.trips
+                if dt_util.parse_datetime(trip["started"]) < rebuild_since
+            ]
+            self._drive = []
+            self._last = None
+            self._moved_at = None
         if self.coordinates:
             latitude, longitude = (found.get(entity_id, []) for entity_id in self.coordinates)
             added = self.import_points(paired(latitude, longitude), dt_util.utcnow())
@@ -517,9 +528,10 @@ class TripRecorder:
             added = self.import_states(found.get(self.entity_id, []), dt_util.utcnow())
         filled = self.fill_battery_used(self._readings)
         self._forget_readings(dt_util.utcnow())
-        if added or filled or self._rebuilt:
+        if added or filled or self._rebuilt or rebuild_since is not None:
             self._save()
             _LOGGER.info("Kept %d drives from the recorder", added)
+        return True
 
 
 class BikeTripRecorder(TripRecorder):

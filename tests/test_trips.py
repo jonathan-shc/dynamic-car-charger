@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant.core import HomeAssistant, State
@@ -329,3 +329,41 @@ async def test_bike_recorder_does_not_import_phone_history_or_record_idle_phone(
     assert not recorder.trips
     assert len(recorder._recent) == 3
     await hass.async_stop(force=True)
+
+
+async def test_rebuild_today_preserves_older_trips_and_splits_current_history(recorder):
+    old = record([at(-86400, 0), at(-86340, 10)])
+    combined = record([at(0, 0), at(20, 10), at(340, 20)])
+    recorder.trips = [old, combined]
+    recorder.hass.config.components.add("recorder")
+    states = [_state(p) for p in [at(0, 0), at(10, 5), at(20, 10), at(320, 10), at(330, 15)]]
+    job = AsyncMock(return_value={TRACKER: states})
+    with (
+        patch(
+            "homeassistant.components.recorder.get_instance",
+            return_value=SimpleNamespace(async_add_executor_job=job),
+        ),
+        patch(
+            "custom_components.dynamic_car_charger.trips.dt_util.utcnow",
+            return_value=T0 + timedelta(hours=1),
+        ),
+    ):
+        assert await recorder._async_import_recorded(rebuild_since=T0)
+    assert recorder.trips[0] == old
+    assert len(recorder.trips) == 3
+    assert recorder.trips[1]["ended"] == at(20, 10)[0].isoformat()
+    assert recorder.trips[2]["ended"] == at(330, 15)[0].isoformat()
+    assert job.call_args.args[0].args[1] == T0
+
+
+async def test_rebuild_keeps_stored_trips_if_history_read_fails(recorder):
+    kept = record([at(0, 0), at(60, 10)])
+    recorder.trips = [kept]
+    recorder.hass.config.components.add("recorder")
+    job = AsyncMock(side_effect=RuntimeError("recorder unavailable"))
+    with patch(
+        "homeassistant.components.recorder.get_instance",
+        return_value=SimpleNamespace(async_add_executor_job=job),
+    ):
+        assert not await recorder._async_import_recorded(rebuild_since=T0)
+    assert recorder.trips == [kept]

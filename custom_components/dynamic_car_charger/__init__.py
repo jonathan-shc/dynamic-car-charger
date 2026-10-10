@@ -106,6 +106,24 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         supports_response=SupportsResponse.OPTIONAL,
     )
 
+    async def rebuild_today_trips(call: ServiceCall) -> ServiceResponse:
+        """Reprocess today's GPS history while preserving older stored rides."""
+        coordinator = _coordinator_for(hass, call.data.get("config_entry_id"))
+        recorder = coordinator.trips
+        if recorder is None or not recorder.import_history:
+            raise ServiceValidationError("This vehicle has no GPS history trip recorder")
+        since = dt_util.as_utc(dt_util.start_of_local_day())
+        success = await recorder._async_import_recorded(rebuild_since=since)
+        return {"success": success, **coordinator.trips_response(1000)}
+
+    hass.services.async_register(
+        DOMAIN,
+        "rebuild_today_trips",
+        rebuild_today_trips,
+        vol.Schema({vol.Required("config_entry_id"): cv.string}),
+        supports_response=SupportsResponse.ONLY,
+    )
+
     async def get_trips(call: ServiceCall) -> ServiceResponse:
         """The car's last drives, newest first, with their routes."""
         coordinator = _coordinator_for(hass, call.data.get("config_entry_id"))
