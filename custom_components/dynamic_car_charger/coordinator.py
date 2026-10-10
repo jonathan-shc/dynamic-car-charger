@@ -20,7 +20,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, EVENT_CAR_CONNECTED, NAME
-from .forecaster import ForecastUnavailable, shared_forecaster
+from .forecaster import CalibrationDataUnavailable, ForecastUnavailable, shared_forecaster
 from .planner import (
     DEFAULT_TAPER,
     Plan,
@@ -32,6 +32,7 @@ from .planner import (
     soc_after,
     timestamp,
 )
+from .price_forecast import Calibration
 from .trips import TripRecorder
 from .zones import zone_for_location
 
@@ -58,6 +59,10 @@ REPAIR_DELAY = timedelta(minutes=30)
 # How often the price forecast checks for new prices and weather forecasts.
 # Often enough to ask for the next day's prices every five minutes when they're due.
 FORECAST_INTERVAL = timedelta(minutes=5)
+CALIBRATION_MAX_AGE = timedelta(hours=48)
+CALIBRATION_REUSE_WARNING = (
+    "Market data is incomplete; forecast uses a previous tariff calibration (up to 48 hours)"
+)
 SESSION_END_STATUSES = ("set_deadline", "target_reached", "deadline_passed")
 # Below this measured power the charger counts as not charging.
 IDLE_POWER_KW = 0.1
@@ -121,6 +126,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self.forecaster = shared_forecaster(hass, bidding_zone)
         self.forecast_calibration = None
+        self._saved_forecast_calibration: dict[str, Any] | None = None
+        self.forecast_warning: str | None = None
         self._forecast_unsub = None
         self._lock = asyncio.Lock()
         self._observed_soc: float | None = None
@@ -169,6 +176,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def async_start(self) -> None:
         saved = await self.store.async_load() or {}
+        calibration = saved.get("forecast_calibration")
+        self._saved_forecast_calibration = calibration if isinstance(calibration, dict) else None
         self.target = number(saved.get("target", 80), 0, 100)
         self.energy_goal = number(saved.get("energy_goal", 20), 0, 200)
         self._delivered_kwh = number(saved.get("delivered_kwh", 0), 0)
@@ -390,6 +399,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "schedule_enabled": self.schedule_enabled,
             "energy_goal": self.energy_goal,
             "delivered_kwh": self._delivered_kwh,
+            "forecast_calibration": self._saved_forecast_calibration,
         }
 
     async def async_set_deadline_preset(self, days: int, hour: int) -> None:
@@ -762,14 +772,78 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         data["status"] = "charging"
         return True
 
+    def _calibrate_forecast(self, prices: list[Slot]) -> Calibration:
+        """Check current prices, or reuse this entry's tariff for at most 48 hours."""
+        now = dt_util.utcnow()
+        scale, _ = price_unit(self._state("price_entity").attributes)
+        context = {
+            "price_entity": self.settings["price_entity"],
+            "currency": self.currency,
+            "bidding_zone": self.forecaster.zone.code,
+            "price_adjustment": self.settings["price_adjustment"],
+            "scale": scale,
+            "interval_minutes": self.settings["interval_minutes"],
+        }
+        saved = self._saved_forecast_calibration
+        if not isinstance(saved, dict) or saved.get("context") != context:
+            self._saved_forecast_calibration = saved = None
+        self.forecast_calibration = None
+        self.forecast_warning = None
+        try:
+            calibration = self.forecaster.calibration(prices, self.currency)
+        except CalibrationDataUnavailable as err:
+            try:
+                validated_at = timestamp(saved["validated_at"])
+                if not timedelta(0) <= now - validated_at < CALIBRATION_MAX_AGE:
+                    raise ValueError("Expired calibration")
+                calibration = Calibration(
+                    number(
+                        saved["slope"],
+                        0.5 if self.currency == "EUR" else 1e-12,
+                        2.0 if self.currency == "EUR" else None,
+                    ),
+                    number(saved["offset"]),
+                    int(number(saved["points"], 12)),
+                )
+            except (ValueError, TypeError, KeyError, OverflowError):
+                raise CalibrationDataUnavailable(
+                    f"{err}; no valid tariff calibration from the last 48 hours"
+                ) from err
+            self.forecast_warning = CALIBRATION_REUSE_WARNING
+        except ForecastUnavailable as err:
+            # Evidence of a different tariff invalidates the old conversion immediately.
+            if str(err) == "Published prices do not match market prices":
+                self._saved_forecast_calibration = None
+                self.store.async_delay_save(self._save_data, 5)
+            raise
+        else:
+            validated_at = min(now, calibration.matched_until or now)
+            updated = {
+                "context": context,
+                "slope": calibration.slope,
+                "offset": calibration.offset,
+                "points": calibration.points,
+                "validated_at": validated_at.isoformat(),
+            }
+            if updated != self._saved_forecast_calibration:
+                self._saved_forecast_calibration = updated
+                self.store.async_delay_save(self._save_data, 5)
+        self.forecast_calibration = calibration
+        return calibration
+
+    def _estimate_forecast(self, prices: list[Slot], until: datetime) -> list[Slot]:
+        calibration = self._calibrate_forecast(prices)
+        estimated, _ = self.forecaster.estimate(
+            prices, until, self.currency, calibration=calibration
+        )
+        return estimated
+
     def _estimates(self, prices: list[Slot], until: datetime) -> list[Slot]:
         """Forecast prices after the published ones, when the forecast is on and ready."""
         if not self.use_forecast:
             return []
         try:
-            estimated, self.forecast_calibration = self.forecaster.estimate(
-                prices, until, self.currency
-            )
+            estimated = self._estimate_forecast(prices, until)
         except ForecastUnavailable:
             return []
         return estimated
@@ -812,6 +886,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # With the forecast the cheap-only mode also waits for a cheaper hour expected
         # later; estimated hours never start charging.
         pool = prices + self._estimates(prices, now + FORECAST_REACH)
+        data["forecast_warning"] = self.forecast_warning if self.use_forecast else None
         known_until = max((slot.end for slot in pool), default=now)
         plan = make_plan(
             pool,
@@ -872,7 +947,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Kept current even when the plan doesn't need the forecast: the forecast
             # sensor shows its estimates in all-in prices only with a calibration.
             with contextlib.suppress(ForecastUnavailable):
-                self.forecast_calibration = self.forecaster.calibration(prices, self.currency)
+                self._calibrate_forecast(prices)
+        data["forecast_warning"] = self.forecast_warning if self.use_forecast else None
         # Once prices are known continuously through the deadline, use the
         # normal least-cost plan. Near the deadline, use any published price.
         if full_plan.coverage_complete or safety_mode:
@@ -883,9 +959,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # hours never start charging; they only show whether waiting for
             # unpublished prices is likely to be cheaper.
             try:
-                estimated, self.forecast_calibration = self.forecaster.estimate(
-                    prices, self.deadline, self.currency
-                )
+                estimated = self._estimate_forecast(prices, self.deadline)
             except ForecastUnavailable as err:
                 data["forecast_error"] = str(err)
             else:

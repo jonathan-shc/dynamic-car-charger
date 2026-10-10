@@ -9,15 +9,17 @@ from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
 from custom_components.dynamic_car_charger.forecaster import (
+    CalibrationDataUnavailable,
     ForecastUnavailable,
     PriceForecaster,
     parse_market,
     parse_weather,
 )
-from custom_components.dynamic_car_charger.planner import Slot
+from custom_components.dynamic_car_charger.planner import Slot, make_plan
 from custom_components.dynamic_car_charger.price_forecast import (
     MAX_LEAD_DAYS,
     WEATHER_POINTS,
+    Calibration,
     PriceModel,
     dutch_holidays,
     easter,
@@ -271,6 +273,34 @@ async def test_forecaster_rejects_prices_that_do_not_match_the_market(hass):
     ]
     with pytest.raises(ForecastUnavailable, match="do not match"):
         forecaster.estimate(unrelated, datetime(2026, 3, 13, 6, tzinfo=UTC))
+
+
+async def test_missing_market_overlap_is_reported_separately(hass, model):
+    forecaster = PriceForecaster(hass)
+    forecaster.model = model
+    forecaster.estimates = {END + 2 * HOUR: 0.1}
+    known = [Slot(END + HOUR, END + 2 * HOUR, 0.2)]
+    with pytest.raises(CalibrationDataUnavailable, match="0 hours; at least 12 needed"):
+        forecaster.calibration(known)
+    slots, calibration = forecaster.estimate(
+        known, END + 4 * HOUR, calibration=Calibration(1.21, 0.1327, 24)
+    )
+    assert calibration.slope == 1.21
+    assert slots and all(slot.estimated for slot in slots)
+    assert not make_plan(slots, END + 2 * HOUR, END + 4 * HOUR, 20, 30, 50, 10, 1).charging_at(
+        END + 2 * HOUR
+    )
+
+
+async def test_flat_market_is_insufficient_evidence_not_tariff_mismatch(hass, model):
+    forecaster = PriceForecaster(hass)
+    forecaster.model = model
+    forecaster.estimates = {END + HOUR: 0.1}
+    known = [Slot(START + i * HOUR, START + (i + 1) * HOUR, 0.25) for i in range(24)]
+    for slot in known:
+        model.market[slot.start] = 0.1
+    with pytest.raises(CalibrationDataUnavailable, match="variation"):
+        forecaster.calibration(known)
 
 
 def test_every_zone_has_known_weather_points_and_holidays():

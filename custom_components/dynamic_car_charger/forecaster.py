@@ -12,9 +12,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
+import numpy as np
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
@@ -73,6 +75,10 @@ FetchJson = Callable[[str, dict[str, Any]], Awaitable[Any]]
 
 class ForecastUnavailable(Exception):
     """Estimates cannot be made right now; plan with the threshold instead."""
+
+
+class CalibrationDataUnavailable(ForecastUnavailable):
+    """Not enough usable evidence to check the supplier tariff against the market."""
 
 
 def parse_market(data: dict) -> dict[datetime, float]:
@@ -419,7 +425,12 @@ class PriceForecaster:
         self.estimated_at = now
 
     def estimate(
-        self, known: list[Slot], deadline: datetime, currency: str = "EUR"
+        self,
+        known: list[Slot],
+        deadline: datetime,
+        currency: str = "EUR",
+        *,
+        calibration: Calibration | None = None,
     ) -> tuple[list[Slot], Calibration]:
         """Estimated all-in price slots from the end of `known` to the deadline.
 
@@ -427,7 +438,7 @@ class PriceForecaster:
         includes VAT, taxes, supplier fees, the configured price adjustment and,
         for another currency than the euro, the exchange rate.
         """
-        calibration = self.calibration(known, currency)
+        calibration = calibration or self.calibration(known, currency)
         known_end = max((slot.end for slot in known), default=None)
         if known_end is None:
             raise ForecastUnavailable("No published prices")
@@ -459,7 +470,14 @@ class PriceForecaster:
             for hour, prices in hourly.items()
             if hour in self.model.market
         ]
+        if len(pairs) < 12:
+            raise CalibrationDataUnavailable(
+                f"Insufficient matching market prices ({len(pairs)} hours; at least 12 needed)"
+            )
+        if np.std([market for market, _ in pairs]) < 1e-4:
+            raise CalibrationDataUnavailable("Insufficient variation in matching market prices")
         calibration = fit_calibration(pairs, euro=currency == "EUR")
         if calibration is None:
             raise ForecastUnavailable("Published prices do not match market prices")
-        return calibration
+        matched_until = max(hour for hour in hourly if hour in self.model.market) + HOUR
+        return replace(calibration, matched_until=matched_until)

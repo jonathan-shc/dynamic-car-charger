@@ -133,6 +133,11 @@ class PriceForecastSensor(ChargerEntity, SensorEntity):
             ),
             "calibration_slope": round(calibration.slope, 4) if calibration else None,
             "calibration_offset": round(calibration.offset, 4) if calibration else None,
+            "warning": self.coordinator.forecast_warning,
+            "calibration_reused": self.coordinator.forecast_warning is not None,
+            "calibration_validated_at": (
+                (self.coordinator._saved_forecast_calibration or {}).get("validated_at")
+            ),
             "estimates": [],
         }
         if calibration and model and model.last_known_day:
