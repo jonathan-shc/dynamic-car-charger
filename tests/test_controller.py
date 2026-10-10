@@ -2086,3 +2086,46 @@ async def test_start_timeout_restarts_fresh_after_power_boost(rig):
         await c.async_reconcile()
     assert calls == ["turn_on"]
     assert c.data["status"] == "starting_charge" and c.data["error"] is None
+
+
+async def test_bike_probe_owns_plug_while_scheduler_disabled(rig):
+    from custom_components.dynamic_car_charger.bike import BikeLifecycle
+
+    hass, c, calls = rig
+    c.settings.update(
+        vehicle_type="bicycle",
+        charger_type="plug",
+        bike_arrival_probe=True,
+        bike_live_entity="binary_sensor.bike_live",
+        bike_speed_entity="sensor.bike_speed",
+    )
+    c.bike = BikeLifecycle()
+    c.bike.home = True
+    now = dt_util.utcnow()
+    c.bike.arrived_at = now
+    hass.states.async_set("binary_sensor.bike_live", "on")
+    hass.states.async_set("sensor.bike_speed", "0", {"unit_of_measurement": "km/h"})
+    await c.async_reconcile()
+    assert calls == ["turn_on"]
+    assert c.data["bike"]["probe_active"]
+    assert not c.data["charging_requested"]
+    assert c.store.async_save.await_count == 1  # saved ownership BEFORE enabling power
+    await c.async_reconcile(force_stop=True)
+    assert calls == ["turn_on", "turn_off"]
+    await c.async_reconcile()
+    assert not c.data["bike"]["probe_active"]
+    await c.async_reconcile()
+    assert calls == ["turn_on", "turn_off"]
+
+
+async def test_bike_retained_soc_is_not_a_new_measurement(rig):
+    from custom_components.dynamic_car_charger.bike import BikeLifecycle
+
+    hass, c, _calls = rig
+    c.bike = BikeLifecycle()
+    c.settings["bike_live_entity"] = "binary_sensor.bike_live"
+    hass.states.async_set("binary_sensor.bike_live", "off")
+    c._observed_soc = 19
+    soc, _effective, _prices = c._read(dt_util.utcnow())
+    assert soc == 19  # retained battery sensor says 20: don't reset offline energy credit
+    assert c._soc_offline

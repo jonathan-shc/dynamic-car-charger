@@ -21,6 +21,14 @@ async def async_setup_entry(hass, entry, async_add_entities):
             CostSensor(coordinator),
             SessionCostSensor(coordinator),
             PriceForecastSensor(coordinator),
+            *(
+                [
+                    BikeStatusSensor(coordinator, "bike_state"),
+                    BikeStatusSensor(coordinator, "bike_cable"),
+                ]
+                if coordinator.bike
+                else []
+            ),
         ]
     )
 
@@ -186,3 +194,25 @@ class PriceForecastSensor(ChargerEntity, SensorEntity):
             if row.get("end")
         ]
         return max((end for end in ends if end is not None), default=None)
+
+
+class BikeStatusSensor(ChargerEntity, SensorEntity):
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_icon = "mdi:bicycle"
+
+    def __init__(self, coordinator, key):
+        super().__init__(coordinator, key)
+        self.key = "state" if key == "bike_state" else "cable"
+        self._attr_options = (
+            ["unknown", "home_on", "home_off", "home_unreachable", "departing", "away", "arriving"]
+            if self.key == "state"
+            else ["unknown", "connected", "disconnected"]
+        )
+
+    @property
+    def native_value(self):
+        return self.coordinator.data.get("bike", {}).get(self.key, "unknown")
+
+    @property
+    def extra_state_attributes(self):
+        return self.coordinator.data.get("bike", {})

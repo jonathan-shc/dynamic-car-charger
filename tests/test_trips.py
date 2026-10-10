@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 from homeassistant.core import HomeAssistant, State
+from homeassistant.util import dt as dt_util
 
 from custom_components.dynamic_car_charger.trips import (
     PAUSE,
@@ -299,4 +300,29 @@ async def test_recorder_follows_latitude_and_longitude_sensors(tmp_path):
     hass.states.async_set("sensor.lat", "52.01")
     trips._read_pair(T0)
     assert len(trips._drive) == 2 and trips._drive[1][1:] == (52.01, 5.0)
+    await hass.async_stop(force=True)
+
+
+async def test_bike_recorder_does_not_import_phone_history_or_record_idle_phone(tmp_path):
+    from custom_components.dynamic_car_charger.trips import BikeTripRecorder
+
+    hass = HomeAssistant(str(tmp_path))
+    recorder = BikeTripRecorder(hass, "bike", "device_tracker.rider")
+    assert not recorder.import_history
+    now = dt_util.utcnow()
+    for i in range(3):
+        state = State(
+            "device_tracker.rider",
+            "not_home",
+            {"latitude": 52.0, "longitude": 5.0 + i * 0.002, "gps_accuracy": 10},
+            last_updated=now + timedelta(seconds=i * 60),
+        )
+        with patch(
+            "custom_components.dynamic_car_charger.trips.dt_util.utcnow",
+            return_value=state.last_updated,
+        ):
+            recorder._changed(SimpleNamespace(data={"new_state": state}))
+    assert not recorder._drive
+    assert not recorder.trips
+    assert len(recorder._recent) == 3
     await hass.async_stop(force=True)
