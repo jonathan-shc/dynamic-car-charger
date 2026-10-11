@@ -322,8 +322,8 @@ async def test_recorder_keeps_full_provider_trip_and_deduplicates(tmp_path):
         ],
     }
     state = State("sensor.last_trip", "track-1", attributes)
-    recorder._trip_changed(SimpleNamespace(data={"new_state": state}))
-    recorder._trip_changed(SimpleNamespace(data={"new_state": state}))
+    recorder._trip_changed({"data": {"new_state": state}})
+    recorder._trip_changed({"data": {"new_state": state}})
     assert len(recorder.trips) == 1
     assert recorder.trips[0]["track_id"] == "track-1"
     assert recorder.trips[0]["source"] == "niu_api"

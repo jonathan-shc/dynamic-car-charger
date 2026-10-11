@@ -352,7 +352,11 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         from homeassistant.helpers import entity_registry as er
 
         registry = er.async_get(self.hass)
-        entry = registry.async_get(soc_entity)
+        try:
+            entry = registry.async_get(soc_entity)
+        except AttributeError:
+            # Lightweight Home Assistant test registries may not implement lookup.
+            return None
         if entry is None or entry.device_id is None:
             return None
         candidates = [
