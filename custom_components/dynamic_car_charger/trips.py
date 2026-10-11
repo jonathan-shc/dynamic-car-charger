@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import Any
 
@@ -148,7 +148,7 @@ def _off_line(point: Point, start: Point, end: Point) -> float:
     return math.hypot(px - t * ex, py - t * ey)
 
 
-def record(points: list[Point]) -> dict[str, Any]:
+def record(points: list[Point], *, simplify_route: bool = True) -> dict[str, Any]:
     """A drive as kept: the route as [latitude, longitude, seconds after the start]."""
     start = points[0][0]
     return {
@@ -157,7 +157,7 @@ def record(points: list[Point]) -> dict[str, Any]:
         "distance_km": round(length_km(points), 2),
         "route": [
             [round(lat, 5), round(lon, 5), round((time - start).total_seconds())]
-            for time, lat, lon in simplify(points)
+            for time, lat, lon in (simplify(points) if simplify_route else points)
         ],
     }
 
@@ -274,6 +274,7 @@ class TripRecorder:
         entity_id: str | None,
         soc_entity: str | None = None,
         coordinates: tuple[str, str] | None = None,
+        trip_entity: str | None = None,
         *,
         import_history: bool = True,
     ) -> None:
@@ -282,6 +283,7 @@ class TripRecorder:
         self.entity_id = entity_id
         # A latitude and a longitude sensor, for a vehicle without a device tracker.
         self.coordinates = coordinates
+        self.trip_entity = trip_entity
         self._pair_unsub = None
         self.soc_entity = soc_entity
         self.store: Store = Store(hass, 1, f"{DOMAIN}.{entry_id}.trips")
@@ -314,6 +316,11 @@ class TripRecorder:
             ),
             async_track_time_interval(self.hass, self._tick, timedelta(minutes=1)),
         ]
+        if self.trip_entity:
+            self._unsubs.append(
+                async_track_state_change_event(self.hass, [self.trip_entity], self._trip_changed)
+            )
+            self._trip_changed({"data": {"new_state": self.hass.states.get(self.trip_entity)}})
         if self.soc_entity:
             self._unsubs.append(
                 async_track_state_change_event(self.hass, [self.soc_entity], self._soc_changed)
@@ -356,6 +363,54 @@ class TripRecorder:
     def _soc_changed(self, event: Event) -> None:
         if (found := reading(event.data.get("new_state"))) is not None:
             self.add_reading(found)
+
+    @callback
+    def _trip_changed(self, event: Event) -> None:
+        """Keep a provider's complete route when it publishes one after a ride."""
+        state = event.get("data", {}).get("new_state")
+        if state is None:
+            return
+        attributes = state.attributes
+        track_id = attributes.get("track_id") or state.state
+        route = attributes.get("route")
+        if not track_id or not isinstance(route, list) or len(route) < 2:
+            return
+        if any(trip.get("track_id") == track_id for trip in self.trips):
+            return
+        points: list[tuple[float, float]] = []
+        for row in route:
+            if not isinstance(row, dict):
+                continue
+            try:
+                points.append((float(row["latitude"]), float(row["longitude"])))
+            except (KeyError, TypeError, ValueError):
+                continue
+        if len(points) < 2:
+            return
+        start_ms, end_ms = attributes.get("start_time"), attributes.get("end_time")
+        try:
+            start = datetime.fromtimestamp(float(start_ms) / 1000, tz=UTC)
+            end = datetime.fromtimestamp(float(end_ms) / 1000, tz=UTC)
+        except (TypeError, ValueError, OSError):
+            return
+        duration = max(0.0, (end - start).total_seconds())
+        timed = [
+            (start + timedelta(seconds=duration * index / (len(points) - 1)), lat, lon)
+            for index, (lat, lon) in enumerate(points)
+        ]
+        entry = record(timed, simplify_route=False)
+        entry["track_id"] = str(track_id)
+        entry["source"] = "niu_api"
+        if isinstance(attributes.get("distance_km"), int | float):
+            entry["distance_km"] = round(float(attributes["distance_km"]), 3)
+        if isinstance(attributes.get("duration_seconds"), int | float):
+            entry["duration_seconds"] = round(float(attributes["duration_seconds"]), 1)
+        used = battery_used(start, end, self._readings)
+        if used is not None:
+            entry["battery_used"] = used
+        self.trips.append(entry)
+        self.trips.sort(key=lambda trip: trip["started"])
+        self._save()
 
     def add_reading(self, found: Reading) -> None:
         self._readings.append(found)
