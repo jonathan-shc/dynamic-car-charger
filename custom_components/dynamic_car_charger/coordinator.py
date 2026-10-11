@@ -1003,12 +1003,19 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             charger = self.hass.states.get(self.settings["charger_entity"])
             cable_connected = self.bike.cable == "connected"
             idle = self._sample_power < FULL_CHARGE_IDLE_KW
+            # The plug is normally switched off as soon as the bike stops
+            # drawing power. Keep the completion confirmation alive after
+            # that stop: a fresh charging run already proved that this is a
+            # real full-charge candidate, even though the plug is now off.
+            charger_was_used = (
+                charger is not None
+                and (charger.state == "on" or self._full_charge_seen_power)
+            )
             if (
                 estimated is not None
                 and estimated >= 98.5
                 and cable_connected
-                and charger is not None
-                and charger.state == "on"
+                and charger_was_used
                 and idle
             ):
                 if self._vehicle_completed:
