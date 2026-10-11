@@ -812,6 +812,18 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # session finishes. Never integrate that stale reading, but do not
             # turn a normal idle state into an input error either.
             power = 0.0
+        # A live BLE percentage is authoritative while the bicycle is parked
+        # or being ridden. Once the plug actually draws power, freeze that
+        # last fresh report and let the charger energy estimate advance it;
+        # the bike often keeps advertising the old percentage while charging.
+        if (
+            self.bike
+            and not self._power_report_old
+            and power >= FULL_CHARGE_IDLE_KW
+            and self._observed_soc is not None
+        ):
+            soc = self._observed_soc
+            self._soc_offline = True
         # Grid energy delivered since the previous sample.
         self._interval_kwh = 0.0
         if self._sample_time is not None:
@@ -1092,6 +1104,9 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if self.bike and not self.energy_mode and data.get("measured_soc") is None:
                     data["completion_reason"] = "bike_idle_near_full_estimate"
                     data["battery_completion_estimated"] = True
+                    # A Veloretti can stop at 98–99% and stop publishing BLE
+                    # packets. With no power flow this is the full state.
+                    data["estimated_soc"] = 100.0
             elif completion == "checking":
                 desired = False
                 data.update(
@@ -1788,7 +1803,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             not desired
             and not force
             and self._charger_idle()
-            and not (self.bike and (self.bike.probe_owned or self.bike.recover_stop))
+            and not self.bike
         )
         if idle_stop and self._command_attempt_time is not None:
             return IDLE_STOP
