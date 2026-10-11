@@ -279,7 +279,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         location = self.location_entity()
         coordinates = None if location or self.bike else self.location_sensors()
-        if location or coordinates:
+        trip_entity = None if self.bike else self.trip_entity()
+        if location or coordinates or trip_entity:
             recorder = BikeTripRecorder if self.bike else TripRecorder
             self.trips = recorder(
                 self.hass,
@@ -287,6 +288,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 location,
                 self.settings.get("soc_entity"),
                 coordinates,
+                trip_entity,
+                import_history=trip_entity is None,
             )
             await self.trips.async_start()
         await self.async_reconcile()
@@ -340,6 +343,24 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         latitude = [entity_id for entity_id in sensors if entity_id.endswith("latitude")]
         longitude = [entity_id for entity_id in sensors if entity_id.endswith("longitude")]
         return (latitude[0], longitude[0]) if latitude and longitude else None
+
+    def trip_entity(self) -> str | None:
+        """A provider's complete last-trip route, when it shares the battery device."""
+        soc_entity = self.settings.get("soc_entity")
+        if not soc_entity:
+            return None
+        from homeassistant.helpers import entity_registry as er
+
+        registry = er.async_get(self.hass)
+        entry = registry.async_get(soc_entity)
+        if entry is None or entry.device_id is None:
+            return None
+        candidates = [
+            other.entity_id
+            for other in er.async_entries_for_device(registry, entry.device_id)
+            if other.domain == "sensor" and other.entity_id.endswith("_last_trip")
+        ]
+        return candidates[0] if len(candidates) == 1 else None
 
     @callback
     def _changed(self, event: Event) -> None:

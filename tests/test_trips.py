@@ -306,6 +306,32 @@ async def test_recorder_follows_latitude_and_longitude_sensors(tmp_path):
     await hass.async_stop(force=True)
 
 
+async def test_recorder_keeps_full_provider_trip_and_deduplicates(tmp_path):
+    hass = HomeAssistant(str(tmp_path))
+    recorder = TripRecorder(hass, "test", None, trip_entity="sensor.last_trip")
+    recorder.store = SimpleNamespace(async_delay_save=lambda *a: None)
+    attributes = {
+        "track_id": "track-1",
+        "start_time": 1_800_000_000_000,
+        "end_time": 1_800_000_060_000,
+        "distance_km": 0.678,
+        "route": [
+            {"latitude": 52.0, "longitude": 5.0},
+            {"latitude": 52.001, "longitude": 5.001},
+            {"latitude": 52.002, "longitude": 5.002},
+        ],
+    }
+    state = State("sensor.last_trip", "track-1", attributes)
+    recorder._trip_changed(SimpleNamespace(data={"new_state": state}))
+    recorder._trip_changed(SimpleNamespace(data={"new_state": state}))
+    assert len(recorder.trips) == 1
+    assert recorder.trips[0]["track_id"] == "track-1"
+    assert recorder.trips[0]["source"] == "niu_api"
+    assert recorder.trips[0]["distance_km"] == 0.678
+    assert len(recorder.trips[0]["route"]) == 3
+    await hass.async_stop(force=True)
+
+
 async def test_bike_recorder_does_not_import_phone_history_or_record_idle_phone(tmp_path):
     from custom_components.dynamic_car_charger.trips import BikeTripRecorder
 
