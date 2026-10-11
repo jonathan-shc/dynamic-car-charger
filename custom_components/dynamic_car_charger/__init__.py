@@ -146,9 +146,13 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     async def delete_trip(call: ServiceCall) -> ServiceResponse:
         """Remove one stored trip by its exact start time or provider track ID."""
         coordinator = _coordinator_for(hass, call.data.get("config_entry_id"))
-        removed = coordinator.trips.remove_trip(
-            started=call.data.get("started"), track_id=call.data.get("track_id")
-        ) if coordinator.trips else None
+        removed = (
+            coordinator.trips.remove_trip(
+                started=call.data.get("started"), track_id=call.data.get("track_id")
+            )
+            if coordinator.trips
+            else None
+        )
         if removed is None:
             raise ServiceValidationError("No matching stored trip found")
         return {"removed": removed, **coordinator.trips_response(1000)}
