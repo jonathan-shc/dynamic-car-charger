@@ -999,6 +999,10 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # this branch the schedule keeps reporting ``charging`` forever and
         # the plug can remain on even though the bike is no longer charging.
         if self.bike and self.target >= 100:
+            # Preserve the terminal state after the outlet is switched off;
+            # otherwise the next planner tick can start the outlet again.
+            if self._vehicle_completed:
+                return "complete"
             estimated = data.get("estimated_soc")
             charger = self.hass.states.get(self.settings["charger_entity"])
             cable_connected = self.bike.cable == "connected"
@@ -1018,8 +1022,6 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 and charger_was_used
                 and idle
             ):
-                if self._vehicle_completed:
-                    return "complete"
                 if (
                     not (self.enabled or self.immediate_charging)
                     or data.get("status") == "input_error"
