@@ -527,6 +527,23 @@ class TripRecorder:
             trips.append(named)
         return {"trips": trips, "total": len(self.trips)}
 
+    def remove_trip(
+        self, *, started: datetime | None = None, track_id: str | None = None
+    ) -> dict[str, Any] | None:
+        """Remove exactly one stored trip selected by its start or provider ID."""
+        if started is None and not track_id:
+            return None
+        for index, trip in enumerate(self.trips):
+            same_start = started is not None and dt_util.parse_datetime(
+                trip["started"]
+            ) == dt_util.as_utc(started)
+            same_track = bool(track_id) and trip.get("track_id") == track_id
+            if same_start or same_track:
+                removed = self.trips.pop(index)
+                self._save()
+                return removed
+        return None
+
     def _save(self) -> None:
         self.store.async_delay_save(lambda: {"version": VERSION, "trips": self.trips}, 1)
 
