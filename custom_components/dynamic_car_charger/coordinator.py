@@ -391,6 +391,43 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if entity_id.endswith(suffix)
         )
 
+    def range_entity(self) -> str | None:
+        """Return the vehicle's remaining-range sensor sharing the SOC device."""
+        soc_entity = self.settings.get("soc_entity")
+        if not soc_entity:
+            return None
+        from homeassistant.helpers import entity_registry as er
+
+        try:
+            registry = er.async_get(self.hass)
+            entry = registry.async_get(soc_entity)
+            if entry is None or entry.device_id is None:
+                return None
+            candidates = [
+                other
+                for other in er.async_entries_for_device(registry, entry.device_id)
+                if other.domain == "sensor" and other.entity_id != soc_entity
+            ]
+        except Exception:  # noqa: BLE001 - optional metadata must never block charging
+            return None
+
+        def has_keyword(item) -> bool:
+            text = f"{item.entity_id} {item.original_name or ''}".casefold()
+            return any(word in text for word in ("range", "bereik", "mileage"))
+
+        matches = [
+            item for item in candidates
+            if item.original_device_class == "distance" or has_keyword(item)
+        ]
+        return min(
+            matches,
+            key=lambda item: (
+                0 if item.original_device_class == "distance" else 1,
+                0 if has_keyword(item) else 1,
+                item.entity_id,
+            ),
+        ).entity_id if matches else None
+
     @callback
     def _changed(self, event: Event) -> None:
         entity_id = event.data.get("entity_id")
@@ -735,6 +772,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         details["location_sensors"] = (
             list(self.trips.coordinates) if self.trips and self.trips.coordinates else None
         )
+        if self.bike:
+            details["range_entity"] = self.range_entity()
         return details
 
     def _price_rows(self, now: datetime) -> list[dict[str, Any]]:
