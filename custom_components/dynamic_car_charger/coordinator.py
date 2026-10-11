@@ -279,7 +279,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         location = self.location_entity()
         coordinates = None if location or self.bike else self.location_sensors()
-        trip_entity = None if self.bike else self.trip_entity()
+        trip_entities = () if self.bike else self.trip_entities()
+        trip_entity = trip_entities[0] if trip_entities else None
         if location or coordinates or trip_entity:
             recorder = BikeTripRecorder if self.bike else TripRecorder
             if self.bike:
@@ -299,6 +300,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self.settings.get("soc_entity"),
                     coordinates,
                     trip_entity,
+                    trip_entities=trip_entities,
                     import_history=trip_entity is None,
                 )
             await self.trips.async_start()
@@ -356,9 +358,14 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def trip_entity(self) -> str | None:
         """A provider's complete last-trip route, when it shares the battery device."""
+        entities = self.trip_entities()
+        return entities[0] if entities else None
+
+    def trip_entities(self) -> tuple[str, ...]:
+        """Provider route entities, including a selectable historical trip."""
         soc_entity = self.settings.get("soc_entity")
         if not soc_entity:
-            return None
+            return ()
         from homeassistant.helpers import entity_registry as er
 
         registry = er.async_get(self.hass)
@@ -366,15 +373,23 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             entry = registry.async_get(soc_entity)
         except AttributeError:
             # Lightweight Home Assistant test registries may not implement lookup.
-            return None
+            return ()
         if entry is None or entry.device_id is None:
-            return None
-        candidates = [
+            return ()
+        candidates = {
             other.entity_id
             for other in er.async_entries_for_device(registry, entry.device_id)
-            if other.domain == "sensor" and other.entity_id.endswith("_last_trip")
-        ]
-        return candidates[0] if len(candidates) == 1 else None
+            if other.domain == "sensor"
+            and other.entity_id.endswith(("_last_trip", "_selected_trip"))
+        }
+        # Prefer the selectable route first; the last-trip sensor is the fallback
+        # and also catches a freshly completed ride before the selection updates.
+        return tuple(
+            entity_id
+            for suffix in ("_selected_trip", "_last_trip")
+            for entity_id in sorted(candidates)
+            if entity_id.endswith(suffix)
+        )
 
     @callback
     def _changed(self, event: Event) -> None:
