@@ -88,3 +88,24 @@ rebuild_today_trips:
       selector:
         config_entry:
           integration: dynamic_car_charger
+
+delete_trip:
+  name: Delete trip
+  description: Remove one stored trip by its exact start time or provider track ID.
+  fields:
+    config_entry_id:
+      name: Config entry ID
+      required: true
+      selector:
+        config_entry:
+          integration: dynamic_car_charger
+    started:
+      name: Started
+      description: Exact start timestamp of the stored trip.
+      selector:
+        datetime:
+    track_id:
+      name: Track ID
+      description: Provider track ID of the stored trip.
+      selector:
+        text:

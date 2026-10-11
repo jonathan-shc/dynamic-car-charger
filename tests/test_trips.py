@@ -213,6 +213,17 @@ def test_response_is_newest_first(recorder):
     assert answer["total"] == 5
 
 
+def test_remove_trip_by_start_or_provider_id(recorder):
+    old = record([at(0, 0), at(60, 10)])
+    old["track_id"] = "old-provider-trip"
+    keep = record([at(900, 10), at(960, 20)])
+    recorder.trips = [old, keep]
+    removed = recorder.remove_trip(started=T0)
+    assert removed == old
+    assert recorder.trips == [keep]
+    assert recorder.remove_trip(track_id="does-not-exist") is None
+
+
 def soc(seconds: float, percent: float):
     return (T0 + timedelta(seconds=seconds), percent)
 

@@ -17,6 +17,7 @@ from .const import (
     SERVICE_ADD_SESSIONS,
     SERVICE_GET_SESSIONS,
     SERVICE_GET_TRIPS,
+    SERVICE_DELETE_TRIP,
     SERVICE_SET_SCHEDULE,
     SERVICE_SET_SESSION,
 )
@@ -137,6 +138,30 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             {
                 vol.Optional("config_entry_id"): cv.string,
                 vol.Optional("limit", default=20): vol.All(vol.Coerce(int), vol.Range(1, 1000)),
+            }
+        ),
+        supports_response=SupportsResponse.ONLY,
+    )
+
+    async def delete_trip(call: ServiceCall) -> ServiceResponse:
+        """Remove one stored trip by its exact start time or provider track ID."""
+        coordinator = _coordinator_for(hass, call.data.get("config_entry_id"))
+        removed = coordinator.trips.remove_trip(
+            started=call.data.get("started"), track_id=call.data.get("track_id")
+        ) if coordinator.trips else None
+        if removed is None:
+            raise ServiceValidationError("No matching stored trip found")
+        return {"removed": removed, **coordinator.trips_response(1000)}
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_DELETE_TRIP,
+        delete_trip,
+        vol.Schema(
+            {
+                vol.Required("config_entry_id"): cv.string,
+                vol.Exclusive("started", "trip_selector"): cv.datetime,
+                vol.Exclusive("track_id", "trip_selector"): cv.string,
             }
         ),
         supports_response=SupportsResponse.ONLY,
