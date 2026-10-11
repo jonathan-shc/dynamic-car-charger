@@ -282,15 +282,25 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         trip_entity = None if self.bike else self.trip_entity()
         if location or coordinates or trip_entity:
             recorder = BikeTripRecorder if self.bike else TripRecorder
-            self.trips = recorder(
-                self.hass,
-                self.entry.entry_id,
-                location,
-                self.settings.get("soc_entity"),
-                coordinates,
-                trip_entity,
-                import_history=trip_entity is None,
-            )
+            if self.bike:
+                self.trips = recorder(
+                    self.hass,
+                    self.entry.entry_id,
+                    location,
+                    self.settings.get("soc_entity"),
+                    coordinates,
+                    trip_entity,
+                )
+            else:
+                self.trips = recorder(
+                    self.hass,
+                    self.entry.entry_id,
+                    location,
+                    self.settings.get("soc_entity"),
+                    coordinates,
+                    trip_entity,
+                    import_history=trip_entity is None,
+                )
             await self.trips.async_start()
         await self.async_reconcile()
 

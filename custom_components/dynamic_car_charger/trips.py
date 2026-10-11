@@ -367,7 +367,8 @@ class TripRecorder:
     @callback
     def _trip_changed(self, event: Event) -> None:
         """Keep a provider's complete route when it publishes one after a ride."""
-        state = event.get("data", {}).get("new_state")
+        data = event.data if hasattr(event, "data") else event.get("data", {})
+        state = data.get("new_state")
         if state is None:
             return
         attributes = state.attributes
