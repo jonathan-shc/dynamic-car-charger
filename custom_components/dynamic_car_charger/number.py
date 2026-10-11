@@ -14,13 +14,14 @@ async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = entry.runtime_data
     # Without a battery sensor the target is an amount of energy, not a percentage.
     target = EnergyGoal(coordinator) if coordinator.energy_mode else Target(coordinator)
-    async_add_entities(
-        [
-            target,
-            PriceThreshold(coordinator),
-            PriceSetting(coordinator, "cheap_price", "mdi:piggy-bank-outline"),
-        ]
-    )
+    entities = [
+        target,
+        PriceThreshold(coordinator),
+        PriceSetting(coordinator, "cheap_price", "mdi:piggy-bank-outline"),
+    ]
+    if not coordinator.energy_mode:
+        entities.append(AfterDeadlineTarget(coordinator))
+    async_add_entities(entities)
 
 
 class Target(ChargerEntity, NumberEntity):
@@ -111,3 +112,27 @@ class PriceSetting(ChargerEntity, NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         await self.coordinator.async_change(**{self._key: number(value, -1, 5)})
+
+
+class AfterDeadlineTarget(ChargerEntity, NumberEntity):
+    """Battery target used by the optional cheap-after-deadline mode."""
+
+    _attr_native_min_value = 0
+    _attr_native_max_value = 100
+    _attr_native_step = 1
+    _attr_native_unit_of_measurement = "%"
+    _attr_mode = NumberMode.SLIDER
+    _attr_icon = "mdi:battery-clock-outline"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator):
+        super().__init__(coordinator, "cheap_after_deadline_target")
+
+    @property
+    def native_value(self) -> float:
+        return self.coordinator.cheap_after_deadline_target
+
+    async def async_set_native_value(self, value: float) -> None:
+        await self.coordinator.async_change(
+            cheap_after_deadline_target=number(value, 0, 100)
+        )

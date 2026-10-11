@@ -111,6 +111,9 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.enabled = False
         self.immediate_charging = False
         self.target = 80.0
+        # Target used once cheap-after-deadline mode takes over. It is
+        # initialized to the normal target for backwards-compatible behavior.
+        self.cheap_after_deadline_target = self.target
         # Without a battery sensor the integration charges an amount of energy
         # instead of up to a battery percentage.
         self.energy_mode = not self.settings.get("soc_entity")
@@ -199,6 +202,9 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         calibration = saved.get("forecast_calibration")
         self._saved_forecast_calibration = calibration if isinstance(calibration, dict) else None
         self.target = number(saved.get("target", 80), 0, 100)
+        self.cheap_after_deadline_target = number(
+            saved.get("cheap_after_deadline_target", self.target), 0, 100
+        )
         self.energy_goal = number(saved.get("energy_goal", 20), 0, 200)
         self._delivered_kwh = number(saved.get("delivered_kwh", 0), 0)
         self.enabled = bool(saved.get("enabled", False))
@@ -529,6 +535,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "cheap_only": self.cheap_only,
             "cheap_price": self.cheap_price,
             "cheap_after_deadline": self.cheap_after_deadline,
+            "cheap_after_deadline_target": self.cheap_after_deadline_target,
             "schedule": self.schedule,
             "schedule_targets": self.schedule_targets,
             "schedule_enabled": self.schedule_enabled,
@@ -571,7 +578,10 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if (
                 changes.get("enabled") is True
                 or changes.get("immediate_charging") is True
-                or any(key in changes for key in ("target", "deadline"))
+                or any(
+                    key in changes
+                    for key in ("target", "deadline", "cheap_after_deadline_target")
+                )
             ):
                 self._vehicle_completed = False
                 self._full_charge_seen_power = False
@@ -1098,6 +1108,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "cheap_only": self.cheap_only,
                 "cheap_price_eur_kwh": self.cheap_price,
                 "cheap_after_deadline": self.cheap_after_deadline,
+                "cheap_after_deadline_target": self.cheap_after_deadline_target,
                 "schedule": {
                     "enabled": self.schedule_enabled,
                     "days": dict(self.schedule),
@@ -1346,7 +1357,13 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Without a deadline: to the target in the hours at or below the cheap price,
         cheapest first. In the cheap-only mode, or once the deadline passed when chosen."""
         soc, effective, prices = self._read(now, include_prices=True)
-        target = self._goal_target()
+        target = (
+            self.cheap_after_deadline_target
+            if after_deadline and not self.energy_mode
+            else self._goal_target()
+        )
+        if after_deadline:
+            data["target_percentage"] = target
         # With the forecast the cheap-only mode also waits for a cheaper hour expected
         # later; estimated hours never start charging.
         pool = prices + self._estimates(prices, now + FORECAST_REACH)

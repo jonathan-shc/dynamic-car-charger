@@ -236,6 +236,9 @@
       },
       "cheap_price": {
         "name": "Cheap charging price"
+      },
+      "cheap_after_deadline_target": {
+        "name": "Target after deadline"
       }
     },
     "datetime": {
