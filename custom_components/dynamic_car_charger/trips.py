@@ -320,7 +320,9 @@ class TripRecorder:
         ]
         if self.trip_entities:
             self._unsubs.append(
-                async_track_state_change_event(self.hass, list(self.trip_entities), self._trip_changed)
+                async_track_state_change_event(
+                    self.hass, list(self.trip_entities), self._trip_changed
+                )
             )
             for entity_id in self.trip_entities:
                 self._trip_changed({"data": {"new_state": self.hass.states.get(entity_id)}})
