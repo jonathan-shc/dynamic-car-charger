@@ -275,6 +275,7 @@ class TripRecorder:
         soc_entity: str | None = None,
         coordinates: tuple[str, str] | None = None,
         trip_entity: str | None = None,
+        trip_entities: tuple[str, ...] | None = None,
         *,
         import_history: bool = True,
     ) -> None:
@@ -284,6 +285,7 @@ class TripRecorder:
         # A latitude and a longitude sensor, for a vehicle without a device tracker.
         self.coordinates = coordinates
         self.trip_entity = trip_entity
+        self.trip_entities = trip_entities or ((trip_entity,) if trip_entity else ())
         self._pair_unsub = None
         self.soc_entity = soc_entity
         self.store: Store = Store(hass, 1, f"{DOMAIN}.{entry_id}.trips")
@@ -316,11 +318,12 @@ class TripRecorder:
             ),
             async_track_time_interval(self.hass, self._tick, timedelta(minutes=1)),
         ]
-        if self.trip_entity:
+        if self.trip_entities:
             self._unsubs.append(
-                async_track_state_change_event(self.hass, [self.trip_entity], self._trip_changed)
+                async_track_state_change_event(self.hass, list(self.trip_entities), self._trip_changed)
             )
-            self._trip_changed({"data": {"new_state": self.hass.states.get(self.trip_entity)}})
+            for entity_id in self.trip_entities:
+                self._trip_changed({"data": {"new_state": self.hass.states.get(entity_id)}})
         if self.soc_entity:
             self._unsubs.append(
                 async_track_state_change_event(self.hass, [self.soc_entity], self._soc_changed)
@@ -372,6 +375,10 @@ class TripRecorder:
         if state is None:
             return
         attributes = state.attributes
+        if isinstance(attributes.get("trips"), list):
+            # The history sensor carries metadata only; selected/last-trip
+            # entities carry the route and are handled by the same parser.
+            return
         track_id = attributes.get("track_id") or state.state
         route = attributes.get("route")
         if not track_id or not isinstance(route, list) or len(route) < 2:
