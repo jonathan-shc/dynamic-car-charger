@@ -930,6 +930,48 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self, now: datetime, data: dict[str, Any], desired: bool
     ) -> str | None:
         """A vehicle can finish at a rounded 99%; never restart it while confirming."""
+        # The Veloretti BLE sensor stops publishing once the bike is full or
+        # asleep. In that case ``measured_soc`` is intentionally None while
+        # the energy estimate is just below 100% and the smart plug reports
+        # no draw. Treat a connected, idle bike at the top of its estimate as
+        # complete after the same confirmation period used for cars. Without
+        # this branch the schedule keeps reporting ``charging`` forever and
+        # the plug can remain on even though the bike is no longer charging.
+        if self.bike and self.target >= 100:
+            estimated = data.get("estimated_soc")
+            charger = self.hass.states.get(self.settings["charger_entity"])
+            cable_connected = self.bike.cable == "connected"
+            idle = self._sample_power < FULL_CHARGE_IDLE_KW
+            if (
+                estimated is not None
+                and estimated >= 98.5
+                and cable_connected
+                and charger is not None
+                and charger.state == "on"
+                and idle
+            ):
+                if self._vehicle_completed:
+                    return "complete"
+                if (
+                    not (self.enabled or self.immediate_charging)
+                    or data.get("status") == "input_error"
+                    or self._load_management_waiting()
+                    or self._load_management_settling(now)
+                ):
+                    self._full_charge_idle_since = None
+                    return None
+                if self._full_charge_idle_since is None:
+                    if not desired or not self._charge_requested or self._command is False:
+                        return None
+                    self._full_charge_idle_since = now
+                confirm_at = self._full_charge_idle_since + FULL_CHARGE_CONFIRMATION
+                if now < confirm_at:
+                    data["completion_confirmation_until"] = confirm_at.isoformat()
+                    return "checking"
+                self._vehicle_completed = True
+                return "complete"
+            self._full_charge_idle_since = None
+
         soc = data.get("measured_soc")
         if self.energy_mode or soc is None:
             return None
@@ -1047,6 +1089,9 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     estimated_cost_eur=0.0,
                     active_charge_until=None,
                 )
+                if self.bike and not self.energy_mode and data.get("measured_soc") is None:
+                    data["completion_reason"] = "bike_idle_near_full_estimate"
+                    data["battery_completion_estimated"] = True
             elif completion == "checking":
                 desired = False
                 data.update(
