@@ -1029,8 +1029,12 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self._full_charge_idle_since = None
                     return None
                 if self._full_charge_idle_since is None:
-                    if not desired or not self._charge_requested or self._command is False:
-                        return None
+                    # Completion is also valid after the plug's short cable
+                    # probe. At that point there is deliberately no active
+                    # charge request anymore: the probe only checks whether
+                    # the bike reports a connected cable. Requiring an
+                    # active request here caused the plug to be re-enabled
+                    # indefinitely when an estimated 98.5%+ battery drew 0 W.
                     self._full_charge_idle_since = now
                 confirm_at = self._full_charge_idle_since + FULL_CHARGE_CONFIRMATION
                 if now < confirm_at:
