@@ -726,6 +726,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         plug = self.hass.states.get(self.settings["charger_entity"])
         return BikeObservation(
             live=live,
+            live_report=live_state.last_reported if live_state else None,
             speed=speed,
             speed_report=speed_state.last_reported if speed_state else None,
             trip_km=trip_km,

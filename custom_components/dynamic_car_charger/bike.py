@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 @dataclass
 class BikeObservation:
     live: bool = False
+    live_report: datetime | None = None
     speed: float | None = None
     speed_report: datetime | None = None
     trip_km: float | None = None
@@ -40,6 +41,7 @@ class BikeLifecycle:
         self.cable = "unknown"
         self.cable_at: datetime | None = None
         self.cable_evidence: str | None = None
+        self.last_connected_at: datetime | None = None
         self.moving_since: datetime | None = None
         self.last_motion: datetime | None = None
         self.departure_pending = False
@@ -63,6 +65,11 @@ class BikeLifecycle:
             self._trip_consumed = True
             self._trip_base_km = float(consumed)
         self.cable = "unknown"
+        try:
+            connected = datetime.fromisoformat(saved.get("last_connected_at") or "")
+        except (ValueError, TypeError):
+            connected = None
+        self.last_connected_at = connected if connected and connected.tzinfo is not None else None
         # Historical connection evidence survives restart; it is never a new
         # measurement. Ride/motion invalidates it, not a stationary wake-up.
         try:
@@ -88,6 +95,7 @@ class BikeLifecycle:
             "cable": self.cable,
             "cable_confirmed_at": self.cable_at.isoformat() if self.cable_at else None,
             "cable_evidence": self.cable_evidence,
+            "last_connected_at": self.last_connected_at.isoformat() if self.last_connected_at else None,
             "consumed_trip_km": self._consumed_trip_km,
         }
 
@@ -131,6 +139,10 @@ class BikeLifecycle:
 
     def update(self, now: datetime, o: BikeObservation):
         self._observe_trip(now, o)
+        if o.live:
+            # Use the BLE source timestamp when available. This survives radio
+            # loss and tells the UI exactly how fresh the last contact was.
+            self.last_connected_at = o.live_report or now
         previous = self.state
         moving = o.live and o.speed is not None and o.speed >= 2
         if moving:
@@ -309,6 +321,7 @@ class BikeLifecycle:
             "cable": self.cable,
             "cable_evidence": self.cable_evidence,
             "cable_confirmed_at": self.cable_at.isoformat() if self.cable_at else None,
+            "last_connected_at": self.last_connected_at.isoformat() if self.last_connected_at else None,
             "ride_distance_m": round(self.ride_distance_m, 1),
             "ride_evidence": "bluetooth_trip",
             "ride_qualified": self.ride_qualified,
