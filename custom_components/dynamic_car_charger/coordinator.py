@@ -1315,12 +1315,15 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         data.update(self._battery_details(now, soc, effective))
         data["plan_status"] = "immediate_charging"
         data["plan_is_provisional"] = False
-        if self._target_reached(soc):
+        estimated_target_reached = self.target < 100 and self._target_reached(effective)
+        if self._target_reached(soc) or estimated_target_reached:
             self.immediate_charging = False
             if not self.enabled:
                 self._pending_stop = True
             data["immediate_charging"] = False
             data["status"] = data["plan_status"] = "target_reached"
+            if estimated_target_reached and not self._target_reached(soc):
+                data["target_reached_estimated"] = True
             return False
         data["status"] = "charging"
         return True
@@ -1465,13 +1468,18 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         data.update(self._battery_details(now, soc, effective))
         data["planning_method"] = "cheap_after_deadline" if after_deadline else "cheap_only"
         data["plan_is_provisional"] = True
-        desired = plan.charging_at(now) and not self._target_reached(soc, target)
+        estimated_target_reached = target < 100 and self._target_reached(effective, target)
+        desired = plan.charging_at(now) and not (
+            self._target_reached(soc, target) or estimated_target_reached
+        )
         self._clear_active_run()
-        if self._target_reached(soc, target):
+        if self._target_reached(soc, target) or estimated_target_reached:
             status = "target_reached"
+            if estimated_target_reached and not self._target_reached(soc, target):
+                data["target_reached_estimated"] = True
         elif desired:
             status = "charging"
-        elif effective >= target:
+        elif target >= 100 and effective >= target:
             status = "awaiting_soc_confirmation"
         elif plan.slots:
             status = "scheduled"
@@ -1565,8 +1573,10 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
         planned_now = plan.charging_at(now)
+        estimated_target_reached = target < 100 and self._target_reached(effective, target)
         awaiting_soc_confirmation = (
-            not self._target_reached(soc, target)
+            target >= 100
+            and not self._target_reached(soc, target)
             and effective >= target
             and self._credit_kwh > 0
             and self._active_charge_until is not None
@@ -1635,18 +1645,23 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             and grace_minutes > 0
             and now < extension_until
             and not self._target_reached(soc, target)
+            and not estimated_target_reached
             and active_session
         )
-        desired = ((planned_now and not after_deadline) or extension_active) and not self._target_reached(soc, target)
+        desired = ((planned_now and not after_deadline) or extension_active) and not (
+            self._target_reached(soc, target) or estimated_target_reached
+        )
         data["deadline_extension_active"] = extension_active
         if extension_active:
             self._active_charge_until = extension_until
         data["active_charge_until"] = (
             self._active_charge_until.isoformat() if self._active_charge_until else None
         )
-        if self._target_reached(soc, target):
+        if self._target_reached(soc, target) or estimated_target_reached:
             self._clear_active_run()
             status = "target_reached"
+            if estimated_target_reached and not self._target_reached(soc, target):
+                data["target_reached_estimated"] = True
         elif extension_active:
             status = "charging_overtime"
         elif after_deadline:
