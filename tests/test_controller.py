@@ -114,6 +114,19 @@ async def test_target_reached_pauses(rig):
     assert not c.data["charging_requested"]
 
 
+async def test_tiny_gap_to_target_does_not_make_short_slot(rig):
+    hass, c, calls = rig
+    c.target = 80
+    hass.states.async_set("sensor.battery", "79.8", {"unit_of_measurement": "%"})
+
+    await c.async_change(enabled=True)
+
+    assert c.data["status"] == "target_reached"
+    assert c.data["slots"] == []
+    assert c.data["charging_requested"] is False
+    assert calls == []
+
+
 async def test_estimated_target_waits_for_measured_soc(rig):
     hass, c, calls = rig
     c.target = 100

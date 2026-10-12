@@ -75,6 +75,9 @@ SESSION_END_STATUSES = ("set_deadline", "target_reached", "deadline_passed")
 IDLE_POWER_KW = 0.1  # Maximum idle threshold; small chargers use 10% of rated power.
 FULL_CHARGE_IDLE_KW = 0.005
 FULL_CHARGE_CONFIRMATION = timedelta(minutes=3)
+# Battery sensors often fluctuate by a few tenths around a requested target.
+# Do not create a sub-minute charging slot for that measurement noise.
+SOC_TARGET_TOLERANCE = 0.5
 # The pause isn't confirmed, but nothing flows: no error, and keep watching.
 IDLE_STOP = "idle_stop"
 PENDING_STATUSES = ("unlocking_charger", "starting_charge", "stopping_charge")
@@ -807,6 +810,11 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """The target in percent: of the battery, or of the energy to charge."""
         return 100.0 if self.energy_mode else self.target
 
+    def _target_reached(self, soc: float, target: float | None = None) -> bool:
+        """Treat a battery within half a percentage point as at its target."""
+        target = self._goal_target() if target is None else target
+        return soc >= target if self.energy_mode else soc >= target - SOC_TARGET_TOLERANCE
+
     def _capacity(self) -> float:
         """Energy for 100%: the battery, or the energy to charge."""
         return max(self.energy_goal, 0.1) if self.energy_mode else self.settings["capacity_kwh"]
@@ -1251,7 +1259,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         data.update(self._battery_details(now, soc, effective))
         data["plan_status"] = "immediate_charging"
         data["plan_is_provisional"] = False
-        if soc >= self._goal_target():
+        if self._target_reached(soc):
             self.immediate_charging = False
             if not self.enabled:
                 self._pending_stop = True
@@ -1378,6 +1386,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         if after_deadline:
             data["target_percentage"] = target
+        planning_target = effective if self._target_reached(effective, target) else target
         # With the forecast the cheap-only mode also waits for a cheaper hour expected
         # later; estimated hours never start charging.
         pool = prices + self._estimates(prices, now + FORECAST_REACH)
@@ -1388,7 +1397,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             now,
             max(known_until, now + timedelta(minutes=1)),
             effective,
-            target,
+            planning_target,
             self._capacity(),
             self.settings["power_kw"],
             self._efficiency(),
@@ -1400,9 +1409,9 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         data.update(self._battery_details(now, soc, effective))
         data["planning_method"] = "cheap_after_deadline" if after_deadline else "cheap_only"
         data["plan_is_provisional"] = True
-        desired = plan.charging_at(now) and soc < target
+        desired = plan.charging_at(now) and not self._target_reached(soc, target)
         self._clear_active_run()
-        if soc >= target:
+        if self._target_reached(soc, target):
             status = "target_reached"
         elif desired:
             status = "charging"
@@ -1419,11 +1428,12 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _choose_plan(self, prices, now, effective, data) -> tuple[Plan, bool]:
         """Return the plan to follow and whether published prices reach the deadline."""
         threshold = self.settings.get("max_price_eur_kwh", 0.20)
+        planning_target = effective if self._target_reached(effective, self._goal_target()) else self._goal_target()
         args = (
             now,
             self.deadline,
             effective,
-            self._goal_target(),
+            planning_target,
             self._capacity(),
             self.settings["power_kw"],
             self._efficiency(),
@@ -1500,7 +1510,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         planned_now = plan.charging_at(now)
         awaiting_soc_confirmation = (
-            soc < target
+            not self._target_reached(soc, target)
             and effective >= target
             and self._credit_kwh > 0
             and self._active_charge_until is not None
@@ -1568,17 +1578,17 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             after_deadline
             and grace_minutes > 0
             and now < extension_until
-            and soc < target
+            and not self._target_reached(soc, target)
             and active_session
         )
-        desired = ((planned_now and not after_deadline) or extension_active) and soc < target
+        desired = ((planned_now and not after_deadline) or extension_active) and not self._target_reached(soc, target)
         data["deadline_extension_active"] = extension_active
         if extension_active:
             self._active_charge_until = extension_until
         data["active_charge_until"] = (
             self._active_charge_until.isoformat() if self._active_charge_until else None
         )
-        if soc >= target:
+        if self._target_reached(soc, target):
             self._clear_active_run()
             status = "target_reached"
         elif extension_active:
