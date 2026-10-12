@@ -69,7 +69,13 @@ class BikeLifecycle:
             connected = datetime.fromisoformat(saved.get("last_connected_at") or "")
         except (ValueError, TypeError):
             connected = None
-        self.last_connected_at = connected if connected and connected.tzinfo is not None else None
+        self.last_connected_at = (
+            connected
+            if saved.get("last_connected_source") == "fresh_live"
+            and connected
+            and connected.tzinfo is not None
+            else None
+        )
         # Historical connection evidence survives restart; it is never a new
         # measurement. Ride/motion invalidates it, not a stationary wake-up.
         try:
@@ -96,6 +102,7 @@ class BikeLifecycle:
             "cable_confirmed_at": self.cable_at.isoformat() if self.cable_at else None,
             "cable_evidence": self.cable_evidence,
             "last_connected_at": self.last_connected_at.isoformat() if self.last_connected_at else None,
+            "last_connected_source": "fresh_live" if self.last_connected_at else None,
             "consumed_trip_km": self._consumed_trip_km,
         }
 
