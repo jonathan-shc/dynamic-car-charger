@@ -146,6 +146,10 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._forecast_unsub = None
         self._lock = asyncio.Lock()
         self._observed_soc: float | None = None
+        # Timestamp of the SOC sample used as the baseline for the energy
+        # estimate. A repeated percentage with a newer measurement timestamp
+        # is still a fresh baseline and must clear the old estimate.
+        self._soc_sample_at: datetime | None = None
         # How much longer a % takes near a full battery, learned per band from
         # charging sessions: {band start: [sum of factor x points, points]}.
         self._taper_learned: dict[float, list[float]] = {}
@@ -860,6 +864,12 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return 1.0 if self.energy_mode else self.settings["efficiency"]
 
     def _read(self, now: datetime, *, include_prices: bool = True):
+        reported_at = None if self.energy_mode else self._soc_reported_at()
+        new_soc_sample = (
+            reported_at is not None and reported_at != self._soc_sample_at
+        )
+        if new_soc_sample:
+            self._soc_sample_at = reported_at
         if self.energy_mode:
             soc = None
         else:
@@ -946,7 +956,9 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return soc, soc, prices
         if soc != self._observed_soc and not self._soc_offline:
             self._learn_taper(now, soc)
-        if not self._soc_offline and (soc != self._observed_soc or not self.enabled):
+        if not self._soc_offline and (
+            new_soc_sample or soc != self._observed_soc or not self.enabled
+        ):
             self._observed_soc, self._credit_kwh = soc, 0.0
         else:
             self._credit_kwh += self._interval_kwh * self.settings["efficiency"]

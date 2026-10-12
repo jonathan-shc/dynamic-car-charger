@@ -696,6 +696,22 @@ async def test_separate_soc_measurement_timestamp_counts_as_fresh(rig):
     assert c.data["soc_report_old"] is False
 
 
+async def test_new_unchanged_soc_sample_resets_old_energy_estimate(rig):
+    hass, c, _ = rig
+    c.enabled = True
+    c.settings["soc_measurement_entity"] = "sensor.battery_measurement"
+    measured_at = dt_util.utcnow()
+    hass.states.async_set(
+        "sensor.battery_measurement", measured_at.isoformat(), {"device_class": "timestamp"}
+    )
+    c._credit_kwh = 1.0
+
+    soc, effective, _ = c._read(measured_at)
+
+    assert soc == 20
+    assert effective == pytest.approx(20)
+
+
 async def test_unconfirmed_unlock_becomes_error_but_keeps_retrying(rig):
     hass, c, calls = rig
     c.settings["lock_entity"] = "lock.charger"
