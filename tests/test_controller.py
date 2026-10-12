@@ -675,6 +675,27 @@ async def test_old_battery_report_is_flagged_but_does_not_stop_the_plan(rig):
     assert calls == ["turn_on"]
 
 
+async def test_separate_soc_measurement_timestamp_counts_as_fresh(rig):
+    hass, c, _ = rig
+    measured_at = dt_util.utcnow()
+    c.settings["soc_measurement_entity"] = "sensor.battery_measurement"
+    hass.states.async_set(
+        "sensor.battery_measurement",
+        measured_at.isoformat(),
+        {"device_class": "timestamp"},
+    )
+
+    assert c._soc_reported_at() == measured_at
+
+    later = measured_at + timedelta(minutes=10)
+    with patch(
+        "custom_components.dynamic_car_charger.coordinator.dt_util.utcnow",
+        return_value=later,
+    ):
+        await c.async_change(enabled=True)
+    assert c.data["soc_report_old"] is False
+
+
 async def test_unconfirmed_unlock_becomes_error_but_keeps_retrying(rig):
     hass, c, calls = rig
     c.settings["lock_entity"] = "lock.charger"

@@ -277,6 +277,11 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             if self.settings.get(key)
         )
+        # Some BLE integrations keep the percentage unchanged when a fresh
+        # frame repeats it, but update a separate measurement-timestamp sensor.
+        # Track that entity so freshness is evaluated from the measurement.
+        if measurement_entity := self._soc_measurement_entity():
+            tracked_entities.append(measurement_entity)
         self._stop_unsub = self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, self._shutdown)
         self._unsubs = [
             async_track_state_change_event(self.hass, tracked_entities, self._changed),
@@ -815,6 +820,37 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         target = self._goal_target() if target is None else target
         return soc >= target if self.energy_mode else soc >= target - SOC_TARGET_TOLERANCE
 
+    def _soc_measurement_entity(self) -> str | None:
+        """Find the timestamp sensor for the latest SOC sample, if available."""
+        configured = self.settings.get("soc_measurement_entity")
+        if configured:
+            return configured
+        soc_entity = self.settings.get("soc_entity")
+        if not soc_entity:
+            return None
+        candidates = []
+        if soc_entity.endswith("_batterij_experimenteel"):
+            candidates.append(
+                soc_entity[: -len("_batterij_experimenteel")] + "_laatste_batterijmeting"
+            )
+        if soc_entity.endswith("_battery"):
+            candidates.append(
+                soc_entity[: -len("_battery")] + "_last_battery_measurement"
+            )
+        return next((entity_id for entity_id in candidates if self.hass.states.get(entity_id)), None)
+
+    def _soc_reported_at(self) -> datetime | None:
+        """Return the latest SOC sample time, falling back to state reporting."""
+        soc_state = self.hass.states.get(self.settings["soc_entity"])
+        measurement_entity = self._soc_measurement_entity()
+        if measurement_entity:
+            measurement_state = self.hass.states.get(measurement_entity)
+            if measurement_state is not None:
+                parsed = dt_util.parse_datetime(str(measurement_state.state))
+                if parsed is not None:
+                    return dt_util.as_utc(parsed)
+        return soc_state.last_reported if soc_state is not None else None
+
     def _capacity(self) -> float:
         """Energy for 100%: the battery, or the energy to charge."""
         return max(self.energy_goal, 0.1) if self.energy_mode else self.settings["capacity_kwh"]
@@ -835,7 +871,16 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     and not state.attributes.get("restored")
                 )
                 if self.bike:
-                    valid = valid and self._bike_observation(now).live
+                    # A parked bike can be powered off and therefore have no
+                    # live BLE flag while its timestamp sensor still proves a
+                    # recent battery frame. Do not call that SOC offline.
+                    measured_at = self._soc_reported_at()
+                    if self._soc_measurement_entity() and measured_at is not None:
+                        valid = valid and timedelta(0) <= now - measured_at <= timedelta(
+                            minutes=self.settings["soc_max_age_minutes"]
+                        )
+                    else:
+                        valid = valid and self._bike_observation(now).live
                 if valid and state.attributes.get("unit_of_measurement") != "%":
                     raise ValueError("Battery sensor must report %")
                 if valid:
@@ -960,8 +1005,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "energy_delivered_kwh": round(self._delivered_kwh, 3),
                 "charging_power_report_old": self._power_report_old,
             }
-        state = self.hass.states.get(self.settings["soc_entity"])
-        reported = state.last_reported if state is not None else None
+        reported = self._soc_reported_at()
         age = now - reported if reported is not None else timedelta.max
         # The age is informational only: a battery percentage that does not
         # change is normal while parked and must not stop the plan.
