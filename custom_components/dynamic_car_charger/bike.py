@@ -139,10 +139,10 @@ class BikeLifecycle:
 
     def update(self, now: datetime, o: BikeObservation):
         self._observe_trip(now, o)
-        if o.live:
+        if o.live_report is not None and timedelta(0) <= now - o.live_report <= timedelta(seconds=30):
             # Use the BLE source timestamp when available. This survives radio
             # loss and tells the UI exactly how fresh the last contact was.
-            self.last_connected_at = o.live_report or now
+            self.last_connected_at = o.live_report
         previous = self.state
         moving = o.live and o.speed is not None and o.speed >= 2
         if moving:
