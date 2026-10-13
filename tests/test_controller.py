@@ -331,6 +331,51 @@ async def test_stale_power_is_not_integrated_or_treated_as_error(rig):
     assert c._sample_power == 0
 
 
+def quiet_plug(rig, *, charger_type="plug"):
+    """Plug on, then a steady 0.13 kW reading that is never re-reported."""
+    hass, c, _ = rig
+    c.settings["charger_type"] = charger_type
+    c._boot = dt_util.utcnow() - timedelta(hours=1)
+    hass.states.async_set("switch.charger", "on")
+    hass.states.async_set("sensor.charging_power", "0.13", {"unit_of_measurement": "kW"})
+    return hass, c
+
+
+async def test_quiet_plug_keeps_integrating_steady_power(rig):
+    _, c = quiet_plug(rig)
+    later = dt_util.utcnow() + timedelta(minutes=40)
+    c._read(later, include_prices=False)
+    c._read(later + timedelta(seconds=15), include_prices=False)
+    assert not c._power_report_old
+    assert c._sample_power == pytest.approx(0.13)
+    assert c._interval_kwh == pytest.approx(0.13 * 15 / 3600)
+
+
+async def test_quiet_reading_from_before_switch_on_is_stale(rig):
+    hass, c = quiet_plug(rig)
+    hass.states.async_set("switch.charger", "off")
+    hass.states.async_set("switch.charger", "on")  # switched on after the last report
+    c._read(dt_util.utcnow() + timedelta(minutes=40), include_prices=False)
+    assert c._power_report_old
+    assert c._sample_power == 0
+
+
+async def test_quiet_plug_reading_expires_when_off_or_very_old(rig):
+    hass, c = quiet_plug(rig)
+    c._read(dt_util.utcnow() + timedelta(hours=7), include_prices=False)
+    assert c._power_report_old
+    hass.states.async_set("switch.charger", "off")
+    c._read(dt_util.utcnow() + timedelta(minutes=40), include_prices=False)
+    assert c._power_report_old
+
+
+async def test_quiet_power_from_non_plug_charger_stays_stale(rig):
+    _, c = quiet_plug(rig, charger_type=None)
+    c._read(dt_util.utcnow() + timedelta(minutes=40), include_prices=False)
+    assert c._power_report_old
+    assert c._sample_power == 0
+
+
 async def test_expired_deadline_stops(rig):
     _, c, calls = rig
     c.settings["deadline_grace_minutes"] = 0

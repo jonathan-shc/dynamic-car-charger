@@ -74,6 +74,12 @@ SESSION_END_STATUSES = ("set_deadline", "target_reached", "deadline_passed")
 # Below this measured power the charger counts as not charging.
 IDLE_POWER_KW = 0.1  # Maximum idle threshold; small chargers use 10% of rated power.
 FULL_CHARGE_IDLE_KW = 0.005
+# A power reading older than this is ignored (many chargers stop publishing).
+POWER_REPORT_MAX_AGE = timedelta(minutes=5)
+# Smart plugs usually report power only when it changes, so a bike or car
+# drawing a steady load can stay silent for a long time. While the plug is
+# switched on, its last reading stays trusted up to this age.
+QUIET_PLUG_MAX_AGE = timedelta(hours=6)
 FULL_CHARGE_CONFIRMATION = timedelta(minutes=3)
 # Battery sensors often fluctuate by a few tenths around a requested target.
 # Do not create a sub-minute charging slot for that measurement noise.
@@ -917,8 +923,9 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if power > 50:
             raise ValueError("Charging power out of range")
         power_report = power_state.last_reported
-        self._power_report_old = power_report < self._boot or now - power_report > timedelta(
-            minutes=5
+        self._power_report_old = power_report < self._boot or (
+            now - power_report > POWER_REPORT_MAX_AGE
+            and not self._quiet_plug_reading(power_report, now)
         )
         if self._power_report_old:
             # Many car and charger integrations stop publishing power after a
@@ -967,6 +974,21 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         effective_soc = soc_after(soc, self._credit_kwh, capacity, self._taper())
         prices = self._prices() if include_prices else []
         return soc, effective_soc, prices
+
+    def _quiet_plug_reading(self, power_report: datetime, now: datetime) -> bool:
+        """Whether a silent smart-plug power reading still describes the load.
+
+        Plugs report on change: a steady draw produces no new report at all.
+        Trust the last value only while the plug is on, the value was measured
+        after it was switched on (so it belongs to this session), and within a
+        generous safety limit. A switch-off or unavailable plug ends it.
+        """
+        if self.settings.get("charger_type") != "plug":
+            return False
+        charger = self.hass.states.get(self.settings["charger_entity"])
+        if charger is None or charger.state != "on":
+            return False
+        return charger.last_changed <= power_report and now - power_report <= QUIET_PLUG_MAX_AGE
 
     TAPER_MIN_POINTS = 0.5  # battery %-points of evidence before a band's factor is used
     TAPER_MEMORY_POINTS = 10.0  # older sessions fade once a band has this much
