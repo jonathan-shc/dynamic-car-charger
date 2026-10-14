@@ -440,17 +440,22 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return any(word in text for word in ("range", "bereik", "mileage"))
 
         matches = [
-            item for item in candidates
+            item
+            for item in candidates
             if item.original_device_class == "distance" or has_keyword(item)
         ]
-        return min(
-            matches,
-            key=lambda item: (
-                0 if item.original_device_class == "distance" else 1,
-                0 if has_keyword(item) else 1,
-                item.entity_id,
-            ),
-        ).entity_id if matches else None
+        return (
+            min(
+                matches,
+                key=lambda item: (
+                    0 if item.original_device_class == "distance" else 1,
+                    0 if has_keyword(item) else 1,
+                    item.entity_id,
+                ),
+            ).entity_id
+            if matches
+            else None
+        )
 
     @callback
     def _changed(self, event: Event) -> None:
@@ -597,8 +602,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 changes.get("enabled") is True
                 or changes.get("immediate_charging") is True
                 or any(
-                    key in changes
-                    for key in ("target", "deadline", "cheap_after_deadline_target")
+                    key in changes for key in ("target", "deadline", "cheap_after_deadline_target")
                 )
             ):
                 self._vehicle_completed = False
@@ -844,10 +848,10 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 soc_entity[: -len("_batterij_experimenteel")] + "_laatste_batterijmeting"
             )
         if soc_entity.endswith("_battery"):
-            candidates.append(
-                soc_entity[: -len("_battery")] + "_last_battery_measurement"
-            )
-        return next((entity_id for entity_id in candidates if self.hass.states.get(entity_id)), None)
+            candidates.append(soc_entity[: -len("_battery")] + "_last_battery_measurement")
+        return next(
+            (entity_id for entity_id in candidates if self.hass.states.get(entity_id)), None
+        )
 
     def _soc_reported_at(self) -> datetime | None:
         """Return the latest SOC sample time, falling back to state reporting."""
@@ -871,9 +875,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _read(self, now: datetime, *, include_prices: bool = True):
         reported_at = None if self.energy_mode else self._soc_reported_at()
-        new_soc_sample = (
-            reported_at is not None and reported_at != self._soc_sample_at
-        )
+        new_soc_sample = reported_at is not None and reported_at != self._soc_sample_at
         if new_soc_sample:
             self._soc_sample_at = reported_at
         if self.energy_mode:
@@ -1098,9 +1100,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # drawing power. Keep the completion confirmation alive after
             # that stop: a fresh charging run already proved that this is a
             # real full-charge candidate, even though the plug is now off.
-            charger_was_used = (
-                charger is not None
-                and (charger.state == "on" or self._full_charge_seen_power)
+            charger_was_used = charger is not None and (
+                charger.state == "on" or self._full_charge_seen_power
             )
             if (
                 estimated is not None
@@ -1514,7 +1515,11 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _choose_plan(self, prices, now, effective, data) -> tuple[Plan, bool]:
         """Return the plan to follow and whether published prices reach the deadline."""
         threshold = self.settings.get("max_price_eur_kwh", 0.20)
-        planning_target = effective if self._target_reached(effective, self._goal_target()) else self._goal_target()
+        planning_target = (
+            effective
+            if self._target_reached(effective, self._goal_target())
+            else self._goal_target()
+        )
         args = (
             now,
             self.deadline,
@@ -1972,12 +1977,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # e.g. when it is full, and keep showing the switch as on. After one
         # attempt, don't insist and don't report it: nothing flows. Once power
         # flows again, the pause is sent (and checked) as usual.
-        idle_stop = (
-            not desired
-            and not force
-            and self._charger_idle()
-            and not self.bike
-        )
+        idle_stop = not desired and not force and self._charger_idle() and not self.bike
         if idle_stop and self._command_attempt_time is not None:
             return IDLE_STOP
 

@@ -1243,7 +1243,7 @@ async def test_forecast_switch_starts_updates_and_survives_restart(rig):
 
 EXPECTED_ENTITIES = {
     "sensor": {"plan", "cost", "session_cost", "price_forecast_status"},
-    "number": {"target", "price_threshold", "cheap_price"},
+    "number": {"target", "price_threshold", "cheap_price", "cheap_after_deadline_target"},
     "datetime": {"deadline"},
     "switch": {
         "automatic",

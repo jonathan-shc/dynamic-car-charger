@@ -133,6 +133,4 @@ class AfterDeadlineTarget(ChargerEntity, NumberEntity):
         return self.coordinator.cheap_after_deadline_target
 
     async def async_set_native_value(self, value: float) -> None:
-        await self.coordinator.async_change(
-            cheap_after_deadline_target=number(value, 0, 100)
-        )
+        await self.coordinator.async_change(cheap_after_deadline_target=number(value, 0, 100))
