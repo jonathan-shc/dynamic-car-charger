@@ -385,8 +385,10 @@ class TripRecorder:
         route = attributes.get("route")
         if not track_id or not isinstance(route, list) or len(route) < 2:
             return
-        if any(trip.get("track_id") == track_id for trip in self.trips):
-            return
+        known = next(
+            (index for index, trip in enumerate(self.trips) if trip.get("track_id") == track_id),
+            None,
+        )
         points: list[tuple[float, float]] = []
         for row in route:
             if not isinstance(row, dict):
@@ -418,6 +420,15 @@ class TripRecorder:
         used = battery_used(start, end, self._readings)
         if used is not None:
             entry["battery_used"] = used
+        if known is not None:
+            # NIU can publish a ride while it is still under way, under its
+            # final ID. Replace the stored part once the whole ride arrives.
+            old = self.trips[known]
+            if entry["ended"] <= old["ended"] and entry.get("distance_km", 0) <= old.get(
+                "distance_km", 0
+            ):
+                return
+            self.trips.pop(known)
         self.trips.append(entry)
         self.trips.sort(key=lambda trip: trip["started"])
         self._save()

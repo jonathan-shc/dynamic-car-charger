@@ -343,6 +343,33 @@ async def test_recorder_keeps_full_provider_trip_and_deduplicates(tmp_path):
     await hass.async_stop(force=True)
 
 
+async def test_recorder_replaces_a_provider_trip_published_mid_ride(tmp_path):
+    hass = HomeAssistant(str(tmp_path))
+    recorder = TripRecorder(hass, "test", None, trip_entity="sensor.last_trip")
+    recorder.store = SimpleNamespace(async_delay_save=lambda *a: None)
+
+    def publish(end_s, km, points):
+        route = [{"latitude": 52 + i / 1000, "longitude": 5.0} for i in range(points)]
+        attributes = {
+            "track_id": "ride",
+            "start_time": 1_800_000_000_000,
+            "end_time": 1_800_000_000_000 + end_s * 1000,
+            "distance_km": km,
+            "route": route,
+        }
+        recorder._trip_changed(
+            {"data": {"new_state": State("sensor.last_trip", "ride", attributes)}}
+        )
+
+    publish(95, 0.937, 34)  # fetched 95 s into the ride
+    publish(1447, 11.799, 200)  # the whole ride
+    publish(95, 0.937, 34)  # an older publication never shrinks it again
+    assert len(recorder.trips) == 1
+    assert recorder.trips[0]["distance_km"] == 11.799
+    assert len(recorder.trips[0]["route"]) == 200
+    await hass.async_stop(force=True)
+
+
 async def test_bike_recorder_does_not_import_phone_history_or_record_idle_phone(tmp_path):
     from custom_components.dynamic_car_charger.trips import BikeTripRecorder
 
