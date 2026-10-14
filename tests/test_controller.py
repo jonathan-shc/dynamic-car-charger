@@ -353,11 +353,61 @@ async def test_quiet_plug_keeps_integrating_steady_power(rig):
 
 async def test_quiet_reading_from_before_switch_on_is_stale(rig):
     hass, c = quiet_plug(rig)
+    earlier = (dt_util.utcnow() - timedelta(minutes=2)).timestamp()
+    hass.states.async_set(
+        "sensor.charging_power", "0.2", {"unit_of_measurement": "kW"}, timestamp=earlier
+    )
     hass.states.async_set("switch.charger", "off")
     hass.states.async_set("switch.charger", "on")  # switched on after the last report
     c._read(dt_util.utcnow() + timedelta(minutes=40), include_prices=False)
     assert c._power_report_old
     assert c._sample_power == 0
+
+
+async def test_quiet_plug_reading_survives_home_assistant_restart(rig):
+    _, c = quiet_plug(rig)
+    c._boot = dt_util.utcnow() + timedelta(seconds=5)  # plug came up just before us
+    c._read(dt_util.utcnow() + timedelta(minutes=30), include_prices=False)
+    assert not c._power_report_old
+    assert c._sample_power == pytest.approx(0.13)
+
+
+def charging_bike(rig):
+    """Offline bike at 19% on a plug that is charging it at 0.13 kW."""
+    from custom_components.dynamic_car_charger.bike import BikeLifecycle
+
+    hass, c = quiet_plug(rig)
+    c.bike = BikeLifecycle()
+    c.settings.update(bike_live_entity="binary_sensor.bike_live", power_kw=0.14)
+    hass.states.async_set("binary_sensor.bike_live", "off")
+    c._observed_soc = 19
+    start = dt_util.utcnow()
+    c._read(start, include_prices=False)
+    return hass, c, start
+
+
+def set_power(hass, kw):
+    hass.states.async_set("sensor.charging_power", str(kw), {"unit_of_measurement": "kW"})
+
+
+async def test_bike_charger_that_tapers_and_stops_means_full(rig):
+    hass, c, start = charging_bike(rig)
+    for minute, kw in ((60, 0.08), (80, 0.02), (90, 0.0)):
+        set_power(hass, kw)
+        _, effective, _ = c._read(start + timedelta(minutes=minute), include_prices=False)
+    assert effective < 98  # idle, but not for long enough yet
+    _, effective, _ = c._read(start + timedelta(minutes=101), include_prices=False)
+    assert effective == 100
+    assert c._observed_soc == 100
+
+
+async def test_unplugged_bike_is_not_reported_full(rig):
+    hass, c, start = charging_bike(rig)
+    set_power(hass, 0.0)  # abrupt stop from full power: cable pulled
+    c._read(start + timedelta(minutes=30), include_prices=False)
+    _, effective, _ = c._read(start + timedelta(minutes=60), include_prices=False)
+    assert effective < 98
+    assert c._observed_soc == 19
 
 
 async def test_quiet_plug_reading_expires_when_off_or_very_old(rig):
@@ -2270,3 +2320,28 @@ async def test_detected_cable_turns_probe_off_even_during_completion_check(rig):
         await c.async_reconcile()
     assert calls == ["turn_on", "turn_off"]
     assert c.bike.cable == "connected"
+
+
+async def test_bike_full_by_power_drop_switches_plug_off(rig):
+    hass, c, start = charging_bike(rig)
+    calls = rig[2]
+    c.bike.home = True
+    c.bike.cable = "connected"
+    c.target = 100.0
+    c.deadline = start + timedelta(hours=8)
+    await c.async_change(enabled=True)
+    assert hass.states.get("switch.charger").state == "on"
+    set_power(hass, 0.02)
+    c._read(start + timedelta(minutes=80), include_prices=False)
+    set_power(hass, 0.0)
+    c._read(start + timedelta(minutes=90), include_prices=False)
+    for minute in (101, 105):
+        with patch(
+            "custom_components.dynamic_car_charger.coordinator.dt_util.utcnow",
+            return_value=start + timedelta(minutes=minute),
+        ):
+            await c.async_reconcile()
+    assert c.data["estimated_soc"] == 100
+    assert c.data["completion_reason"] == "bike_idle_near_full_estimate"
+    assert calls[-1] == "turn_off"
+    assert hass.states.get("switch.charger").state == "off"

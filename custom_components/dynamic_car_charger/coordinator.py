@@ -80,6 +80,11 @@ POWER_REPORT_MAX_AGE = timedelta(minutes=5)
 # drawing a steady load can stay silent for a long time. While the plug is
 # switched on, its last reading stays trusted up to this age.
 QUIET_PLUG_MAX_AGE = timedelta(hours=6)
+PLUG_ENTITY_SKEW = timedelta(seconds=60)
+# A bike charger that tapered off and then stays idle has finished.
+FULL_BY_DROP_IDLE = timedelta(minutes=10)
+FULL_BY_DROP_MIN_SHARE = 0.25  # peak draw vs. configured charger power
+FULL_BY_DROP_TAPER_SHARE = 0.5  # last draw before idle vs. peak draw
 FULL_CHARGE_CONFIRMATION = timedelta(minutes=3)
 # Battery sensors often fluctuate by a few tenths around a requested target.
 # Do not create a sub-minute charging slot for that measurement noise.
@@ -169,6 +174,10 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._full_charge_seen_power = False
         self._full_charge_idle_since: datetime | None = None
         self._vehicle_completed = False
+        # Bike charger finished on its own (see _bike_full_by_power_drop).
+        self._drop_peak_kw = 0.0
+        self._drop_last_kw = 0.0
+        self._drop_idle_since: datetime | None = None
         self._load_management_release: datetime | None = None
         self._command: bool | None = None
         self._command_time: datetime | None = None
@@ -925,9 +934,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if power > 50:
             raise ValueError("Charging power out of range")
         power_report = power_state.last_reported
-        self._power_report_old = power_report < self._boot or (
-            now - power_report > POWER_REPORT_MAX_AGE
-            and not self._quiet_plug_reading(power_report, now)
+        self._power_report_old = not self._quiet_plug_reading(power_state, now) and (
+            power_report < self._boot or now - power_report > POWER_REPORT_MAX_AGE
         )
         if self._power_report_old:
             # Many car and charger integrations stop publishing power after a
@@ -957,6 +965,10 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             charger = self.hass.states.get(self.settings["charger_entity"])
             if (self.enabled or self.immediate_charging) and charger and charger.state == "on":
                 self._full_charge_seen_power = True
+        if self._bike_full_by_power_drop(now, power) and self._soc_offline:
+            # The charger itself ended the session: the battery is full,
+            # whatever the energy estimate says. A fresh BLE % still wins.
+            soc, self._observed_soc, self._credit_kwh = 100.0, 100.0, 0.0
         if self.energy_mode:
             # Progress is the measured energy as a share of the energy to charge.
             self._delivered_kwh += self._interval_kwh
@@ -977,20 +989,66 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         prices = self._prices() if include_prices else []
         return soc, effective_soc, prices
 
-    def _quiet_plug_reading(self, power_report: datetime, now: datetime) -> bool:
-        """Whether a silent smart-plug power reading still describes the load.
+    def _quiet_plug_reading(self, power_state: State, now: datetime) -> bool:
+        """Whether a smart-plug power reading still describes the load.
 
         Plugs report on change: a steady draw produces no new report at all.
         Trust the last value only while the plug is on, the value was measured
-        after it was switched on (so it belongs to this session), and within a
-        generous safety limit. A switch-off or unavailable plug ends it.
+        when or after it was switched on (so it belongs to this session), and
+        within a generous safety limit. A switch-off or unavailable plug ends
+        it. This also covers a Home Assistant restart: the plug's own live
+        reading at start-up is valid (restored placeholders never get here).
         """
         if self.settings.get("charger_type") != "plug":
             return False
         charger = self.hass.states.get(self.settings["charger_entity"])
         if charger is None or charger.state != "on":
             return False
-        return charger.last_changed <= power_report and now - power_report <= QUIET_PLUG_MAX_AGE
+        report = power_state.last_reported
+        # Switch and power entities of one plug come up within seconds of
+        # each other after a restart, in either order.
+        return (
+            charger.last_changed - PLUG_ENTITY_SKEW <= report and now - report <= QUIET_PLUG_MAX_AGE
+        )
+
+    def _bike_full_by_power_drop(self, now: datetime, power: float) -> bool:
+        """Detect a bike charger that finished on its own.
+
+        A bike charger tapers off and then stops drawing power. That pattern
+        (real charging, a gradual decline, then a sustained idle plug) is a
+        stronger signal of a full battery than the energy estimate. An abrupt
+        drop from full power is an unplugged cable, not a full battery.
+        """
+        charger = self.hass.states.get(self.settings["charger_entity"])
+        if (
+            not self.bike
+            or self.energy_mode
+            or self.settings.get("charger_type") != "plug"
+            or charger is None
+            or charger.state != "on"
+        ):
+            self._drop_peak_kw = self._drop_last_kw = 0.0
+            self._drop_idle_since = None
+            return False
+        if self._power_report_old:
+            return False
+        if power >= FULL_CHARGE_IDLE_KW:
+            self._drop_peak_kw = max(self._drop_peak_kw, power)
+            self._drop_last_kw = power
+            self._drop_idle_since = None
+            return False
+        charged = self._drop_peak_kw >= FULL_BY_DROP_MIN_SHARE * self.settings["power_kw"]
+        tapered = self._drop_last_kw <= FULL_BY_DROP_TAPER_SHARE * self._drop_peak_kw
+        if not (charged and tapered):
+            return False
+        if self._drop_idle_since is None:
+            self._drop_idle_since = now
+        if now - self._drop_idle_since < FULL_BY_DROP_IDLE:
+            return False
+        # Report once per charging run.
+        self._drop_peak_kw = self._drop_last_kw = 0.0
+        self._drop_idle_since = None
+        return True
 
     TAPER_MIN_POINTS = 0.5  # battery %-points of evidence before a band's factor is used
     TAPER_MEMORY_POINTS = 10.0  # older sessions fade once a band has this much
