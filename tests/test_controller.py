@@ -1927,7 +1927,12 @@ async def test_weekly_schedule_sets_the_next_ready_by_time(rig):
     await c.async_change(schedule_enabled=True)
     first = c.deadline
     assert first != by_hand and dt_util.as_local(first).strftime("%H:%M") == "07:30"
-    assert c.data["schedule"] == {"enabled": True, "days": c.schedule, "targets": {}}
+    assert c.data["schedule"] == {
+        "enabled": True,
+        "days": c.schedule,
+        "targets": {},
+        "usage": {},
+    }
     # A time set by hand counts until it has passed.
     await c.async_change(deadline=by_hand)
     assert c.deadline == by_hand
@@ -2411,3 +2416,36 @@ async def test_a_vehicle_with_a_plugged_in_sensor_is_not_second_guessed(rig):
     ):
         await c.async_reconcile()
     assert "turn_off" not in calls
+
+
+async def test_the_schedule_charges_ahead_when_tonight_is_cheaper_than_later(rig):
+    hass, c, _ = rig
+    now = dt_util.utcnow().replace(second=0, microsecond=0)
+    hour = timedelta(hours=1)
+    rows = [
+        {
+            "start": (now - timedelta(minutes=1) + i * hour).isoformat(),
+            "end": (now - timedelta(minutes=1) + (i + 1) * hour).isoformat(),
+            "price": 0.1 if i == 0 else 0.3,
+        }
+        for i in range(40)
+    ]
+    hass.states.async_set(
+        "sensor.electricity_price", ".1", {"unit_of_measurement": "EUR/kWh", "prices": rows}
+    )
+    first = dt_util.as_local(now + timedelta(hours=3))
+    day = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")[first.weekday()]
+    following = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")[(first.weekday() + 1) % 7]
+    times = {day: first.strftime("%H:%M"), following: first.strftime("%H:%M")}
+    # 20% to 30% by the first; 20% used after it, so 50% the morning after.
+    await c.async_change(
+        schedule=times, schedule_usage={day: 20}, schedule_targets={}, schedule_enabled=True
+    )
+    assert c.data["target_percentage"] == 30
+    # The cheap hour (59 minutes left, 9.8 kWh) gives the 10% to 30% and what is left of
+    # it, nearly 10%, ahead; the rest waits for after the first ready-by time.
+    assert 39 < c.data["look_ahead"]["target_percentage"] <= 40
+    assert c.data["look_ahead"]["deadlines"][0]["usage_percentage"] == 20
+    # Without the expected use there is nothing to charge ahead for.
+    await c.async_change(schedule_usage={})
+    assert "look_ahead" not in c.data

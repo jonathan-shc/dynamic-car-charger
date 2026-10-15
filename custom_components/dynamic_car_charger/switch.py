@@ -135,6 +135,7 @@ class WeeklySchedule(ChargerEntity, SwitchEntity):
         return {
             "days": dict(self.coordinator.schedule),
             "targets": dict(self.coordinator.schedule_targets),
+            "usage": dict(self.coordinator.schedule_usage),
         }
 
     async def async_turn_on(self, **kwargs: Any) -> None:

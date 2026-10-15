@@ -318,3 +318,56 @@ def test_a_forecast_hour_must_beat_a_known_one_by_the_margin():
     assert cost == pytest.approx(1.9)
     # The market's own price for tomorrow is as good as known: no margin.
     assert choose(0.196, forecast=False)[0] == [21]
+
+
+def test_look_ahead_charges_tonight_when_the_next_days_are_dearer():
+    from custom_components.dynamic_car_charger.planner import look_ahead_level
+
+    t0 = datetime(2026, 10, 15, 20, tzinfo=UTC)
+    hour = timedelta(hours=1)
+    # Cheap tonight 21:00, dear for two days after.
+    prices = [Slot(t0 + i * hour, t0 + (i + 1) * hour, 0.10 if i == 1 else 0.30) for i in range(40)]
+    first = t0 + timedelta(hours=11, minutes=30)  # tomorrow 07:30
+    second = first + timedelta(days=1)
+    back = t0 + timedelta(hours=22)  # tomorrow evening
+    level = look_ahead_level(prices, t0, first, 70, [(second, 75, 15, back)], 60, 60, 11, 1.0)
+    # 75% after 15% use needs 90% tomorrow morning. The cheap hour (11 kWh) first gives
+    # the 10% to 70%; what is left of it, 5 kWh or 8.3%, goes ahead. The rest can wait.
+    assert abs(level - 78.33) < 0.01
+    # Without the cheap hour there is nothing to gain: just the target.
+    flat = [Slot(s.start, s.end, 0.30) for s in prices]
+    assert look_ahead_level(flat, t0, first, 70, [(second, 75, 15, back)], 60, 60, 11, 1.0) == 70
+    # Cheaper after the vehicle is back: no charging ahead either.
+    later_cheap = [
+        Slot(
+            s.start,
+            s.end,
+            0.05 if s.start >= back + 2 * hour and s.start < back + 3 * hour else 0.30,
+        )
+        for s in prices
+    ]
+    assert (
+        look_ahead_level(later_cheap, t0, first, 70, [(second, 75, 15, back)], 60, 60, 11, 1.0)
+        == 70
+    )
+
+
+def test_look_ahead_never_beyond_a_full_battery():
+    from custom_components.dynamic_car_charger.planner import look_ahead_level
+
+    t0 = datetime(2026, 10, 15, 20, tzinfo=UTC)
+    hour = timedelta(hours=1)
+    prices = [Slot(t0 + i * hour, t0 + (i + 1) * hour, 0.10 if i < 8 else 0.40) for i in range(40)]
+    first = t0 + timedelta(hours=11)
+    level = look_ahead_level(
+        prices,
+        t0,
+        first,
+        80,
+        [(first + timedelta(days=1), 100, 60, t0 + timedelta(hours=22))],
+        70,
+        60,
+        11,
+        1.0,
+    )
+    assert level == 100
