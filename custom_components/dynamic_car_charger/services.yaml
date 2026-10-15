@@ -76,6 +76,10 @@ set_schedule:
       example: '{"fri": 100}'
       selector:
         object:
+    usage:
+      example: '{"mon": 15, "tue": 15}'
+      selector:
+        object:
     enabled:
       selector:
         boolean:

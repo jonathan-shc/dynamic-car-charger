@@ -352,6 +352,10 @@
           "name": "Targets",
           "description": "A target percentage for a scheduled day, such as fri: 100. It becomes the target when that day's ready-by time is taken; a day left out keeps the target as it is."
         },
+        "usage": {
+          "name": "Expected use",
+          "description": "Battery percentage expected to be used after a scheduled day's ready-by time, until the next one, such as mon: 15. With it the plan charges ahead before a ready-by time when that is cheaper than charging after it for the next one."
+        },
         "enabled": {
           "name": "Follow the schedule",
           "description": "Switches the weekly schedule on or off."

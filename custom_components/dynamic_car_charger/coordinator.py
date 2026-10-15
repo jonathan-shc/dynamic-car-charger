@@ -31,6 +31,7 @@ from .planner import (
     DEFAULT_TAPER,
     Plan,
     Slot,
+    look_ahead_level,
     make_plan,
     number,
     parse_prices,
@@ -100,6 +101,13 @@ PENDING_STATUSES = ("unlocking_charger", "starting_charge", "stopping_charge")
 
 
 WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+# Looking ahead in the weekly schedule: how many ready-by times after the current one,
+# at most how far, when the vehicle is taken to be back on the charger after one, and
+# the least gain in battery % worth raising the target for.
+LOOK_AHEAD_DEADLINES = 2
+LOOK_AHEAD_REACH = timedelta(days=3)
+VEHICLE_BACK_HOUR = 18
+LOOK_AHEAD_MIN_POINTS = 1.0
 
 
 def next_scheduled(days: dict[str, str], now: datetime) -> datetime | None:
@@ -150,6 +158,9 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.schedule: dict[str, str] = {}
         # A target percentage for a scheduled day ({"fri": 100}); other days keep the target.
         self.schedule_targets: dict[str, float] = {}
+        # Battery % expected to be used after a scheduled day's ready-by time, until the
+        # next one ({"mon": 15}): lets the plan charge ahead when that's cheaper.
+        self.schedule_usage: dict[str, float] = {}
         self.schedule_enabled = False
         # Settings from before the bidding zone existed follow Home Assistant's country.
         bidding_zone = self.settings.get("bidding_zone") or zone_for_location(
@@ -275,6 +286,11 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             day: number(target, 0, 100)
             for day, target in (saved.get("schedule_targets") or {}).items()
             if day in WEEKDAYS and target is not None
+        }
+        self.schedule_usage = {
+            day: number(used, 0, 100)
+            for day, used in (saved.get("schedule_usage") or {}).items()
+            if day in WEEKDAYS and used is not None
         }
         self.schedule_enabled = bool(saved.get("schedule_enabled", False))
         # Keep a live threshold change across restarts, unless the configured
@@ -579,6 +595,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "cheap_after_deadline_target": self.cheap_after_deadline_target,
             "schedule": self.schedule,
             "schedule_targets": self.schedule_targets,
+            "schedule_usage": self.schedule_usage,
             "schedule_enabled": self.schedule_enabled,
             "energy_goal": self.energy_goal,
             "delivered_kwh": self._delivered_kwh,
@@ -647,7 +664,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             for key, value in changes.items():
                 setattr(self, key, value)
             if self.schedule_enabled and any(
-                key in changes for key in ("schedule", "schedule_targets", "schedule_enabled")
+                key in changes
+                for key in ("schedule", "schedule_targets", "schedule_usage", "schedule_enabled")
             ):
                 # Switched on or changed: the next scheduled time counts from now on.
                 self._take_next_scheduled()
@@ -1281,6 +1299,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "enabled": self.schedule_enabled,
                     "days": dict(self.schedule),
                     "targets": dict(self.schedule_targets),
+                    "usage": dict(self.schedule_usage),
                 },
             }
             try:
@@ -1561,6 +1580,64 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
         self._take_next_scheduled()
 
+    def _look_ahead(self, now: datetime, effective: float, prices: list[Slot], data) -> float:
+        """The target by the deadline, raised where the weekly schedule's next ready-by
+        times are cheaper to charge for now than later (see planner.look_ahead_level)."""
+        target = self._goal_target()
+        if (
+            self.energy_mode
+            or not self.schedule_enabled
+            or self.deadline is None
+            or now >= self.deadline
+        ):
+            return target
+        previous = dt_util.as_local(self.deadline)
+        used = self.schedule_usage.get(WEEKDAYS[previous.weekday()], 0.0)
+        later_target = self.target
+        later = []
+        for _ in range(LOOK_AHEAD_DEADLINES):
+            moment = next_scheduled(self.schedule, previous)
+            if moment is None or moment - dt_util.as_local(self.deadline) > LOOK_AHEAD_REACH:
+                break
+            later_target = self.schedule_targets.get(WEEKDAYS[moment.weekday()], later_target)
+            # Taken to be back on the charger in the evening after a ready-by time.
+            back = max(previous, previous.replace(hour=VEHICLE_BACK_HOUR, minute=0))
+            later.append((dt_util.as_utc(moment), later_target, used, dt_util.as_utc(back)))
+            used = self.schedule_usage.get(WEEKDAYS[moment.weekday()], 0.0)
+            previous = moment
+        if not later:
+            return target
+        pool = prices + self._estimates(prices, later[-1][0])
+        # Only as far as there are prices, published or estimated.
+        known_until = max((slot.end for slot in pool), default=now)
+        later = [item for item in later if item[0] <= known_until]
+        if not later:
+            return target
+        level = look_ahead_level(
+            pool,
+            now,
+            self.deadline,
+            target,
+            later,
+            effective,
+            self._capacity(),
+            self.settings["power_kw"],
+            self._efficiency(),
+            taper=self._taper(),
+            forecast_margin=self._forecast_margin(),
+        )
+        if level < max(target, effective) + LOOK_AHEAD_MIN_POINTS:
+            return target
+        level = round(level, 1)
+        data["look_ahead"] = {
+            "target_percentage": level,
+            "deadlines": [
+                {"deadline": moment.isoformat(), "target_percentage": goal, "usage_percentage": use}
+                for moment, goal, use, _ in later
+            ],
+        }
+        return level
+
     def _grace(self) -> timedelta:
         return timedelta(minutes=number(self.settings.get("deadline_grace_minutes", 60), 0, 720))
 
@@ -1619,14 +1696,11 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         data["plan_status"] = status
         return desired, prices
 
-    def _choose_plan(self, prices, now, effective, data) -> tuple[Plan, bool]:
+    def _choose_plan(self, prices, now, effective, data, goal=None) -> tuple[Plan, bool]:
         """Return the plan to follow and whether published prices reach the deadline."""
         threshold = self.settings.get("max_price_eur_kwh", 0.20)
-        planning_target = (
-            effective
-            if self._target_reached(effective, self._goal_target())
-            else self._goal_target()
-        )
+        goal = self._goal_target() if goal is None else goal
+        planning_target = effective if self._target_reached(effective, goal) else goal
         args = (
             now,
             self.deadline,
@@ -1690,7 +1764,12 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         extension_until = self.deadline + timedelta(minutes=grace_minutes)
         after_deadline = now >= self.deadline
         soc, effective, prices = self._read(now, include_prices=not after_deadline)
-        target = self._goal_target()
+        # Before the deadline, raised where charging ahead for the next ones is cheaper.
+        target = (
+            self._goal_target()
+            if after_deadline
+            else self._look_ahead(now, effective, prices, data)
+        )
         plan_context = (
             tuple((slot.start, slot.end, slot.price) for slot in prices),
             self.deadline,
@@ -1698,7 +1777,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.settings.get("max_price_eur_kwh", 0.20),
             self.use_forecast,
         )
-        plan, coverage_complete = self._choose_plan(prices, now, effective, data)
+        plan, coverage_complete = self._choose_plan(prices, now, effective, data, target)
         data.update(plan.as_dict(self.settings["power_kw"]))
         data.update(self._battery_details(now, soc, effective))
         data["deadline_grace_minutes"] = grace_minutes

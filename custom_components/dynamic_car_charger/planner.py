@@ -309,3 +309,88 @@ def _allocate(candidates, remaining, power, forecast_margin=0.0):
         chosen.append(Slot(slot.start, end, slot.price, slot.estimated, slot.forecast))
         remaining -= energy
     return chosen, remaining
+
+
+def look_ahead_level(
+    prices,
+    now,
+    deadline,
+    target,
+    later,
+    soc,
+    capacity,
+    power,
+    efficiency,
+    taper=None,
+    forecast_margin=0.0,
+):
+    """The battery % to reach by the deadline when the deadlines after it are known.
+
+    `later` lists what comes after the deadline: (next deadline, its target, battery %
+    used between the previous deadline and it, when the vehicle is back to charge).
+    The target by the deadline is always charged first, in its cheapest hours. For
+    each later deadline, what it needs on top of that comes from the cheapest hours
+    left: before the deadline, up to a full battery, or after the vehicle is back.
+    Only what lands before the deadline raises it; the rest is left to the plan for
+    that deadline. So charging ahead only happens where it is cheaper than later.
+    """
+    now, deadline = timestamp(now), timestamp(deadline)
+    soc, target = number(soc, 0, 100), number(target, 0, 100)
+    capacity, power = number(capacity, 0.1, 300), number(power, 0.1, 50)
+    efficiency = number(efficiency, 0.1, 1)
+    level = max(soc, target)
+    if not later or level >= 100:
+        return level
+    per_percent = capacity / 100 / efficiency
+    windows = [(now, deadline)] + [(back, moment) for moment, _, _, back in later]
+    # [segment, start, end, price, ranking price, kWh left]
+    pieces = []
+    for segment, (start, end) in enumerate(windows):
+        for slot in prices:
+            begin, finish = max(slot.start, start, now), min(slot.end, end)
+            if finish > begin:
+                rank = number(slot.price) + (number(forecast_margin, 0) if slot.forecast else 0.0)
+                hours = (finish - begin).total_seconds() / 3600
+                pieces.append([segment, begin, finish, slot.price, rank, hours * power])
+    # At the same price, later: charging ahead only where it saves something.
+    pieces.sort(key=lambda piece: (piece[4], -piece[0], piece[1]))
+
+    def take(kwh, segments, cap=None):
+        """The cheapest energy in these segments; before the deadline, at most `cap`."""
+        taken = before = 0.0
+        for piece in pieces:
+            if taken >= kwh - 1e-9:
+                break
+            if piece[0] not in segments:
+                continue
+            room = piece[5]
+            if piece[0] == 0 and cap is not None:
+                room = min(room, cap - before)
+            energy = min(room, kwh - taken)
+            if energy <= 1e-12:
+                continue
+            piece[5] -= energy
+            taken += energy
+            if piece[0] == 0:
+                before += energy
+        return before
+
+    # The deadline's own target first, as the plan for it charges it.
+    if target > soc:
+        take(full_power_kwh(soc, target, capacity, efficiency, taper), {0})
+    headroom = full_power_kwh(level, 100, capacity, efficiency, taper)
+    ahead = 0.0  # extra grid kWh before the deadline
+    after = 0.0  # battery % charged after the deadline, before the later ones
+    used = 0.0
+    for index, (_, later_target, usage, _) in enumerate(later, start=1):
+        used += number(usage, 0, 100)
+        reached = level + ahead / per_percent - used + after
+        missing = number(later_target, 0, 100) - reached
+        if missing <= 1e-9:
+            continue
+        before = take(missing * per_percent, set(range(index + 1)), cap=headroom - ahead)
+        ahead += before
+        after += missing - before / per_percent
+    if ahead <= 1e-9:
+        return level
+    return min(100.0, soc_after(level, ahead * efficiency, capacity, taper))
