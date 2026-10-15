@@ -2345,3 +2345,69 @@ async def test_bike_full_by_power_drop_switches_plug_off(rig):
     assert c.data["completion_reason"] == "bike_idle_near_full_estimate"
     assert calls[-1] == "turn_off"
     assert hass.states.get("switch.charger").state == "off"
+
+
+async def test_a_plug_without_any_draw_is_switched_off_until_the_vehicle_shows_itself(rig):
+    hass, c, calls = rig
+    now = dt_util.utcnow()
+    c.deadline = now + timedelta(hours=3)
+
+    def at(minutes):
+        return patch(
+            "custom_components.dynamic_car_charger.coordinator.dt_util.utcnow",
+            return_value=now + timedelta(minutes=minutes),
+        )
+
+    await c.async_change(enabled=True)
+    assert calls == ["turn_on"]
+    with at(1):
+        await c.async_reconcile()
+    assert c.data["charging_requested"] is True
+    # Nothing drawn for three minutes: nothing is on the plug.
+    with at(5):
+        await c.async_reconcile()
+    assert calls[-1] == "turn_off"
+    with at(5.5):
+        await c.async_reconcile()
+    assert c.data["status"] == "waiting_for_car"
+    assert c.data["no_power_draw_since"]
+    # And it stays off, also when the plan would charge.
+    with at(20):
+        await c.async_reconcile()
+    assert calls.count("turn_on") == 1
+    # A new battery % is a sign of the vehicle: try again.
+    hass.states.async_set("sensor.battery", "21", {"unit_of_measurement": "%"})
+    with at(25):
+        await c.async_reconcile()
+    assert calls[-1] == "turn_on"
+
+
+async def test_a_plug_that_draws_stays_on(rig):
+    hass, c, calls = rig
+    now = dt_util.utcnow()
+    c.deadline = now + timedelta(hours=3)
+    await c.async_change(enabled=True)
+    hass.states.async_set("sensor.charging_power", "0.6", {"unit_of_measurement": "kW"})
+    for minutes in (1, 5, 10):
+        with patch(
+            "custom_components.dynamic_car_charger.coordinator.dt_util.utcnow",
+            return_value=now + timedelta(minutes=minutes),
+        ):
+            await c.async_reconcile()
+    assert calls == ["turn_on"]
+    assert "no_power_draw_since" not in c.data
+
+
+async def test_a_vehicle_with_a_plugged_in_sensor_is_not_second_guessed(rig):
+    hass, c, calls = rig
+    now = dt_util.utcnow()
+    c.deadline = now + timedelta(hours=3)
+    c.settings["connected_entity"] = "binary_sensor.plugged"
+    hass.states.async_set("binary_sensor.plugged", "on")
+    await c.async_change(enabled=True)
+    with patch(
+        "custom_components.dynamic_car_charger.coordinator.dt_util.utcnow",
+        return_value=now + timedelta(minutes=10),
+    ):
+        await c.async_reconcile()
+    assert "turn_off" not in calls

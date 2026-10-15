@@ -74,6 +74,11 @@ SESSION_END_STATUSES = ("set_deadline", "target_reached", "deadline_passed")
 # Below this measured power the charger counts as not charging.
 IDLE_POWER_KW = 0.1  # Maximum idle threshold; small chargers use 10% of rated power.
 FULL_CHARGE_IDLE_KW = 0.005
+# Without a sensor that says the vehicle is plugged in: a charger switched on for this
+# long without any draw has nothing on it (away, unplugged or already full). Charging
+# then waits until there is a sign of the vehicle, or this long has passed.
+NO_DRAW_AFTER = timedelta(minutes=3)
+NO_DRAW_RETRY = timedelta(hours=1)
 # A power reading older than this is ignored (many chargers stop publishing).
 POWER_REPORT_MAX_AGE = timedelta(minutes=5)
 # Smart plugs usually report power only when it changes, so a bike or car
@@ -174,6 +179,10 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._full_charge_seen_power = False
         self._full_charge_idle_since: datetime | None = None
         self._vehicle_completed = False
+        # Switched on without any draw: since when it is watched, and when it was given up.
+        self._draw_watch_since: datetime | None = None
+        self._no_draw_at: datetime | None = None
+        self._no_draw_soc: float | None = None
         # Bike charger finished on its own (see _bike_full_by_power_drop).
         self._drop_peak_kw = 0.0
         self._drop_last_kw = 0.0
@@ -1329,6 +1338,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 control_demand = False
                 if desired and control_enabled:
                     data.update(status="waiting_for_car", charging_requested=False)
+            if not self.settings.get("connected_entity"):
+                control_demand = self._draw_seen_or_waiting(now, data, control_demand)
             probe_control = False
             if self.bike:
                 control_demand, probe_control = self.bike.control(
@@ -1390,6 +1401,44 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 await self.store.async_save(self._save_data())
             else:
                 self.store.async_delay_save(self._save_data, 30)
+
+    def _draw_seen_or_waiting(self, now: datetime, data: dict[str, Any], demand: bool) -> bool:
+        """Whether to keep the charger on, for a vehicle without a plugged-in sensor.
+
+        A smart plug can't tell whether a scooter or bike is on it. When it has been on
+        for NO_DRAW_AFTER and nothing was drawn, the vehicle isn't there (or is full):
+        the plug goes off and the plan waits. It tries again once the vehicle shows
+        itself (a Bluetooth contact, a new battery %), or after NO_DRAW_RETRY.
+        """
+        if self._no_draw_at is not None:
+            contact = self.bike.last_connected_at if self.bike else None
+            soc = data.get("measured_soc")
+            if (
+                now - self._no_draw_at < NO_DRAW_RETRY
+                and not (contact and contact > self._no_draw_at)
+                and (soc is None or soc == self._no_draw_soc)
+            ):
+                data["no_power_draw_since"] = self._no_draw_at.isoformat()
+                if demand:
+                    data.update(status="waiting_for_car", charging_requested=False)
+                return False
+            self._no_draw_at = None
+        charger = self.hass.states.get(self.settings["charger_entity"])
+        if not demand or charger is None or charger.state != "on":
+            self._draw_watch_since = None
+            return demand
+        if self._sample_power >= FULL_CHARGE_IDLE_KW:
+            self._draw_watch_since = None
+            return True
+        # Counted from when the charger came on, not from when the plan first asked.
+        self._draw_watch_since = self._draw_watch_since or max(charger.last_changed, now - TICK)
+        if now - self._draw_watch_since < NO_DRAW_AFTER:
+            return True
+        self._no_draw_at, self._draw_watch_since = now, None
+        self._no_draw_soc = data.get("measured_soc")
+        data["no_power_draw_since"] = now.isoformat()
+        data.update(status="waiting_for_car", charging_requested=False)
+        return False
 
     def _reconcile_immediate(self, now: datetime, data: dict[str, Any]) -> bool:
         soc, effective, _prices = self._read(now, include_prices=False)
