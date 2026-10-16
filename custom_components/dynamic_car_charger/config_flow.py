@@ -28,6 +28,7 @@ OPTIONAL_KEYS = (
     "bike_powered_entity",
     "bike_charging_entity",
     "rider_location_entity",
+    "bike_tracker_entity",
 )
 
 
@@ -77,6 +78,7 @@ def schema(values: dict[str, Any], default_zone: str = "nl") -> vol.Schema:
         ("bike_powered_entity", ["binary_sensor"]),
         ("bike_charging_entity", ["binary_sensor"]),
         ("rider_location_entity", ["device_tracker"]),
+        ("bike_tracker_entity", ["device_tracker"]),
     ):
         fields[optional(key, values.get(key))] = selector.EntitySelector(
             selector.EntitySelectorConfig(domain=domain)
@@ -144,6 +146,7 @@ def validate(hass, data: dict[str, Any]) -> dict[str, str]:
         "bike_powered_entity": {"binary_sensor"},
         "bike_charging_entity": {"binary_sensor"},
         "rider_location_entity": {"device_tracker"},
+        "bike_tracker_entity": {"device_tracker"},
     }
     for key in ("charger_entity", "soc_entity", "price_entity", "power_entity"):
         entity_id = data.get(key)
@@ -174,6 +177,7 @@ def validate(hass, data: dict[str, Any]) -> dict[str, str]:
         "bike_powered_entity",
         "bike_charging_entity",
         "rider_location_entity",
+        "bike_tracker_entity",
     ):
         entity_id = data.get(key)
         if not entity_id:

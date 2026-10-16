@@ -2449,3 +2449,45 @@ async def test_the_schedule_charges_ahead_when_tonight_is_cheaper_than_later(rig
     # Without the expected use there is nothing to charge ahead for.
     await c.async_change(schedule_usage={})
     assert "look_ahead" not in c.data
+
+
+async def test_the_bikes_location_is_asked_before_charging_and_not_too_often(rig):
+    from custom_components.dynamic_car_charger.bike import BikeLifecycle
+
+    hass, c, calls = rig
+    c.settings.update(
+        vehicle_type="bicycle",
+        charger_type="plug",
+        bike_live_entity="binary_sensor.bike_live",
+        bike_speed_entity="sensor.bike_speed",
+        bike_tracker_entity="device_tracker.bike",
+        bike_location_refresh_entity="button.bike_refresh_location",
+    )
+    c.bike = BikeLifecycle()
+    c.bike.home = True
+    c._observed_soc = 20  # last known while the bike was in range
+    hass.states.async_set("binary_sensor.bike_live", "off")
+    hass.states.async_set("button.bike_refresh_location", "unknown")
+    hass.states.async_set("device_tracker.bike", "home")
+    pressed = []
+
+    async def press(call):
+        pressed.append(call.data["entity_id"])
+
+    hass.services.async_register("button", "press", press)
+    await c.async_change(enabled=True)
+    await hass.async_block_till_done()
+    assert pressed == ["button.bike_refresh_location"]
+    assert c.data["bike"]["location_asked_at"]
+    await c.async_reconcile()
+    await hass.async_block_till_done()
+    assert len(pressed) == 1  # not again within 15 minutes
+    # Its answer: away, fixed after the last Bluetooth contact.
+    hass.states.async_set(
+        "device_tracker.bike", "not_home", {"last_update": dt_util.utcnow().isoformat()}
+    )
+    await c.async_reconcile()
+    assert c.data["bike"]["state"] == "away"
+    assert calls[-1] == "turn_off"
+    await c.async_reconcile()
+    assert c.data["status"] == "waiting_for_car"

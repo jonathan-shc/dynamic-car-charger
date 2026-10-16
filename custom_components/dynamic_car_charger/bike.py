@@ -23,6 +23,10 @@ class BikeObservation:
     watts: float | None = None
     plug_on: bool = False
     power_report: datetime | None = None
+    # The bike's own GPS location (its maker's cloud), asked for when needed: whether it
+    # is home, and when that fix was made.
+    tracker_home: bool | None = None
+    tracker_report: datetime | None = None
 
 
 class BikeLifecycle:
@@ -53,6 +57,8 @@ class BikeLifecycle:
         self.probe_seen_on = False
         self.probe_result: str | None = None
         self.recover_stop = False
+        # The GPS fix that last decided presence, so it decides only once.
+        self.tracker_used: datetime | None = None
 
     def restore(self, saved):
         # Restart cannot assert current presence or resume a probe. Clean up its plug.
@@ -212,6 +218,20 @@ class BikeLifecycle:
                 else:
                     self.departure_pending = False
                     self.state, self.reason = "home_on", "fresh_home_bluetooth"
+        elif self._tracker_fresh(o) and o.tracker_home is False:
+            # The bike's own location, fixed after the last Bluetooth contact: away. The
+            # departure Bluetooth only half saw (or didn't see at all) is confirmed.
+            self.tracker_used = o.tracker_report
+            self.home, self.away = False, True
+            self.departure_pending = False
+            self.state, self.reason = "away", "location_away"
+            self.cable, self.cable_evidence, self.cable_at = "disconnected", "bike_departed", now
+        elif self._tracker_fresh(o) and o.tracker_home is True and self.away:
+            # Back home by its location, while Bluetooth hasn't seen it (switched off).
+            self.tracker_used = o.tracker_report
+            self.home, self.away = True, False
+            self.departure_pending = False
+            self.state, self.reason = "home_unreachable", "location_home"
         elif o.powered is False and self.away and previous == "arriving":
             self.home, self.away = True, False
             self.departure_pending = False
@@ -275,6 +295,24 @@ class BikeLifecycle:
             self.cable_evidence = "ble_charging" if o.charging is True else "measured_power"
         elif self.state == "departing":
             self.cable, self.cable_evidence = "unknown", "bike_moving"
+
+    def _tracker_fresh(self, o):
+        """A location fix newer than the last Bluetooth contact, not used before."""
+        return (
+            o.tracker_report is not None
+            and o.tracker_home is not None
+            and (self.last_connected_at is None or o.tracker_report > self.last_connected_at)
+            and (self.tracker_used is None or o.tracker_report > self.tracker_used)
+        )
+
+    def wants_location(self, now, *, charge_planned):
+        """Whether asking the bike's location would settle where it is: after motion was
+        lost from Bluetooth, or before charging while it is out of Bluetooth range."""
+        if self.state in ("home_on", "departing", "arriving"):
+            return False
+        if self.departure_pending and self.last_motion:
+            return now - self.last_motion >= timedelta(seconds=60)
+        return charge_planned and self.state == "home_unreachable"
 
     def control(self, now, o, *, scheduled, allow_probe, cancel):
         """Return (plug demand, own control). Normal plan always has priority."""
