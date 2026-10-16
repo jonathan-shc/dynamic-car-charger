@@ -381,3 +381,59 @@ def test_reconnect_waits_for_actual_trip_before_comparing_reset():
     b.control(NOW + timedelta(seconds=40), off, scheduled=False, allow_probe=True, cancel=False)
     b.update(NOW + timedelta(seconds=50), BikeObservation(live=True, speed=0))
     assert park(b, 51, 0.2) == (True, True)
+
+
+def lost_after_a_short_ride(b):
+    """As on 15 October: about nine seconds of riding, then out of Bluetooth range."""
+    b.update(NOW, BikeObservation(live=True, speed=0, live_report=NOW))
+    for second in range(17, 26):
+        t = NOW + timedelta(seconds=second)
+        b.update(t, BikeObservation(live=True, speed=15, live_report=t))
+    b.update(NOW + timedelta(seconds=35), BikeObservation(rider_configured=True))
+
+
+def test_the_bikes_own_location_confirms_a_departure_bluetooth_lost():
+    b = BikeLifecycle()
+    lost_after_a_short_ride(b)
+    assert not b.wants_location(NOW + timedelta(seconds=40), charge_planned=False)
+    assert b.wants_location(NOW + timedelta(seconds=90), charge_planned=False)
+    fixed = NOW + timedelta(seconds=95)
+    b.update(
+        NOW + timedelta(seconds=96),
+        BikeObservation(rider_configured=True, tracker_home=False, tracker_report=fixed),
+    )
+    assert b.state == "away" and b.reason == "location_away"
+    assert b.cable == "disconnected"
+    assert not b.wants_location(NOW + timedelta(minutes=30), charge_planned=True)
+
+
+def test_a_location_from_before_the_last_contact_decides_nothing():
+    b = BikeLifecycle()
+    lost_after_a_short_ride(b)
+    old = NOW - timedelta(hours=1)
+    b.update(NOW + timedelta(minutes=5), BikeObservation(tracker_home=False, tracker_report=old))
+    assert b.state == "home_unreachable"
+
+
+def test_the_bikes_own_location_brings_it_home_without_bluetooth():
+    b = BikeLifecycle()
+    lost_after_a_short_ride(b)
+    away = NOW + timedelta(seconds=95)
+    b.update(away, BikeObservation(tracker_home=False, tracker_report=away))
+    assert b.state == "away"
+    # The same fix again changes nothing; a newer one at home brings it back.
+    b.update(NOW + timedelta(hours=1), BikeObservation(tracker_home=False, tracker_report=away))
+    assert b.state == "away"
+    back = NOW + timedelta(hours=8)
+    b.update(back, BikeObservation(tracker_home=True, tracker_report=back))
+    assert b.state == "home_unreachable" and b.reason == "location_home"
+    assert b.home and not b.away
+
+
+def test_the_location_is_asked_before_charging_a_bike_out_of_range():
+    b = BikeLifecycle()
+    b.update(NOW, BikeObservation(live=True, speed=0, live_report=NOW))
+    b.update(NOW + timedelta(minutes=10), BikeObservation())
+    assert b.state == "home_unreachable"
+    assert not b.wants_location(NOW + timedelta(minutes=10), charge_planned=False)
+    assert b.wants_location(NOW + timedelta(minutes=10), charge_planned=True)

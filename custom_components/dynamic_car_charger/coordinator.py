@@ -80,6 +80,8 @@ FULL_CHARGE_IDLE_KW = 0.005
 # then waits until there is a sign of the vehicle, or this long has passed.
 NO_DRAW_AFTER = timedelta(minutes=3)
 NO_DRAW_RETRY = timedelta(hours=1)
+# The bike's location is asked at most this often: each question wakes its GPS module.
+BIKE_LOCATION_INTERVAL = timedelta(minutes=15)
 # A power reading older than this is ignored (many chargers stop publishing).
 POWER_REPORT_MAX_AGE = timedelta(minutes=5)
 # Smart plugs usually report power only when it changes, so a bike or car
@@ -235,6 +237,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if self.settings.get("vehicle_type") == "bicycle"
             else None
         )
+        self._location_asked_at: datetime | None = None
         self.data = {"status": "set_deadline", "slots": []}
 
     async def async_start(self) -> None:
@@ -318,6 +321,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "bike_powered_entity",
                 "bike_charging_entity",
                 "rider_location_entity",
+                "bike_tracker_entity",
             )
             if self.settings.get(key)
         )
@@ -782,6 +786,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     1000 if power.attributes.get("unit_of_measurement") == "kW" else 1
                 )
         plug = self.hass.states.get(self.settings["charger_entity"])
+        tracker_home, tracker_report = self._bike_location()
         return BikeObservation(
             live=live,
             live_report=live_state.last_reported if live_state else None,
@@ -796,7 +801,60 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             watts=watts,
             plug_on=bool(plug and plug.state == "on"),
             power_report=power.last_reported if power else None,
+            tracker_home=tracker_home,
+            tracker_report=tracker_report,
         )
+
+    def _bike_location(self) -> tuple[bool | None, datetime | None]:
+        """The bike's own GPS location: whether it is home, and when it was fixed."""
+        state = self.hass.states.get(self.settings.get("bike_tracker_entity", ""))
+        if not self._is_available(state) or state.attributes.get("restored"):
+            return None, None
+        fixed = dt_util.parse_datetime(str(state.attributes.get("last_update", ""))) or (
+            state.last_updated
+        )
+        return state.state == "home", dt_util.as_utc(fixed)
+
+    def _bike_location_button(self) -> str | None:
+        """The button that makes the bike report its location: as set, or the one on the
+        same device as its tracker whose name says it refreshes the location."""
+        if configured := self.settings.get("bike_location_refresh_entity"):
+            return configured
+        tracker = self.settings.get("bike_tracker_entity")
+        if not tracker:
+            return None
+        from homeassistant.helpers import entity_registry as er
+
+        try:
+            registry = er.async_get(self.hass)
+            entry = registry.async_get(tracker)
+            if entry is None or entry.device_id is None:
+                return None
+            buttons = [
+                other.entity_id
+                for other in er.async_entries_for_device(registry, entry.device_id)
+                if other.domain == "button" and "location" in other.entity_id
+            ]
+        except Exception:  # noqa: BLE001 - presence is a bonus; never block charging
+            return None
+        return buttons[0] if buttons else None
+
+    async def _ask_bike_location(self, now: datetime, charge_planned: bool) -> None:
+        """Ask the bike where it is when that settles its presence; not too often."""
+        if not self.bike or not self.bike.wants_location(now, charge_planned=charge_planned):
+            return
+        if self._location_asked_at and now - self._location_asked_at < BIKE_LOCATION_INTERVAL:
+            return
+        button = self._bike_location_button()
+        if not button or self.hass.states.get(button) is None:
+            return
+        self._location_asked_at = now
+        try:
+            await self.hass.services.async_call(
+                "button", "press", {"entity_id": button}, blocking=False
+            )
+        except HomeAssistantError as err:
+            _LOGGER.debug("Asking the bike's location failed: %s", err)
 
     def _prices(self) -> list[Slot]:
         price_state = self._state("price_entity")
@@ -830,6 +888,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         details["schema_version"] = 1
         details["vehicle_type"] = self.settings.get("vehicle_type")
         details["rider_location_entity"] = self.settings.get("rider_location_entity")
+        details["bike_tracker_entity"] = self.settings.get("bike_tracker_entity")
         details["charger_type"] = self.settings.get("charger_type")
         details["currency"] = self.currency
         # The market the price forecast learns from, as stored in the options.
@@ -1371,7 +1430,14 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # Persist ownership before turning on: a restart cleans up the probe.
                 if probe_control:
                     await self.store.async_save(self._save_data())
+                await self._ask_bike_location(now, bool(desired and control_enabled))
                 data["bike"] = self.bike.details()
+                tracker_home, tracker_report = self._bike_location()
+                if tracker_report is not None:
+                    data["bike"]["location_home"] = tracker_home
+                    data["bike"]["location_fixed_at"] = tracker_report.isoformat()
+                if self._location_asked_at is not None:
+                    data["bike"]["location_asked_at"] = self._location_asked_at.isoformat()
                 data["car_connected"] = self._car_connected()
             if (control_enabled or force_stop or self._pending_stop or probe_control) and (
                 completion != "checking"
