@@ -370,6 +370,49 @@ async def test_recorder_replaces_a_provider_trip_published_mid_ride(tmp_path):
     await hass.async_stop(force=True)
 
 
+async def test_provider_trip_replaces_overlapping_fallback(tmp_path):
+    hass = HomeAssistant(str(tmp_path))
+    recorder = TripRecorder(hass, "test", None, trip_entity="sensor.last_trip")
+    recorder.store = SimpleNamespace(async_delay_save=lambda *a: None)
+    recorder.trips = [
+        record([at(60, 10, 0), at(99, 7, 3)]),
+    ]
+    attributes = {
+        "track_id": "track-1",
+        "start_time": (T0.timestamp() * 1000),
+        "end_time": ((T0 + timedelta(seconds=135)).timestamp() * 1000),
+        "distance_km": 0.68,
+        "route": [
+            {"latitude": at(0, 10, 0)[1], "longitude": at(0, 10, 0)[2]},
+            {"latitude": at(135, 7, 3)[1], "longitude": at(135, 7, 3)[2]},
+        ],
+    }
+    recorder._trip_changed(
+        {"data": {"new_state": State("sensor.last_trip", "track-1", attributes)}}
+    )
+    assert len(recorder.trips) == 1
+    assert recorder.trips[0]["track_id"] == "track-1"
+    await hass.async_stop(force=True)
+
+
+def test_fallback_is_skipped_when_provider_trip_already_exists(recorder):
+    provider = record([at(0, 0, 0), at(135, 7, 3)], simplify_route=False)
+    provider.update({"track_id": "track-1", "source": "niu_api"})
+    recorder.trips = [provider]
+    # The coordinate-pair fallback can be timestamped just after the provider ends.
+    assert recorder.keep([[at(143, 0, 0), at(186, 7, 3)]]) == 0
+    assert recorder.trips == [provider]
+
+
+def test_nearby_separate_fallback_is_preserved(recorder):
+    provider = record([at(0, 0, 0), at(135, 7, 3)], simplify_route=False)
+    provider.update({"track_id": "track-1", "source": "niu_api"})
+    recorder.trips = [provider]
+    separate = [at(300, 0, 0), at(360, 7, 3)]
+    assert recorder.keep([separate]) == 1
+    assert len(recorder.trips) == 2
+
+
 async def test_bike_recorder_does_not_import_phone_history_or_record_idle_phone(tmp_path):
     from custom_components.dynamic_car_charger.trips import BikeTripRecorder
 
