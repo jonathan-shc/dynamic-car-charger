@@ -63,6 +63,11 @@ SOC_SETTLE = timedelta(minutes=5)
 SOC_MEMORY = timedelta(hours=6)
 # A latitude and a longitude sensor change in the same report, at most this far apart.
 PAIR = timedelta(seconds=2)
+# A provider route can arrive after the route reconstructed from recorded positions.
+# Their timestamps need not match exactly: coordinate sensor pairs can be completed after
+# the provider has already ended the ride.
+PROVIDER_DEDUPE_TIME = timedelta(minutes=2)
+PROVIDER_DEDUPE_METRES = 150.0
 
 Point = tuple[datetime, float, float]  # time, latitude, longitude
 Reading = tuple[datetime, float]  # time, battery percentage
@@ -197,6 +202,46 @@ def with_zones(trip: dict[str, Any], zones: list[dict[str, Any]]) -> dict[str, A
     return named
 
 
+def same_drive(provider: dict[str, Any], fallback: dict[str, Any]) -> bool:
+    """Whether a reconstructed trip is the same drive as a provider route.
+
+    NIU may publish the complete route a few minutes after Home Assistant has already
+    reconstructed a shorter route from sparse coordinate updates. Match both endpoints
+    as well as the time window, so nearby independent drives remain separate.
+    """
+    if fallback.get("track_id") or provider.get("source") != "niu_api":
+        return False
+    provider_route, fallback_route = provider.get("route") or [], fallback.get("route") or []
+    if len(provider_route) < 2 or len(fallback_route) < 2:
+        return False
+    try:
+        provider_start = dt_util.parse_datetime(provider["started"])
+        provider_end = dt_util.parse_datetime(provider["ended"])
+        fallback_start = dt_util.parse_datetime(fallback["started"])
+        fallback_end = dt_util.parse_datetime(fallback["ended"])
+        if None in (provider_start, provider_end, fallback_start, fallback_end):
+            return False
+        if (
+            fallback_start > provider_end + PROVIDER_DEDUPE_TIME
+            or fallback_end < provider_start - PROVIDER_DEDUPE_TIME
+        ):
+            return False
+        provider_points = [
+            (provider_start, float(provider_route[index][0]), float(provider_route[index][1]))
+            for index in (0, -1)
+        ]
+        fallback_points = [
+            (fallback_start, float(fallback_route[index][0]), float(fallback_route[index][1]))
+            for index in (0, -1)
+        ]
+    except (KeyError, TypeError, ValueError):
+        return False
+    return all(
+        metres(provider_point, fallback_point) <= PROVIDER_DEDUPE_METRES
+        for provider_point, fallback_point in zip(provider_points, fallback_points, strict=True)
+    )
+
+
 def zone_at(point: Point, zones: list[dict[str, Any]]) -> dict[str, Any] | None:
     """The smallest zone the position is in."""
     inside = [
@@ -303,6 +348,8 @@ class TripRecorder:
     async def async_start(self) -> None:
         saved = await self.store.async_load() or {}
         self.trips = list(saved.get("trips") or [])
+        if self._deduplicate_provider_trips():
+            self._save()
         self._rebuilt = bool(saved) and saved.get("version", 1) < VERSION
         if self._rebuilt:
             # Cut the old way: the drives the recorder still has are cut again.
@@ -429,6 +476,7 @@ class TripRecorder:
             ):
                 return
             self.trips.pop(known)
+        self.trips = [trip for trip in self.trips if not same_drive(entry, trip)]
         self.trips.append(entry)
         self.trips.sort(key=lambda trip: trip["started"])
         self._save()
@@ -474,6 +522,8 @@ class TripRecorder:
             if last_end is not None and drive[0][0] <= last_end:
                 continue
             kept = record(drive)
+            if any(same_drive(provider, kept) for provider in self.trips):
+                continue
             used = battery_used(drive[0][0], drive[-1][0], self._readings)
             if used is not None:
                 kept["battery_used"] = used
@@ -481,6 +531,19 @@ class TripRecorder:
             last_end = drive[-1][0]
             added += 1
         return added
+
+    def _deduplicate_provider_trips(self) -> int:
+        """Remove saved fallback routes superseded by a complete provider route."""
+        providers = [trip for trip in self.trips if trip.get("source") == "niu_api"]
+        kept = [
+            trip
+            for trip in self.trips
+            if trip.get("source") == "niu_api"
+            or not any(same_drive(provider, trip) for provider in providers)
+        ]
+        removed = len(self.trips) - len(kept)
+        self.trips = kept
+        return removed
 
     def import_states(self, states: list[State], now: datetime) -> int:
         """Drives from recorded states of the tracker. One still under way (moved within
