@@ -407,6 +407,33 @@ def test_the_bikes_own_location_confirms_a_departure_bluetooth_lost():
     assert not b.wants_location(NOW + timedelta(minutes=30), charge_planned=True)
 
 
+def test_hundred_watts_at_home_overrides_a_stale_away_location():
+    b = BikeLifecycle()
+    b.update(NOW, BikeObservation(live=True, speed=0, live_report=NOW))
+    fixed = NOW + timedelta(minutes=1)
+    b.update(
+        fixed,
+        BikeObservation(tracker_home=False, tracker_report=fixed),
+    )
+    assert b.state == "away" and b.cable == "disconnected"
+
+    below = fixed + timedelta(seconds=10)
+    b.update(
+        below,
+        BikeObservation(plug_on=True, watts=99, power_report=below),
+    )
+    assert b.state == "away" and b.cable == "disconnected"
+
+    threshold = below + timedelta(seconds=1)
+    b.update(
+        threshold,
+        BikeObservation(plug_on=True, watts=100, power_report=threshold),
+    )
+    assert b.state == "home_unreachable" and b.reason == "charging_power_home"
+    assert b.home and not b.away
+    assert b.cable == "connected" and b.cable_evidence == "measured_power"
+
+
 def test_a_location_from_before_the_last_contact_decides_nothing():
     b = BikeLifecycle()
     lost_after_a_short_ride(b)
