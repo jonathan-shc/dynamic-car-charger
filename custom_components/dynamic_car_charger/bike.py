@@ -7,6 +7,11 @@ A cable confirmation is historical while the charger is off, not a physical sens
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+# Power from the dedicated shed outlet is stronger presence evidence than a stale
+# cloud location. The Veloretti charger settles around 130 W; require at least
+# 100 W so standby draw and the first seconds of its ramp do not count.
+HOME_CHARGING_POWER_W = 100.0
+
 
 @dataclass
 class BikeObservation:
@@ -272,8 +277,27 @@ class BikeLifecycle:
             )
         else:
             self.state, self.reason = "unknown", "no_home_evidence"
-        # Fresh charging proves a cable. Measured power must follow plug activation
-        # and is sampled again after ten seconds; standby/full idle proves nothing.
+        # Fresh, substantial draw from this bike's dedicated outlet proves both that
+        # the cable is connected and that the bike is home. This deliberately beats a
+        # newer cloud location: that location can stay stuck at the previous stop.
+        home_power_proof = (
+            o.plug_on
+            and o.watts is not None
+            and o.watts >= HOME_CHARGING_POWER_W
+            and o.power_report is not None
+            and timedelta(0) <= now - o.power_report <= timedelta(seconds=30)
+            and (self.probe_started is None or o.power_report >= self.probe_started)
+        )
+        if home_power_proof:
+            self.home, self.away = True, False
+            self.departure_pending = False
+            if not o.live:
+                self.state = "home_off" if o.powered is False else "home_unreachable"
+                self.reason = "charging_power_home"
+
+        # Fresh charging proves a cable. Measured power for the short arrival probe
+        # must follow plug activation and is sampled again after ten seconds;
+        # standby/full idle proves nothing.
         power_proof = (
             o.plug_on
             and o.watts is not None
@@ -290,9 +314,14 @@ class BikeLifecycle:
         )
         if moving:
             self.cable, self.cable_evidence, self.cable_at = "unknown", "bike_moving", None
-        elif o.charging is True or power_proof:
-            self.cable, self.cable_at = "connected", now
-            self.cable_evidence = "ble_charging" if o.charging is True else "measured_power"
+        elif o.charging is True or home_power_proof or (power_proof and not self.away):
+            self.cable = "connected"
+            if o.charging is True:
+                self.cable_at, self.cable_evidence = now, "ble_charging"
+            else:
+                # Preserve when the smart plug actually reported the draw. The
+                # coordinator uses this to require proof newer than a planned start.
+                self.cable_at, self.cable_evidence = o.power_report, "measured_power"
         elif self.state == "departing":
             self.cable, self.cable_evidence = "unknown", "bike_moving"
 

@@ -196,6 +196,9 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._draw_watch_since: datetime | None = None
         self._no_draw_at: datetime | None = None
         self._no_draw_soc: float | None = None
+        self._bike_plan_wanted = False
+        self._bike_plan_started_at: datetime | None = None
+        self._bike_plan_power_confirmed = False
         # Bike charger finished on its own (see _bike_full_by_power_drop).
         self._drop_peak_kw = 0.0
         self._drop_last_kw = 0.0
@@ -1410,14 +1413,51 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
             plan_status = data.get("plan_status", data["status"])
             control_enabled = self.enabled or self.immediate_charging
+            bike_plan_wanted = bool(self.bike and desired and control_enabled and not force_stop)
+            bike_plan_started = bike_plan_wanted and not self._bike_plan_wanted
+            self._bike_plan_wanted = bike_plan_wanted
+            if bike_plan_started:
+                self._bike_plan_started_at = now
+                self._bike_plan_power_confirmed = False
+                # A later planned window is a new physical check, even if an
+                # earlier one in the preceding hour found no bike.
+                self._no_draw_at = None
+            elif not bike_plan_wanted:
+                self._bike_plan_started_at = None
+                self._bike_plan_power_confirmed = False
+            if (
+                bike_plan_wanted
+                and self._bike_plan_started_at is not None
+                and self.bike.cable == "connected"
+                and self.bike.cable_evidence == "measured_power"
+                and self.bike.cable_at is not None
+                and self.bike.cable_at >= self._bike_plan_started_at
+            ):
+                self._bike_plan_power_confirmed = True
             data["charging_requested"] = desired and control_enabled and not force_stop
             control_demand = desired and control_enabled and not force_stop
-            if self.bike and self.bike.state not in ("home_on", "home_off", "home_unreachable"):
+            bike_connection_check = bike_plan_wanted and not self._bike_plan_power_confirmed
+            if bike_connection_check:
+                # Every planned bike start briefly powers the dedicated outlet. A new
+                # draw of at least 100 W proves home and connected, even when a cloud
+                # location is stuck at an earlier destination.
+                control_demand = True
+                data.update(status="starting_charge", charging_requested=False)
+            elif self.bike and self.bike.state not in (
+                "home_on",
+                "home_off",
+                "home_unreachable",
+            ):
                 control_demand = False
                 if desired and control_enabled:
                     data.update(status="waiting_for_car", charging_requested=False)
             if not self.settings.get("connected_entity"):
-                control_demand = self._draw_seen_or_waiting(now, data, control_demand)
+                control_demand = self._draw_seen_or_waiting(
+                    now,
+                    data,
+                    control_demand,
+                    minimum_draw_kw=0.1 if bike_connection_check else FULL_CHARGE_IDLE_KW,
+                )
             probe_control = False
             if self.bike:
                 control_demand, probe_control = self.bike.control(
@@ -1487,7 +1527,14 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             else:
                 self.store.async_delay_save(self._save_data, 30)
 
-    def _draw_seen_or_waiting(self, now: datetime, data: dict[str, Any], demand: bool) -> bool:
+    def _draw_seen_or_waiting(
+        self,
+        now: datetime,
+        data: dict[str, Any],
+        demand: bool,
+        *,
+        minimum_draw_kw: float = FULL_CHARGE_IDLE_KW,
+    ) -> bool:
         """Whether to keep the charger on, for a vehicle without a plugged-in sensor.
 
         A smart plug can't tell whether a scooter or bike is on it. When it has been on
@@ -1512,7 +1559,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not demand or charger is None or charger.state != "on":
             self._draw_watch_since = None
             return demand
-        if self._sample_power >= FULL_CHARGE_IDLE_KW:
+        if self._sample_power >= minimum_draw_kw:
             self._draw_watch_since = None
             return True
         # Counted from when the charger came on, not from when the plan first asked.

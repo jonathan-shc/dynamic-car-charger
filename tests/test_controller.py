@@ -2268,6 +2268,56 @@ async def test_bike_probe_owns_plug_while_scheduler_disabled(rig):
     assert calls == ["turn_on", "turn_off"]
 
 
+async def test_planned_bike_start_checks_power_despite_stale_away_location(rig):
+    from custom_components.dynamic_car_charger.bike import BikeLifecycle
+
+    hass, c, calls = rig
+    c.settings.update(vehicle_type="bicycle", charger_type="plug")
+    c.bike = BikeLifecycle()
+    c.bike.state = "away"
+    c.bike.away = True
+    c.bike.cable = "disconnected"
+    c._observed_soc = 20
+
+    await c.async_change(enabled=True)
+    assert calls == ["turn_on"]
+    assert c.data["status"] == "starting_charge"
+    assert not c.data["charging_requested"]
+
+    hass.states.async_set("sensor.charging_power", "0.099", {"unit_of_measurement": "kW"})
+    await c.async_reconcile()
+    assert c.bike.state == "away" and c.bike.cable == "disconnected"
+    assert not c.data["charging_requested"]
+
+    hass.states.async_set("sensor.charging_power", "0.1", {"unit_of_measurement": "kW"})
+    await c.async_reconcile()
+    assert c.bike.state == "home_unreachable"
+    assert c.bike.cable == "connected"
+    assert c.data["charging_requested"]
+    assert calls == ["turn_on"]
+
+
+async def test_every_planned_bike_start_requires_new_hundred_watt_proof(rig):
+    from custom_components.dynamic_car_charger.bike import BikeLifecycle
+
+    _hass, c, calls = rig
+    c.settings.update(vehicle_type="bicycle", charger_type="plug")
+    c.bike = BikeLifecycle()
+    c.bike.state = "home_off"
+    c.bike.home = True
+    c.bike.cable = "connected"
+    c.bike.cable_evidence = "measured_power"
+    c.bike.cable_at = dt_util.utcnow() - timedelta(hours=1)
+    c._observed_soc = 20
+
+    await c.async_change(enabled=True)
+
+    assert calls == ["turn_on"]
+    assert c.data["status"] == "starting_charge"
+    assert not c.data["charging_requested"]
+    assert not c._bike_plan_power_confirmed
+
+
 async def test_bike_retained_soc_is_not_a_new_measurement(rig):
     from custom_components.dynamic_car_charger.bike import BikeLifecycle
 
@@ -2488,6 +2538,9 @@ async def test_the_bikes_location_is_asked_before_charging_and_not_too_often(rig
     )
     await c.async_reconcile()
     assert c.data["bike"]["state"] == "away"
-    assert calls[-1] == "turn_off"
+    # A planned start now verifies the dedicated outlet before trusting the
+    # cloud-away fix, because that fix may be stuck at the previous destination.
+    assert calls[-1] == "turn_on"
+    assert c.data["status"] == "starting_charge"
     await c.async_reconcile()
-    assert c.data["status"] == "waiting_for_car"
+    assert c.data["status"] == "starting_charge"
