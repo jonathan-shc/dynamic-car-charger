@@ -82,6 +82,9 @@ NO_DRAW_AFTER = timedelta(minutes=3)
 NO_DRAW_RETRY = timedelta(hours=1)
 # The bike's location is asked at most this often: each question wakes its GPS module.
 BIKE_LOCATION_INTERVAL = timedelta(minutes=15)
+# A home fix made after the last Bluetooth contact settles presence for this long: the
+# bike was home then and hasn't been seen leaving since.
+BIKE_LOCATION_SETTLED = timedelta(hours=3)
 # A power reading older than this is ignored (many chargers stop publishing).
 POWER_REPORT_MAX_AGE = timedelta(minutes=5)
 # Smart plugs usually report power only when it changes, so a bike or car
@@ -848,6 +851,16 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
         if self._location_asked_at and now - self._location_asked_at < BIKE_LOCATION_INTERVAL:
             return
+        home, fixed = self._bike_location()
+        contact = self.bike.last_connected_at
+        if (
+            not self.bike.departure_pending
+            and home
+            and fixed is not None
+            and (contact is None or fixed > contact)
+            and now - fixed < BIKE_LOCATION_SETTLED
+        ):
+            return  # already known to be home since it was last seen
         button = self._bike_location_button()
         if not button or self.hass.states.get(button) is None:
             return

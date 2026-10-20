@@ -2518,7 +2518,12 @@ async def test_the_bikes_location_is_asked_before_charging_and_not_too_often(rig
     c._observed_soc = 20  # last known while the bike was in range
     hass.states.async_set("binary_sensor.bike_live", "off")
     hass.states.async_set("button.bike_refresh_location", "unknown")
-    hass.states.async_set("device_tracker.bike", "home")
+    # Its last fix: hours old.
+    hass.states.async_set(
+        "device_tracker.bike",
+        "home",
+        {"last_update": (dt_util.utcnow() - timedelta(hours=4)).isoformat()},
+    )
     pressed = []
 
     async def press(call):
@@ -2544,3 +2549,45 @@ async def test_the_bikes_location_is_asked_before_charging_and_not_too_often(rig
     assert c.data["status"] == "starting_charge"
     await c.async_reconcile()
     assert c.data["status"] == "starting_charge"
+
+
+async def test_a_home_fix_after_the_last_contact_settles_the_question(rig):
+    from custom_components.dynamic_car_charger.bike import BikeLifecycle
+
+    hass, c, _calls = rig
+    c.settings.update(
+        vehicle_type="bicycle",
+        charger_type="plug",
+        bike_live_entity="binary_sensor.bike_live",
+        bike_speed_entity="sensor.bike_speed",
+        bike_tracker_entity="device_tracker.bike",
+        bike_location_refresh_entity="button.bike_refresh_location",
+    )
+    c.bike = BikeLifecycle()
+    c.bike.home = True
+    c._observed_soc = 20
+    hass.states.async_set("binary_sensor.bike_live", "off")
+    hass.states.async_set("button.bike_refresh_location", "unknown")
+    # Asked nearly three hours ago, and it answered: home.
+    hass.states.async_set(
+        "device_tracker.bike",
+        "home",
+        {"last_update": (dt_util.utcnow() - timedelta(hours=2, minutes=50)).isoformat()},
+    )
+    pressed = []
+
+    async def press(call):
+        pressed.append(call.data["entity_id"])
+
+    hass.services.async_register("button", "press", press)
+    await c.async_change(enabled=True)
+    await hass.async_block_till_done()
+    assert pressed == []
+    # A quarter of an hour later that answer is too old to go by.
+    with patch(
+        "custom_components.dynamic_car_charger.coordinator.dt_util.utcnow",
+        return_value=dt_util.utcnow() + timedelta(minutes=16),
+    ):
+        await c.async_reconcile()
+    await hass.async_block_till_done()
+    assert pressed == ["button.bike_refresh_location"]
