@@ -113,3 +113,52 @@ delete_trip:
       description: Provider track ID of the stored trip.
       selector:
         text:
+set_push_credentials:
+  fields:
+    key_id:
+      required: true
+      example: "ABC123DEFG"
+      selector:
+        text:
+    team_id:
+      required: true
+      example: "R387DG8767"
+      selector:
+        text:
+    bundle_id:
+      default: "app.chargeremote"
+      selector:
+        text:
+    private_key:
+      required: true
+      selector:
+        text:
+          multiline: true
+    sandbox:
+      default: false
+      selector:
+        boolean:
+register_push:
+  fields:
+    device_id:
+      required: true
+      selector:
+        text:
+    device_token:
+      selector:
+        text:
+    start_token:
+      selector:
+        text:
+    activities:
+      selector:
+        object:
+    language:
+      selector:
+        text:
+    alerts:
+      selector:
+        boolean:
+    entries:
+      selector:
+        object:

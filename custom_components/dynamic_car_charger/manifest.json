@@ -14,7 +14,8 @@
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/jonathan-shc/dynamic-car-charger/issues",
   "requirements": [
-    "numpy>=1.26.0"
+    "numpy>=1.26.0",
+    "h2>=4.1.0"
   ],
-  "version": "0.17.4"
+  "version": "0.18.0"
 }

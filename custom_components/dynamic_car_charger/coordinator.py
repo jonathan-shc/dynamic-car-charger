@@ -1535,6 +1535,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 else None
             )
             self.async_set_updated_data(data)
+            self._push(data)
             if self._vehicle_completed and not previously_completed:
                 await self.store.async_save(self._save_data())
             else:
@@ -1584,6 +1585,26 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         data["no_power_draw_since"] = now.isoformat()
         data.update(status="waiting_for_car", charging_requested=False)
         return False
+
+    def _push(self, data: dict[str, Any]) -> None:
+        """Keep the Charge Remote app's Live Activity current, also while it is closed."""
+        hub = self.hass.data.get(f"{DOMAIN}_push")
+        if hub is None or not hub.configured or self._stopping:
+            return
+        kind = (
+            "bike"
+            if self.bike
+            else "scooter"
+            if self.settings.get("charger_type") == "plug"
+            or not self.settings.get("connected_entity")
+            else "car"
+        )
+        self.hass.async_create_background_task(
+            hub.async_vehicle_update(
+                self.entry.entry_id, self.entry.title, dict(data), self._sample_power, kind
+            ),
+            f"{DOMAIN} push",
+        )
 
     def _reconcile_immediate(self, now: datetime, data: dict[str, Any]) -> bool:
         soc, effective, _prices = self._read(now, include_prices=False)

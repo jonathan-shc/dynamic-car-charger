@@ -340,6 +340,30 @@
         }
       }
     },
+    "set_push_credentials": {
+      "name": "Set push key for Charge Remote",
+      "description": "Apple's push key (APNs, a .p8 key from the Apple Developer account), so Home Assistant can start and update the Charge Remote app's Live Activity and send its notifications while the app is closed. Kept in Home Assistant.",
+      "fields": {
+        "key_id": {"name": "Key ID", "description": "The 10-character ID of the APNs key."},
+        "team_id": {"name": "Team ID", "description": "The Apple Developer team the app belongs to."},
+        "bundle_id": {"name": "Bundle ID", "description": "The app's bundle ID."},
+        "private_key": {"name": "Private key", "description": "The whole contents of the .p8 file, from -----BEGIN PRIVATE KEY----- to -----END PRIVATE KEY-----."},
+        "sandbox": {"name": "Development builds", "description": "Only for builds run from Xcode; TestFlight and the App Store use the normal service."}
+      }
+    },
+    "register_push": {
+      "name": "Register Charge Remote push",
+      "description": "Called by the Charge Remote app with its push tokens.",
+      "fields": {
+        "device_id": {"name": "Device", "description": "The app's own ID for this phone."},
+        "device_token": {"name": "Notification token", "description": "For notifications."},
+        "start_token": {"name": "Live Activity start token", "description": "For starting a Live Activity."},
+        "activities": {"name": "Live Activities", "description": "A token per running Live Activity, by config entry ID."},
+        "language": {"name": "Language", "description": "nl or en."},
+        "alerts": {"name": "Notifications", "description": "Whether to send notifications when charging starts, finishes or fails."},
+        "entries": {"name": "Vehicles", "description": "The config entries the app follows."}
+      }
+    },
     "set_schedule": {
       "name": "Set weekly schedule",
       "description": "Sets a ready-by time per weekday. With the weekly schedule switched on, each ready-by time that passes makes way for the next scheduled one.",
