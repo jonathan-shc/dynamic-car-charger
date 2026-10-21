@@ -1,6 +1,6 @@
 homeassistant==2026.9.2
 pytest>=8,<10
-pytest-asyncio>=1,<2
+pytest-asyncio>=1.4.0,<2
 ruff==0.16.8
 numpy>=1.26.0
 h2>=4.1.0
