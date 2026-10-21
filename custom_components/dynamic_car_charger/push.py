@@ -10,6 +10,7 @@ app developer's key, set once with `set_push_credentials` and kept in Home Assis
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from datetime import UTC, datetime
@@ -30,8 +31,10 @@ APPLE_EPOCH = datetime(2001, 1, 1, tzinfo=UTC)
 ACTIVE = ("charging", "charging_overtime", "starting_charge", "awaiting_soc_confirmation")
 # A Live Activity is updated at least this often while charging, and at once on a change.
 REFRESH = 300
-# A start that didn't take (no activity token came back) is tried again after this long.
-RESTART_AFTER = 900
+# A Live Activity is only started once energy flows: not for a plug switched on for a
+# moment to see whether anything is on it, nor for a charger that doesn't start.
+STARTS = ("charging", "charging_overtime")
+FLOWING_KW = 0.005
 # A charging block this close with nothing plugged in gets a notification.
 UNPLUGGED_WARNING = 15 * 60
 # Apple's signed token lasts an hour; a new one is made well before.
@@ -200,6 +203,8 @@ class PushHub:
         self._client = None
         # The last few pushes and what Apple answered, for push_status.
         self.recent: list[dict[str, Any]] = []
+        # Plan updates come in quick succession; one at a time, so a start is sent once.
+        self._lock = asyncio.Lock()
 
     async def async_load(self) -> None:
         saved = await self.store.async_load() or {}
@@ -329,6 +334,10 @@ class PushHub:
         send a notification when charging starts, finishes or fails."""
         if not self.configured:
             return
+        async with self._lock:
+            await self._vehicle_update(entry_id, name, data, power_kw, kind)
+
+    async def _vehicle_update(self, entry_id, name, data, power_kw, kind) -> None:
         status = data.get("status") or ""
         active = status in ACTIVE
         now = time.time()
@@ -356,17 +365,21 @@ class PushHub:
                                     "stale-date": int(now + 20 * 60),
                                 }
                             },
-                            10
-                            if fingerprint[:2] != (memo.get("fingerprint") or (None, None))[:2]
-                            else 5,
+                            # A change is shown at once, also on a locked phone (the app has
+                            # Apple's frequent-updates budget); the five-minute refresh can wait.
+                            10 if fingerprint != memo.get("fingerprint") else 5,
                         )
                         memo.update(fingerprint=fingerprint, at=now)
                         changed |= self._forget(result, device, entry_id)
                 elif (
-                    active
+                    status in STARTS
+                    and power_kw >= FLOWING_KW
                     and device.get("start_token")
-                    and now - memo.get("started", 0) >= RESTART_AFTER
+                    and not memo.get("started")
                 ):
+                    # Once per charge: also when the phone never reports the new activity's
+                    # token, a second start would only add a second Live Activity.
+                    memo.update(started=True, fingerprint=_fingerprint(state), at=now)
                     texts = _texts(language)
                     result = await self._send(
                         device["start_token"],
@@ -386,10 +399,10 @@ class PushHub:
                                     "title": texts["started_title"].format(name=name),
                                     "body": state["headline"],
                                 },
+                                "stale-date": int(now + 20 * 60),
                             }
                         },
                     )
-                    memo.update(started=now, fingerprint=_fingerprint(state), at=now)
                     if result in (400, 410):
                         device.pop("start_token", None)
                         changed = True
@@ -411,6 +424,8 @@ class PushHub:
                 await self._notify(device, memo, status, name, data, language)
             except Exception as err:  # noqa: BLE001 - a phone that can't be reached never stops charging
                 _LOGGER.debug("Push to %s failed: %s", device_id, err)
+            if not active:
+                memo["started"] = False  # the next charge may start one again
             memo["active"], memo["status"], memo["first"] = active, status, False
         if changed:
             self._save()
@@ -430,6 +445,8 @@ class PushHub:
         target = data.get("target_percentage")
         target_text = f"{target:.0f}" if isinstance(target, int | float) else "–"
         if status == "charging" and previous not in ACTIVE:
+            if device.get("start_token"):
+                return  # the Live Activity's start already says so, with its own alert
             alert = {
                 "title": texts["started_title"].format(name=name),
                 "body": texts["started_body"].format(target=target_text, soc=soc_text),
