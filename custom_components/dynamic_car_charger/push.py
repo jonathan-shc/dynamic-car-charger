@@ -256,9 +256,7 @@ class PushHub:
     async def _send(self, token: str, push_type: str, payload: dict, priority: int = 10) -> int:
         """Sends one push; the HTTP status (200 sent, 410 the token is gone)."""
         if self._client is None:
-            from homeassistant.helpers.httpx_client import create_async_httpx_client
-
-            self._client = create_async_httpx_client(self.hass, http2=True)
+            self._client = http2_client(self.hass)
         topic = self.credentials["bundle_id"]
         if push_type == "liveactivity":
             topic += ".push-type.liveactivity"
@@ -441,6 +439,17 @@ class PushHub:
             device.get("activities", {}).pop(entry_id, None)
             return True
         return False
+
+
+def http2_client(hass: HomeAssistant):
+    """An HTTP/2 client with an SSL context of its own. Turning HTTP/2 on with the shared
+    HTTP/1.1 context (http2=True) makes httpx advertise HTTP/2 on the context every other
+    integration's aiohttp connections use, after which their requests fail with "Server
+    disconnected" or "Bad status line"."""
+    from homeassistant.helpers.httpx_client import create_async_httpx_client
+    from homeassistant.util.ssl import SSL_ALPN_HTTP11_HTTP2
+
+    return create_async_httpx_client(hass, alpn_protocols=SSL_ALPN_HTTP11_HTTP2)
 
 
 def push_hub(hass: HomeAssistant) -> PushHub:

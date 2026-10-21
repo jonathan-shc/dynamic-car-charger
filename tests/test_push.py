@@ -176,3 +176,17 @@ async def test_a_charge_about_to_start_with_nothing_plugged_in_is_told_once(hub)
     assert [payload["aps"]["alert"]["title"] for _, kind, payload in hub.sent] == [
         "E-bike isn't home"
     ]
+
+
+async def test_the_push_client_leaves_the_shared_ssl_context_alone(tmp_path):
+    from homeassistant.util.ssl import SSL_ALPN_HTTP11, client_context
+
+    from custom_components.dynamic_car_charger.push import http2_client
+
+    hass = HomeAssistant(str(tmp_path))
+    shared = client_context(alpn_protocols=SSL_ALPN_HTTP11)
+    client = http2_client(hass)
+    pool = client._transport._pool
+    assert pool._http2 is True
+    assert pool._ssl_context is not shared
+    await hass.async_stop(force=True)
