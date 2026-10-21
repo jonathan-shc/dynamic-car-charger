@@ -37,6 +37,8 @@ STARTS = ("charging", "charging_overtime")
 FLOWING_KW = 0.005
 # A charging block this close with nothing plugged in gets a notification.
 UNPLUGGED_WARNING = 15 * 60
+# A charger or plug that can't be reached for this long gets a notification.
+UNREACHABLE_AFTER = 10 * 60
 # Apple's signed token lasts an hour; a new one is made well before.
 TOKEN_LIFETIME = 50 * 60
 
@@ -64,6 +66,21 @@ TEXTS = {
         "unplugged_title": "{name} is niet aangesloten",
         "away_title": "{name} is niet thuis",
         "unplugged_body": "Laden begint om {time}",
+        "plugged_title": "{name} aangesloten",
+        "plugged_deadline": "Klaar {when} · {target}%",
+        "plugged_cheap": "Laadt tot {target}%, alleen onder {price}",
+        "plugged_none": "Laadt tot {target}%; nog geen klaar-om-tijd",
+        "shortfall_title": "{name} haalt {target}% niet",
+        "shortfall_body": "Niet vóór {when}. Laad nu of pas het doel aan.",
+        "interrupted_title": "{name} losgekoppeld",
+        "interrupted_body": "Gestopt bij {soc}%, doel was {target}%",
+        "unreachable_title": "{name}: {device} niet bereikbaar",
+        "unreachable_body": "Het laden wacht tot hij terug is.",
+        "charger": "laadpaal",
+        "plug": "stekker",
+        "today": "vandaag",
+        "tomorrow": "morgen",
+        "days": ["ma", "di", "wo", "do", "vr", "za", "zo"],
     },
     "en": {
         "charging": "Charging",
@@ -88,6 +105,21 @@ TEXTS = {
         "unplugged_title": "{name} isn't plugged in",
         "away_title": "{name} isn't home",
         "unplugged_body": "Charging starts at {time}",
+        "plugged_title": "{name} plugged in",
+        "plugged_deadline": "Ready {when} · {target}%",
+        "plugged_cheap": "Charging to {target}%, only below {price}",
+        "plugged_none": "Charging to {target}%; no ready-by time yet",
+        "shortfall_title": "{name} won't reach {target}%",
+        "shortfall_body": "Not before {when}. Charge now or change the target.",
+        "interrupted_title": "{name} unplugged",
+        "interrupted_body": "Stopped at {soc}%, the target was {target}%",
+        "unreachable_title": "{name}: {device} not reachable",
+        "unreachable_body": "Charging waits until it is back.",
+        "charger": "charger",
+        "plug": "plug",
+        "today": "today",
+        "tomorrow": "tomorrow",
+        "days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
     },
 }
 
@@ -98,6 +130,25 @@ def apple_time(moment: datetime | None) -> float | None:
 
 def _texts(language: str | None) -> dict[str, str]:
     return TEXTS.get((language or "en")[:2], TEXTS["en"])
+
+
+def _when(moment: datetime, texts: dict, now: datetime) -> str:
+    """ "today 07:30", "tomorrow 07:30" or "Tue 07:30", in Home Assistant's time."""
+    zone = dt_util.get_default_time_zone()
+    local, today = moment.astimezone(zone), now.astimezone(zone).date()
+    days = (local.date() - today).days
+    day = (
+        texts["today"]
+        if days == 0
+        else texts["tomorrow"]
+        if days == 1
+        else texts["days"][local.weekday()]
+    )
+    return f"{day} {local.strftime('%H:%M')}"
+
+
+def _percent(value) -> str:
+    return f"{value:.0f}" if isinstance(value, int | float) else "–"
 
 
 def _window(data: dict[str, Any], now: datetime) -> tuple[datetime, datetime] | None:
@@ -234,7 +285,7 @@ class PushHub:
     def register(self, device_id: str, update: dict[str, Any]) -> None:
         """A phone's tokens and wishes; given fields replace, missing ones are kept."""
         device = self.devices.setdefault(device_id, {"activities": {}})
-        for key in ("device_token", "start_token", "language", "alerts", "entries"):
+        for key in ("device_token", "start_token", "language", "alerts", "alert_types", "entries"):
             if key in update:
                 device[key] = update[key]
         for entry_id, token in (update.get("activities") or {}).items():
@@ -421,7 +472,7 @@ class PushHub:
                     )
                     device.get("activities", {}).pop(entry_id, None)
                     changed = True
-                await self._notify(device, memo, status, name, data, language)
+                await self._notify(device, memo, status, name, data, language, entry_id, kind)
             except Exception as err:  # noqa: BLE001 - a phone that can't be reached never stops charging
                 _LOGGER.debug("Push to %s failed: %s", device_id, err)
             if not active:
@@ -430,47 +481,145 @@ class PushHub:
         if changed:
             self._save()
 
-    async def _notify(self, device, memo, status, name, data, language) -> None:
-        """A notification on a change: charging started, finished, or failing; and once
-        before a charging block when the vehicle isn't plugged in or isn't home."""
-        if not device.get("alerts") or not device.get("device_token") or memo.get("first"):
-            return
-        await self._warn_unplugged(device, memo, name, data, language)
-        previous = memo.get("status")
-        if status == previous:
-            return
-        texts = _texts(language)
-        soc = data.get("estimated_soc", data.get("measured_soc"))
-        soc_text = f"{soc:.0f}" if isinstance(soc, int | float) else "–"
-        target = data.get("target_percentage")
-        target_text = f"{target:.0f}" if isinstance(target, int | float) else "–"
-        if status == "charging" and previous not in ACTIVE:
-            if device.get("start_token"):
-                return  # the Live Activity's start already says so, with its own alert
-            alert = {
-                "title": texts["started_title"].format(name=name),
-                "body": texts["started_body"].format(target=target_text, soc=soc_text),
-            }
-        elif status == "target_reached":
-            alert = {
-                "title": texts["done_title"].format(name=name),
-                "body": texts["done_body"].format(soc=soc_text),
-            }
-        elif status == "control_error":
-            alert = {
-                "title": texts["problem_title"].format(name=name),
-                "body": headline(data, language, dt_util.utcnow(), "car"),
-            }
-        else:
-            return
+    def _wants(self, device: dict, kind: str) -> bool:
+        """Whether the phone wants this kind of notification (all, when it didn't say)."""
+        types = device.get("alert_types")
+        return types is None or kind in types
+
+    async def _alert(self, device, kind, alert, entry_id, category=None) -> None:
+        aps: dict[str, Any] = {"alert": alert, "sound": "default"}
+        if category:
+            aps["category"] = category  # the app shows its buttons for it
         result = await self._send(
-            device["device_token"], "alert", {"aps": {"alert": alert, "sound": "default"}}
+            device["device_token"], "alert", {"aps": aps, "entry_id": entry_id, "kind": kind}
         )
         if result in (400, 410):
             device.pop("device_token", None)
             self._save()
 
-    async def _warn_unplugged(self, device, memo, name, data, language) -> None:
+    async def _notify(self, device, memo, status, name, data, language, entry_id, kind) -> None:
+        """Notifications on a change: plugged in (with the plan and buttons to change it),
+        charging started, finished, failing, interrupted, not reachable, a target that
+        won't be reached, and once before a charging block with nothing plugged in."""
+        now = dt_util.utcnow()
+        connected = data.get("car_connected")
+        was_connected = memo.get("connected")
+        was_active = memo.get("active")
+        previous = memo.get("status")
+        unreachable = data.get("error_code") == "input_unavailable"
+        if unreachable:
+            memo.setdefault("unreachable_since", now)
+        else:
+            memo.pop("unreachable_since", None)
+            memo.pop("unreachable_told", None)
+        memo["connected"] = connected
+        if not device.get("alerts") or not device.get("device_token") or memo.get("first"):
+            return
+        texts = _texts(language)
+        soc, target = (
+            _percent(data.get("estimated_soc", data.get("measured_soc"))),
+            _percent(data.get("target_percentage")),
+        )
+        deadline = dt_util.parse_datetime(data["deadline"]) if data.get("deadline") else None
+        cheap = data.get("planning_method") in ("cheap_only", "cheap_after_deadline")
+        if self._wants(device, "unplugged"):
+            await self._warn_unplugged(device, memo, name, data, language, entry_id)
+        if connected is True and was_connected is False and self._wants(device, "plugged_in"):
+            if cheap and data.get("cheap_price_eur_kwh") is not None:
+                body = texts["plugged_cheap"].format(
+                    target=target, price=f"€{data['cheap_price_eur_kwh']:.2f}".replace(".", ",")
+                )
+            elif deadline and deadline > now:
+                body = texts["plugged_deadline"].format(
+                    when=_when(deadline, texts, now), target=target
+                )
+            else:
+                body = texts["plugged_none"].format(target=target)
+            await self._alert(
+                device,
+                "plugged_in",
+                {"title": texts["plugged_title"].format(name=name), "body": body},
+                entry_id,
+                "PLAN",
+            )
+        if (
+            was_active
+            and connected is False
+            and was_connected is not False
+            and status != "target_reached"
+            and self._wants(device, "interrupted")
+        ):
+            await self._alert(
+                device,
+                "interrupted",
+                {
+                    "title": texts["interrupted_title"].format(name=name),
+                    "body": texts["interrupted_body"].format(soc=soc, target=target),
+                },
+                entry_id,
+            )
+        short = status == "insufficient_time" or (data.get("shortfall_kwh") or 0) > 0.1
+        if (
+            short
+            and deadline
+            and connected is not False
+            and memo.get("short_for") != data["deadline"]
+            and self._wants(device, "shortfall")
+        ):
+            memo["short_for"] = data["deadline"]
+            await self._alert(
+                device,
+                "shortfall",
+                {
+                    "title": texts["shortfall_title"].format(name=name, target=target),
+                    "body": texts["shortfall_body"].format(when=_when(deadline, texts, now)),
+                },
+                entry_id,
+                "PLAN",
+            )
+        since = memo.get("unreachable_since")
+        if (
+            since
+            and (now - since).total_seconds() >= UNREACHABLE_AFTER
+            and not memo.get("unreachable_told")
+            and self._wants(device, "problem")
+        ):
+            memo["unreachable_told"] = True
+            await self._alert(
+                device,
+                "problem",
+                {
+                    "title": texts["unreachable_title"].format(
+                        name=name, device=texts["charger" if kind == "car" else "plug"]
+                    ),
+                    "body": texts["unreachable_body"],
+                },
+                entry_id,
+            )
+        if status == previous:
+            return
+        if status == "charging" and previous not in ACTIVE and self._wants(device, "started"):
+            if device.get("start_token"):
+                return  # the Live Activity's start already says so, with its own alert
+            alert = {
+                "title": texts["started_title"].format(name=name),
+                "body": texts["started_body"].format(target=target, soc=soc),
+            }
+            await self._alert(device, "started", alert, entry_id)
+        elif status == "target_reached" and self._wants(device, "done"):
+            alert = {
+                "title": texts["done_title"].format(name=name),
+                "body": texts["done_body"].format(soc=soc),
+            }
+            await self._alert(device, "done", alert, entry_id)
+        elif status == "control_error" and self._wants(device, "problem"):
+            alert = {
+                "title": texts["problem_title"].format(name=name),
+                "body": headline(data, language, now, kind),
+            }
+            await self._alert(device, "problem", alert, entry_id)
+
+    async def _warn_unplugged(self, device, memo, name, data, language, entry_id) -> None:
         now = dt_util.utcnow()
         window = _window(data, now)
         if not data.get("enabled") or window is None or window[0] <= now:
@@ -489,12 +638,7 @@ class PushHub:
             "title": texts["away_title" if away else "unplugged_title"].format(name=name),
             "body": texts["unplugged_body"].format(time=start),
         }
-        result = await self._send(
-            device["device_token"], "alert", {"aps": {"alert": alert, "sound": "default"}}
-        )
-        if result in (400, 410):
-            device.pop("device_token", None)
-            self._save()
+        await self._alert(device, "unplugged", alert, entry_id)
 
     @staticmethod
     def _forget(result: int, device: dict, entry_id: str) -> bool:
