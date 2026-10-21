@@ -228,3 +228,61 @@ async def test_a_live_activity_starts_once_and_only_when_energy_flows(hub):
     await hub.async_vehicle_update("bike", "E-bike", plan("target_reached"), 0, "bike")
     await hub.async_vehicle_update("bike", "E-bike", charging, 0.13, "bike")
     assert [payload["aps"]["event"] for _, _, payload in hub.sent] == ["start", "start"]
+
+
+def alerts(hub):
+    return [
+        (payload.get("kind"), payload["aps"]) for _, kind, payload in hub.sent if kind == "alert"
+    ]
+
+
+async def test_plugging_in_tells_the_plan_with_buttons_to_change_it(hub):
+    hub.register("phone", {"device_token": "dev", "alerts": True})
+    now = dt_util.utcnow()
+    deadline = (now + timedelta(days=1)).replace(hour=7, minute=30)
+    waiting = plan("scheduled", deadline=deadline.isoformat(), car_connected=False)
+    await hub.async_vehicle_update("car", "Auto", waiting, 0, "car")  # first: remembered
+    await hub.async_vehicle_update("car", "Auto", waiting, 0, "car")
+    plugged = dict(waiting, car_connected=True)
+    await hub.async_vehicle_update("car", "Auto", plugged, 0, "car")
+    [(kind, aps)] = alerts(hub)
+    assert kind == "plugged_in" and aps["category"] == "PLAN"
+    assert aps["alert"]["title"] == "Auto plugged in"
+    assert aps["alert"]["body"].startswith("Ready ") and "80%" in aps["alert"]["body"]
+    assert hub.sent[-1][2]["entry_id"] == "car"
+    # Staying plugged in says nothing more.
+    await hub.async_vehicle_update("car", "Auto", plugged, 0, "car")
+    assert len(alerts(hub)) == 1
+
+
+async def test_unplugged_while_charging_and_a_target_out_of_reach_are_told(hub):
+    hub.register("phone", {"device_token": "dev", "alerts": True})
+    now = dt_util.utcnow()
+    deadline = (now + timedelta(hours=3)).isoformat()
+    charging = plan(
+        "charging", now, now + timedelta(hours=1), car_connected=True, deadline=deadline
+    )
+    await hub.async_vehicle_update("car", "Auto", charging, 10, "car")
+    await hub.async_vehicle_update("car", "Auto", charging, 10, "car")
+    await hub.async_vehicle_update(
+        "car", "Auto", plan("waiting_for_car", car_connected=False, deadline=deadline), 0, "car"
+    )
+    assert [kind for kind, _ in alerts(hub)] == ["interrupted"]
+    hub.sent.clear()
+    short = plan("insufficient_time", car_connected=True, deadline=deadline, shortfall_kwh=4)
+    await hub.async_vehicle_update("car", "Auto", short, 0, "car")
+    await hub.async_vehicle_update("car", "Auto", short, 0, "car")
+    # Plugged in again, and the target is out of reach: both said, once.
+    assert [kind for kind, _ in alerts(hub)] == ["plugged_in", "shortfall"]
+
+
+async def test_a_phone_chooses_which_notifications_it_gets(hub):
+    hub.register("phone", {"device_token": "dev", "alerts": True, "alert_types": ["done"]})
+    waiting = plan("scheduled", car_connected=False)
+    await hub.async_vehicle_update("car", "Auto", waiting, 0, "car")
+    await hub.async_vehicle_update("car", "Auto", dict(waiting, car_connected=True), 0, "car")
+    assert alerts(hub) == []
+    await hub.async_vehicle_update(
+        "car", "Auto", plan("target_reached", car_connected=True), 0, "car"
+    )
+    assert [kind for kind, _ in alerts(hub)] == ["done"]

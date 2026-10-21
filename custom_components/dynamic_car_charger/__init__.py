@@ -122,6 +122,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                 vol.Optional("activities"): {cv.string: vol.Any(None, cv.string)},
                 vol.Optional("language"): cv.string,
                 vol.Optional("alerts"): cv.boolean,
+                vol.Optional("alert_types"): vol.Any(None, [cv.string]),
                 vol.Optional("entries"): [cv.string],
             }
         ),
