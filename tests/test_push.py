@@ -1,6 +1,8 @@
 """Live Activities and notifications for the Charge Remote app, pushed from here."""
 
+import time
 from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 
 import jwt
 import pytest
@@ -85,6 +87,7 @@ async def hub(tmp_path):
     hub._send = send
     hub.sent = sent
     hub.public = key.public_key()
+    hub._loaded_at = 0  # past the quiet start
     yield hub
     await hass.async_stop(force=True)
 
@@ -271,9 +274,34 @@ async def test_unplugged_while_charging_and_a_target_out_of_reach_are_told(hub):
     hub.sent.clear()
     short = plan("insufficient_time", car_connected=True, deadline=deadline, shortfall_kwh=4)
     await hub.async_vehicle_update("car", "Auto", short, 0, "car")
-    await hub.async_vehicle_update("car", "Auto", short, 0, "car")
-    # Plugged in again, and the target is out of reach: both said, once.
+    assert [kind for kind, _ in alerts(hub)] == ["plugged_in"]  # not yet: maybe a moment
+    later = dt_util.utcnow() + timedelta(minutes=11)
+    with patch("custom_components.dynamic_car_charger.push.dt_util.utcnow", return_value=later):
+        await hub.async_vehicle_update("car", "Auto", short, 0, "car")
+        await hub.async_vehicle_update("car", "Auto", short, 0, "car")
     assert [kind for kind, _ in alerts(hub)] == ["plugged_in", "shortfall"]
+
+
+async def test_a_plan_short_only_for_want_of_prices_says_nothing(hub):
+    hub.register("phone", {"device_token": "dev", "alerts": True})
+    deadline = (dt_util.utcnow() + timedelta(days=4)).isoformat()
+    # As after a restart, while the forecast loads: short, but prices aren't known.
+    loading = plan(
+        "waiting_for_prices", deadline=deadline, shortfall_kwh=5.2, coverage_complete=False
+    )
+    later = dt_util.utcnow() + timedelta(minutes=30)
+    await hub.async_vehicle_update("car", "Auto", loading, 0, "car")
+    with patch("custom_components.dynamic_car_charger.push.dt_util.utcnow", return_value=later):
+        await hub.async_vehicle_update("car", "Auto", loading, 0, "car")
+    assert alerts(hub) == []
+
+
+async def test_nothing_is_told_right_after_home_assistant_started(hub):
+    hub.register("phone", {"device_token": "dev", "alerts": True})
+    hub._loaded_at = time.time()
+    await hub.async_vehicle_update("car", "Auto", plan("scheduled", car_connected=False), 0, "car")
+    await hub.async_vehicle_update("car", "Auto", plan("scheduled", car_connected=True), 0, "car")
+    assert alerts(hub) == []
 
 
 async def test_a_phone_chooses_which_notifications_it_gets(hub):
