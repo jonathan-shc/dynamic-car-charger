@@ -198,6 +198,8 @@ class PushHub:
         self._memo: dict[tuple[str, str], dict[str, Any]] = {}
         self._token: tuple[str, float] | None = None
         self._client = None
+        # The last few pushes and what Apple answered, for push_status.
+        self.recent: list[dict[str, Any]] = []
 
     async def async_load(self) -> None:
         saved = await self.store.async_load() or {}
@@ -238,6 +240,41 @@ class PushHub:
         device["registered_at"] = dt_util.utcnow().isoformat()
         self._save()
 
+    def status(self) -> dict[str, Any]:
+        """For push_status: whether the key signs, the phones and their tokens, and the
+        last pushes with Apple's answers. Never the key or full tokens."""
+        signs, error = False, None
+        if self.configured:
+            try:
+                self._token = None
+                self._jwt()
+                signs = True
+            except Exception as err:  # noqa: BLE001 - reported, not raised
+                error = f"{type(err).__name__}: {err}"
+        return {
+            "configured": self.configured,
+            "key_signs": signs,
+            "key_error": error,
+            "key_id": self.credentials.get("key_id"),
+            "team_id": self.credentials.get("team_id"),
+            "bundle_id": self.credentials.get("bundle_id"),
+            "sandbox": bool(self.credentials.get("sandbox")),
+            "devices": [
+                {
+                    "device": device_id[:8],
+                    "registered_at": device.get("registered_at"),
+                    "language": device.get("language"),
+                    "notifications": bool(device.get("alerts")),
+                    "notification_token": bool(device.get("device_token")),
+                    "live_activity_start_token": bool(device.get("start_token")),
+                    "live_activities": sorted((device.get("activities") or {}).keys()),
+                    "vehicles": device.get("entries"),
+                }
+                for device_id, device in self.devices.items()
+            ],
+            "recent_pushes": self.recent,
+        }
+
     def _jwt(self) -> str:
         import jwt
 
@@ -272,7 +309,17 @@ class PushHub:
             timeout=20,
         )
         if response.status_code != 200:
-            _LOGGER.debug("Push not sent (%s): %s", response.status_code, response.text)
+            _LOGGER.warning("Push not sent (%s): %s", response.status_code, response.text)
+        self.recent = [
+            {
+                "at": dt_util.utcnow().isoformat(),
+                "type": push_type,
+                "event": (payload.get("aps") or {}).get("event"),
+                "status": response.status_code,
+                "reason": None if response.status_code == 200 else response.text[:200],
+            },
+            *self.recent,
+        ][:10]
         return response.status_code
 
     async def async_vehicle_update(

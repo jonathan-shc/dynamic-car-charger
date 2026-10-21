@@ -351,6 +351,10 @@
         "sandbox": {"name": "Development builds", "description": "Only for builds run from Xcode; TestFlight and the App Store use the normal service."}
       }
     },
+    "push_status": {
+      "name": "Charge Remote push status",
+      "description": "Whether the push key works, which phones registered with which tokens, and Apple's answers to the last pushes."
+    },
     "register_push": {
       "name": "Register Charge Remote push",
       "description": "Called by the Charge Remote app with its push tokens.",

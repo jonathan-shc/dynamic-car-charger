@@ -18,6 +18,7 @@ from .const import (
     SERVICE_DELETE_TRIP,
     SERVICE_GET_SESSIONS,
     SERVICE_GET_TRIPS,
+    SERVICE_PUSH_STATUS,
     SERVICE_REGISTER_PUSH,
     SERVICE_SET_PUSH_CREDENTIALS,
     SERVICE_SET_SCHEDULE,
@@ -87,6 +88,18 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                 vol.Optional("sandbox", default=False): cv.boolean,
             }
         ),
+    )
+
+    async def push_status(call: ServiceCall) -> ServiceResponse:
+        """Whether pushing to the Charge Remote app is set up and working."""
+        return hub.status()
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_PUSH_STATUS,
+        push_status,
+        vol.Schema({}),
+        supports_response=SupportsResponse.ONLY,
     )
 
     async def register_push(call: ServiceCall) -> ServiceResponse:

@@ -190,3 +190,17 @@ async def test_the_push_client_leaves_the_shared_ssl_context_alone(tmp_path):
     assert pool._http2 is True
     assert pool._ssl_context is not shared
     await hass.async_stop(force=True)
+
+
+async def test_push_status_says_whether_the_key_signs_and_who_registered(hub):
+    hub.register(
+        "phone-1234567890", {"start_token": "start", "device_token": "dev", "alerts": True}
+    )
+    status = hub.status()
+    assert status["configured"] and status["key_signs"] and status["key_error"] is None
+    assert status["devices"][0]["device"] == "phone-12"
+    assert status["devices"][0]["live_activity_start_token"] is True
+    assert "key" not in status and "secret" not in str(status)
+    hub.credentials["key"] = "not a key"
+    broken = hub.status()
+    assert broken["key_signs"] is False and broken["key_error"]
