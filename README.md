@@ -329,3 +329,8 @@ keep the cable check powered.
 Last-confirmed cable connection and its evidence timestamp survive restart and
 stationary wake-up. These are historical evidence, not a fresh physical cable
 measurement. Fresh bike motion invalidates them.
+
+
+## Live Activities and notifications in the Charge Remote app
+
+With Apple's push key set once with `dynamic_car_charger.set_push_credentials` (key ID, team ID, bundle ID and the contents of the `.p8` APNs key from the Apple Developer account; kept in Home Assistant), Home Assistant reaches the Charge Remote app also while it is closed. The app registers its tokens with `register_push`. When a vehicle starts charging, its Live Activity is started on the phone, updated on every change (and at least every five minutes), and ended when charging stops. With notifications on, the phone also hears when charging starts, when the target is reached, when charging fails, and once, fifteen minutes before a charging block, when the vehicle isn't plugged in or a bike isn't home. Needs `h2` for Apple's HTTP/2 service; Home Assistant installs it.

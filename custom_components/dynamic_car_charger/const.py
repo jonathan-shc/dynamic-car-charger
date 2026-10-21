@@ -9,6 +9,8 @@ SERVICE_ADD_SESSIONS = "add_sessions"
 SERVICE_GET_TRIPS = "get_trips"
 SERVICE_DELETE_TRIP = "delete_trip"
 SERVICE_SET_SCHEDULE = "set_schedule"
+SERVICE_REGISTER_PUSH = "register_push"
+SERVICE_SET_PUSH_CREDENTIALS = "set_push_credentials"
 PLATFORMS = ["sensor", "number", "datetime", "switch", "button"]
 DEFAULTS = {
     "bike_min_ride_distance_m": 100,

@@ -18,10 +18,13 @@ from .const import (
     SERVICE_DELETE_TRIP,
     SERVICE_GET_SESSIONS,
     SERVICE_GET_TRIPS,
+    SERVICE_REGISTER_PUSH,
+    SERVICE_SET_PUSH_CREDENTIALS,
     SERVICE_SET_SCHEDULE,
     SERVICE_SET_SESSION,
 )
 from .coordinator import WEEKDAYS, ChargerCoordinator
+from .push import push_hub
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -58,6 +61,60 @@ ADD_SESSIONS_SCHEMA = vol.Schema(
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    hub = push_hub(hass)
+    await hub.async_load()
+
+    async def set_push_credentials(call: ServiceCall) -> None:
+        """Apple's key for pushing to the Charge Remote app, kept in Home Assistant."""
+        await hub.async_set_credentials(
+            call.data["key_id"],
+            call.data["team_id"],
+            call.data["bundle_id"],
+            call.data["private_key"],
+            call.data["sandbox"],
+        )
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SET_PUSH_CREDENTIALS,
+        set_push_credentials,
+        vol.Schema(
+            {
+                vol.Required("key_id"): cv.string,
+                vol.Required("team_id"): cv.string,
+                vol.Optional("bundle_id", default="app.chargeremote"): cv.string,
+                vol.Required("private_key"): cv.string,
+                vol.Optional("sandbox", default=False): cv.boolean,
+            }
+        ),
+    )
+
+    async def register_push(call: ServiceCall) -> ServiceResponse:
+        """The Charge Remote app's push tokens: for notifications, for starting a Live
+        Activity, and per running Live Activity by config entry."""
+        hub.register(
+            call.data["device_id"], {k: v for k, v in call.data.items() if k != "device_id"}
+        )
+        return {"configured": hub.configured}
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_REGISTER_PUSH,
+        register_push,
+        vol.Schema(
+            {
+                vol.Required("device_id"): cv.string,
+                vol.Optional("device_token"): vol.Any(None, cv.string),
+                vol.Optional("start_token"): vol.Any(None, cv.string),
+                vol.Optional("activities"): {cv.string: vol.Any(None, cv.string)},
+                vol.Optional("language"): cv.string,
+                vol.Optional("alerts"): cv.boolean,
+                vol.Optional("entries"): [cv.string],
+            }
+        ),
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+
     async def set_session(call: ServiceCall) -> None:
         coordinator = _coordinator_for(hass, call.data.get("config_entry_id"))
         changes = {}
