@@ -162,3 +162,4 @@ register_push:
     entries:
       selector:
         object:
+push_status:
