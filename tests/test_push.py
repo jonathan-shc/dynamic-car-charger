@@ -106,8 +106,8 @@ async def test_charging_starts_updates_and_ends_the_live_activity(hub):
     assert started[0]["aps"]["event"] == "start"
     assert started[0]["aps"]["attributes-type"] == "ChargeActivityAttributes"
     assert started[0]["aps"]["attributes"] == {"vehicle": "car", "name": "Auto", "scooter": False}
-    # And a notification, as it went from planned to charging.
-    assert any(kind == "alert" and token == "dev" for token, kind, _ in hub.sent)
+    # Its start carries the notification: no second one.
+    assert not any(kind == "alert" for _, kind, _ in hub.sent)
     # The phone's activity reports its own token: updates go there, not too often.
     hub.register("phone", {"activities": {"car": "activity"}})
     hub.sent.clear()
@@ -204,3 +204,27 @@ async def test_push_status_says_whether_the_key_signs_and_who_registered(hub):
     hub.credentials["key"] = "not a key"
     broken = hub.status()
     assert broken["key_signs"] is False and broken["key_error"]
+
+
+async def test_a_live_activity_starts_once_and_only_when_energy_flows(hub):
+    import asyncio
+
+    hub.register("phone", {"start_token": "start"})
+    now = dt_util.utcnow()
+    # A plug switched on for a moment: starting, nothing drawn yet.
+    await hub.async_vehicle_update("bike", "E-bike", plan("starting_charge"), 0, "bike")
+    charging = plan("charging", now, now + timedelta(hours=1))
+    await hub.async_vehicle_update("bike", "E-bike", charging, 0, "bike")
+    assert hub.sent == []
+    # Two plan updates at once, then more while charging: one start.
+    await asyncio.gather(
+        hub.async_vehicle_update("bike", "E-bike", charging, 0.13, "bike"),
+        hub.async_vehicle_update("bike", "E-bike", charging, 0.13, "bike"),
+    )
+    charging["estimated_soc"] = 70
+    await hub.async_vehicle_update("bike", "E-bike", charging, 0.13, "bike")
+    assert [payload["aps"]["event"] for _, _, payload in hub.sent] == ["start"]
+    # After the charge, the next one starts its own.
+    await hub.async_vehicle_update("bike", "E-bike", plan("target_reached"), 0, "bike")
+    await hub.async_vehicle_update("bike", "E-bike", charging, 0.13, "bike")
+    assert [payload["aps"]["event"] for _, _, payload in hub.sent] == ["start", "start"]
