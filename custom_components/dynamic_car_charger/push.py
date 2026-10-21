@@ -39,6 +39,11 @@ FLOWING_KW = 0.005
 UNPLUGGED_WARNING = 15 * 60
 # A charger or plug that can't be reached for this long gets a notification.
 UNREACHABLE_AFTER = 10 * 60
+# A target out of reach is only told once it has been so for this long: right after a
+# restart, or while prices load, a plan can briefly come up short.
+SHORTFALL_AFTER = 10 * 60
+# No notifications this soon after Home Assistant started: its first plans are partial.
+QUIET_AFTER_START = 5 * 60
 # Apple's signed token lasts an hour; a new one is made well before.
 TOKEN_LIFETIME = 50 * 60
 
@@ -256,6 +261,7 @@ class PushHub:
         self.recent: list[dict[str, Any]] = []
         # Plan updates come in quick succession; one at a time, so a start is sent once.
         self._lock = asyncio.Lock()
+        self._loaded_at = time.time()
 
     async def async_load(self) -> None:
         saved = await self.store.async_load() or {}
@@ -370,7 +376,7 @@ class PushHub:
             {
                 "at": dt_util.utcnow().isoformat(),
                 "type": push_type,
-                "event": (payload.get("aps") or {}).get("event"),
+                "event": (payload.get("aps") or {}).get("event") or payload.get("kind"),
                 "status": response.status_code,
                 "reason": None if response.status_code == 200 else response.text[:200],
             },
@@ -513,7 +519,21 @@ class PushHub:
             memo.pop("unreachable_since", None)
             memo.pop("unreachable_told", None)
         memo["connected"] = connected
-        if not device.get("alerts") or not device.get("device_token") or memo.get("first"):
+        # Out of reach for real: the time is too short, or prices are known to the ready-by
+        # time and still don't cover it. Not while prices or the forecast are missing.
+        short = status == "insufficient_time" or (
+            (data.get("shortfall_kwh") or 0) > 0.1 and data.get("coverage_complete") is True
+        )
+        if short:
+            memo.setdefault("short_since", now)
+        else:
+            memo.pop("short_since", None)
+        if (
+            not device.get("alerts")
+            or not device.get("device_token")
+            or memo.get("first")
+            or time.time() - self._loaded_at < QUIET_AFTER_START
+        ):
             return
         texts = _texts(language)
         soc, target = (
@@ -558,9 +578,10 @@ class PushHub:
                 },
                 entry_id,
             )
-        short = status == "insufficient_time" or (data.get("shortfall_kwh") or 0) > 0.1
+        short_since = memo.get("short_since")
         if (
-            short
+            short_since
+            and (now - short_since).total_seconds() >= SHORTFALL_AFTER
             and deadline
             and connected is not False
             and memo.get("short_for") != data["deadline"]
