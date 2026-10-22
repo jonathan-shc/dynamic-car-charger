@@ -115,12 +115,22 @@ class PriceModel:
     def day_start(self, day: date) -> datetime:
         return datetime(day.year, day.month, day.day, tzinfo=self.tz).astimezone(UTC)
 
+    def same_hour(self, hour: datetime, days: int) -> datetime:
+        """The same hour on the clock some days earlier. Across a daylight-saving change
+        that isn't 24 hours per day back: 23:00 in winter time minus two days is 23:00 in
+        summer time, not midnight."""
+        local = hour.astimezone(self.tz)
+        earlier = (local.replace(tzinfo=None) - timedelta(days=days)).replace(
+            tzinfo=self.tz, fold=local.fold
+        )
+        return earlier.astimezone(UTC)
+
     def _features(
         self, hour: datetime, lag: int, weather: dict[str, float] | None, suffix: str
     ) -> list[float] | None:
         day = self.local_date(hour)
         lag_mean = self.day_mean.get(day - timedelta(days=lag))
-        lag_price = self.market.get(hour - lag * 24 * HOUR)
+        lag_price = self.market.get(self.same_hour(hour, lag))
         if lag_mean is None or lag_price is None or weather is None:
             return None
         local_hour = hour.astimezone(self.tz).hour
