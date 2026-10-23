@@ -595,3 +595,24 @@ def test_forecast_error_codes_are_stable():
         == "calibration_data_incomplete"
     )
     assert forecast_error_code("Timeout: private source detail") == "source_unavailable"
+
+
+def test_every_hour_is_estimated_after_summer_time_ends():
+    # History to Friday 23 October 2026 (summer time); winter time starts Sunday 25th.
+    start, end = datetime(2026, 8, 15, tzinfo=UTC), datetime(2026, 10, 23, 21, tzinfo=UTC)
+    market = {h: market_price(h) for h in hours(start, end)}
+    archive = {h: weather_row(h, ARCHIVE_SUFFIXES) for h in hours(start, end)}
+    model = PriceModel(AMS, market, archive)
+    assert model.last_known_day == date(2026, 10, 23)
+    now = datetime(2026, 10, 23, 12, tzinfo=UTC)
+    # Monday 26th, a whole local day in winter time: 00:00 is 23:00 UTC the day before.
+    monday = list(
+        hours(datetime(2026, 10, 25, 23, tzinfo=UTC), datetime(2026, 10, 26, 22, tzinfo=UTC))
+    )
+    sunday_late = datetime(2026, 10, 25, 22, tzinfo=UTC)  # 23:00-00:00 on Sunday
+    live = {h: weather_row(h, [""]) for h in [*monday, sunday_late]}
+    estimates = model.predict(now, [*monday, sunday_late], live)
+    assert sunday_late in estimates
+    assert all(hour in estimates for hour in monday)
+    # Two days back from 23:00 in winter time is 23:00 in summer time.
+    assert model.same_hour(sunday_late, 2) == datetime(2026, 10, 23, 21, tzinfo=UTC)
