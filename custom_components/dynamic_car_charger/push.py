@@ -245,6 +245,22 @@ def _fingerprint(state: dict[str, Any]) -> tuple:
     )
 
 
+def _keep_activity_start(state: dict[str, Any], memo: dict[str, Any]) -> None:
+    """Keep a running Live Activity's original charging-period start.
+
+    The planner clips the current price slot to ``now`` every time it replans. Without
+    remembering the first value, ``windowStart`` consequently moves forward on every
+    push and the app repeatedly shows a new "starts in 0:00" countdown.
+    """
+    start = memo.get("activity_start")
+    if start is None:
+        # Immediate charging has no planned window; its first update time is still a
+        # useful, stable start for the Live Activity.
+        start = state.get("windowStart", state["updated"])
+        memo["activity_start"] = start
+    state["windowStart"] = start
+
+
 class PushHub:
     """The phones that registered, Apple's key, and what each phone was last sent."""
 
@@ -407,6 +423,14 @@ class PushHub:
             memo = self._memo.setdefault((device_id, entry_id), {"first": True})
             state = content_state(data, entry_id, language, power_kw, kind)
             token = (device.get("activities") or {}).get(entry_id)
+            starts_now = (
+                status in STARTS
+                and power_kw >= FLOWING_KW
+                and device.get("start_token")
+                and not memo.get("started")
+            )
+            if active and (token or memo.get("started") or starts_now):
+                _keep_activity_start(state, memo)
             try:
                 if active and token:
                     fingerprint = _fingerprint(state)
@@ -428,12 +452,7 @@ class PushHub:
                         )
                         memo.update(fingerprint=fingerprint, at=now)
                         changed |= self._forget(result, device, entry_id)
-                elif (
-                    status in STARTS
-                    and power_kw >= FLOWING_KW
-                    and device.get("start_token")
-                    and not memo.get("started")
-                ):
+                elif starts_now:
                     # Once per charge: also when the phone never reports the new activity's
                     # token, a second start would only add a second Live Activity.
                     memo.update(started=True, fingerprint=_fingerprint(state), at=now)
@@ -483,6 +502,7 @@ class PushHub:
                 _LOGGER.debug("Push to %s failed: %s", device_id, err)
             if not active:
                 memo["started"] = False  # the next charge may start one again
+                memo.pop("activity_start", None)
             memo["active"], memo["status"], memo["first"] = active, status, False
         if changed:
             self._save()
