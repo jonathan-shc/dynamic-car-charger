@@ -233,6 +233,48 @@ async def test_a_live_activity_starts_once_and_only_when_energy_flows(hub):
     assert [payload["aps"]["event"] for _, _, payload in hub.sent] == ["start", "start"]
 
 
+async def test_live_activity_keeps_the_original_period_start_when_the_plan_moves(hub):
+    hub.register("phone", {"start_token": "start"})
+    first_update = datetime(2026, 10, 25, 12, 10, tzinfo=UTC)
+    original_start = first_update - timedelta(minutes=10)
+    first_plan = plan("charging", original_start, first_update + timedelta(hours=1))
+
+    with patch(
+        "custom_components.dynamic_car_charger.push.dt_util.utcnow", return_value=first_update
+    ):
+        await hub.async_vehicle_update("car", "Auto", first_plan, 10, "car")
+
+    start_state = hub.sent[-1][2]["aps"]["content-state"]
+    assert start_state["windowStart"] == apple_time(original_start)
+
+    # A normal replan clips the active slot's start to the current time. The Live
+    # Activity must still describe the charging period that began at 12:00.
+    hub.register("phone", {"activities": {"car": "activity"}})
+    second_update = first_update + timedelta(minutes=5)
+    moved_plan = plan("charging", second_update, first_update + timedelta(hours=1))
+    moved_plan["estimated_soc"] = 56.4
+    with patch(
+        "custom_components.dynamic_car_charger.push.dt_util.utcnow", return_value=second_update
+    ):
+        await hub.async_vehicle_update("car", "Auto", moved_plan, 10, "car")
+
+    update_state = hub.sent[-1][2]["aps"]["content-state"]
+    assert hub.sent[-1][2]["aps"]["event"] == "update"
+    assert update_state["windowStart"] == apple_time(original_start)
+
+    # Once that period is over, a later charge gets its own start time.
+    await hub.async_vehicle_update("car", "Auto", plan("scheduled"), 0, "car")
+    hub.register("phone", {"activities": {"car": ""}})
+    hub.sent.clear()
+    next_start = second_update + timedelta(hours=2)
+    next_plan = plan("charging", next_start, next_start + timedelta(hours=1))
+    with patch(
+        "custom_components.dynamic_car_charger.push.dt_util.utcnow", return_value=next_start
+    ):
+        await hub.async_vehicle_update("car", "Auto", next_plan, 10, "car")
+    assert hub.sent[-1][2]["aps"]["content-state"]["windowStart"] == apple_time(next_start)
+
+
 def alerts(hub):
     return [
         (payload.get("kind"), payload["aps"]) for _, kind, payload in hub.sent if kind == "alert"
