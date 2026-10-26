@@ -532,13 +532,17 @@ class PushHub:
         was_connected = memo.get("connected")
         was_active = memo.get("active")
         previous = memo.get("status")
-        unreachable = data.get("error_code") == "input_unavailable"
+        # A charger that doesn't answer, or can't be reached: only told once it lasts. The
+        # Wallbox cloud drops out for seconds now and then, and that is no problem.
+        unreachable = data.get("error_code") == "input_unavailable" or status == "control_error"
         if unreachable:
             memo.setdefault("unreachable_since", now)
         else:
             memo.pop("unreachable_since", None)
             memo.pop("unreachable_told", None)
         memo["connected"] = connected
+        if status in ACTIVE:
+            memo.pop("done_told", None)  # a new charge may finish again
         # Out of reach for real: the time is too short, or prices are known to the ready-by
         # time and still don't cover it. Not while prices or the forecast are missing.
         short = status == "insufficient_time" or (
@@ -647,18 +651,16 @@ class PushHub:
                 "body": texts["started_body"].format(target=target, soc=soc),
             }
             await self._alert(device, "started", alert, entry_id)
-        elif status == "target_reached" and self._wants(device, "done"):
+        elif (
+            status == "target_reached" and not memo.get("done_told") and self._wants(device, "done")
+        ):
+            # Once per charge: the plan returns to "target reached" after every blip.
+            memo["done_told"] = True
             alert = {
                 "title": texts["done_title"].format(name=name),
                 "body": texts["done_body"].format(soc=soc),
             }
             await self._alert(device, "done", alert, entry_id)
-        elif status == "control_error" and self._wants(device, "problem"):
-            alert = {
-                "title": texts["problem_title"].format(name=name),
-                "body": headline(data, language, now, kind),
-            }
-            await self._alert(device, "problem", alert, entry_id)
 
     async def _warn_unplugged(self, device, memo, name, data, language, entry_id) -> None:
         now = dt_util.utcnow()

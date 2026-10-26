@@ -356,3 +356,40 @@ async def test_a_phone_chooses_which_notifications_it_gets(hub):
         "car", "Auto", plan("target_reached", car_connected=True), 0, "car"
     )
     assert [kind for kind, _ in alerts(hub)] == ["done"]
+
+
+async def test_a_charger_gone_for_a_moment_says_nothing_but_one_that_stays_gone_does(hub):
+    hub.register("phone", {"device_token": "dev", "alerts": True})
+    full = plan("target_reached", car_connected=True)
+    await hub.async_vehicle_update("car", "Auto", full, 0, "car")
+    hub._memo[("phone", "car")]["done_told"] = True  # this charge was told already
+    # As on 26 October: the Wallbox cloud gone for a moment, then back.
+    await hub.async_vehicle_update("car", "Auto", plan("control_error"), 0, "car")
+    await hub.async_vehicle_update(
+        "car", "Auto", plan("input_error", error_code="input_unavailable"), 0, "car"
+    )
+    await hub.async_vehicle_update("car", "Auto", full, 0, "car")
+    assert alerts(hub) == []
+    # Gone for ten minutes: told, once.
+    gone = plan("control_error")
+    await hub.async_vehicle_update("car", "Auto", gone, 0, "car")
+    later = dt_util.utcnow() + timedelta(minutes=11)
+    with patch("custom_components.dynamic_car_charger.push.dt_util.utcnow", return_value=later):
+        await hub.async_vehicle_update("car", "Auto", gone, 0, "car")
+        await hub.async_vehicle_update("car", "Auto", gone, 0, "car")
+    assert [kind for kind, _ in alerts(hub)] == ["problem"]
+
+
+async def test_target_reached_is_told_once_per_charge(hub):
+    hub.register("phone", {"device_token": "dev", "alerts": True})
+    now = dt_util.utcnow()
+    charging = plan("charging", now, now + timedelta(hours=1), car_connected=True)
+    full = plan("target_reached", car_connected=True)
+    await hub.async_vehicle_update("car", "Auto", charging, 10, "car")
+    for status in (full, plan("input_error"), full, plan("control_error"), full):
+        await hub.async_vehicle_update("car", "Auto", status, 0, "car")
+    assert [kind for kind, _ in alerts(hub)] == ["done"]
+    # The next charge finishing is told again.
+    await hub.async_vehicle_update("car", "Auto", charging, 10, "car")
+    await hub.async_vehicle_update("car", "Auto", full, 0, "car")
+    assert [kind for kind, _ in alerts(hub)] == ["done", "started", "done"]
