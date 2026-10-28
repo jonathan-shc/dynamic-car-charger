@@ -134,6 +134,26 @@ async def test_charging_starts_updates_and_ends_the_live_activity(hub):
     assert "car" not in hub.devices["phone"]["activities"]
 
 
+async def test_the_live_activity_ends_on_what_follows_the_pause(hub):
+    """Stopping is passed through on the way to the final state, which the ended
+    activity shows: not "Pausing…" left on the Lock Screen."""
+    hub.register(
+        "phone", {"start_token": "start", "activities": {"bike": "activity"}, "language": "nl"}
+    )
+    now = dt_util.utcnow()
+    await hub.async_vehicle_update(
+        "bike", "E-bike", plan("charging", now, now + timedelta(hours=1)), 0.1, "bike"
+    )
+    hub.sent.clear()
+    await hub.async_vehicle_update("bike", "E-bike", plan("stopping_charge"), 0, "bike")
+    assert hub.sent == []
+    await hub.async_vehicle_update("bike", "E-bike", plan("target_reached"), 0, "bike")
+    ends = [payload["aps"] for _, kind, payload in hub.sent if kind == "liveactivity"]
+    assert [aps["event"] for aps in ends] == ["end"]
+    assert ends[0]["content-state"]["headline"] == "Doel bereikt"
+    assert ends[0]["dismissal-date"] <= time.time() + 5 * 60 + 1
+
+
 async def test_a_phone_only_hears_about_the_vehicles_it_follows(hub):
     hub.register("phone", {"start_token": "start", "entries": ["scooter"]})
     now = dt_util.utcnow()

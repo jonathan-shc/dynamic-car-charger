@@ -34,6 +34,11 @@ REFRESH = 300
 # A Live Activity is only started once energy flows: not for a plug switched on for a
 # moment to see whether anything is on it, nor for a charger that doesn't start.
 STARTS = ("charging", "charging_overtime")
+# Passed through for a moment when charging stops: what follows (target reached, the next
+# block) decides what the Live Activity shows last, so it is neither updated nor ended.
+SETTLING = ("stopping_charge",)
+# An ended Live Activity stays on the Lock Screen this long with its final state.
+DISMISS_AFTER = 5 * 60
 FLOWING_KW = 0.005
 # A charging block this close with nothing plugged in gets a notification.
 UNPLUGGED_WARNING = 15 * 60
@@ -421,6 +426,8 @@ class PushHub:
                 continue
             language = device.get("language")
             memo = self._memo.setdefault((device_id, entry_id), {"first": True})
+            if status in SETTLING and memo.get("active"):
+                continue
             state = content_state(data, entry_id, language, power_kw, kind)
             token = (device.get("activities") or {}).get(entry_id)
             starts_now = (
@@ -491,7 +498,7 @@ class PushHub:
                                 "timestamp": int(now),
                                 "event": "end",
                                 "content-state": state,
-                                "dismissal-date": int(now + 20 * 60),
+                                "dismissal-date": int(now + DISMISS_AFTER),
                             }
                         },
                     )
