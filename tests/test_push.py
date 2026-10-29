@@ -372,6 +372,9 @@ async def test_a_phone_chooses_which_notifications_it_gets(hub):
     await hub.async_vehicle_update("car", "Auto", waiting, 0, "car")
     await hub.async_vehicle_update("car", "Auto", dict(waiting, car_connected=True), 0, "car")
     assert alerts(hub) == []
+    now = dt_util.utcnow()
+    charging = plan("charging", now, now + timedelta(hours=1), car_connected=True)
+    await hub.async_vehicle_update("car", "Auto", charging, 10.4, "car")
     await hub.async_vehicle_update(
         "car", "Auto", plan("target_reached", car_connected=True), 0, "car"
     )
@@ -382,7 +385,6 @@ async def test_a_charger_gone_for_a_moment_says_nothing_but_one_that_stays_gone_
     hub.register("phone", {"device_token": "dev", "alerts": True})
     full = plan("target_reached", car_connected=True)
     await hub.async_vehicle_update("car", "Auto", full, 0, "car")
-    hub._memo[("phone", "car")]["done_told"] = True  # this charge was told already
     # As on 26 October: the Wallbox cloud gone for a moment, then back.
     await hub.async_vehicle_update("car", "Auto", plan("control_error"), 0, "car")
     await hub.async_vehicle_update(
