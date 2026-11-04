@@ -32,6 +32,9 @@ set_session:
     charge_now:
       selector:
         boolean:
+    charge_full_once:
+      selector:
+        boolean:
 get_sessions:
   fields:
     config_entry_id:

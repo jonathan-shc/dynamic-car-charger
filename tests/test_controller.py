@@ -175,6 +175,29 @@ async def test_immediate_charging_works_without_automatic_mode(rig):
     assert calls[-1] == "turn_off"
 
 
+async def test_charging_to_full_once_goes_back_to_the_usual_target(rig):
+    hass, c, calls = rig
+    c.target = 70.0
+    await c.async_change(full_once=True)
+    assert c.target == 100 and c.immediate_charging is True
+    assert calls == ["turn_on"]
+    hass.states.async_set("sensor.battery", "100", {"unit_of_measurement": "%"})
+    await c.async_reconcile()
+    assert c.immediate_charging is False
+    assert c.target == 70
+    assert c.data["target_percentage"] == 70
+    # Switched off by hand before it is full: also back to the usual target.
+    hass.states.async_set("sensor.battery", "50", {"unit_of_measurement": "%"})
+    await c.async_change(full_once=True)
+    await c.async_change(immediate_charging=False)
+    assert c.target == 70
+    # A target set by hand meanwhile is the new usual one.
+    await c.async_change(full_once=True)
+    await c.async_change(target=90.0)
+    await c.async_change(immediate_charging=False)
+    assert c.target == 90
+
+
 async def test_charger_status_fires_connected_event(rig):
     hass, c, _ = rig
     c.settings["connected_entity"] = "sensor.charger_status"

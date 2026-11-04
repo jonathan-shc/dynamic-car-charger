@@ -37,6 +37,8 @@ SET_SESSION_SCHEMA = vol.Schema(
         vol.Optional("ready_by"): cv.datetime,
         vol.Optional("automatic_charging"): cv.boolean,
         vol.Optional("charge_now"): cv.boolean,
+        # Now, to 100%, then back to the target from before.
+        vol.Optional("charge_full_once"): cv.boolean,
     }
 )
 
@@ -145,6 +147,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             changes["enabled"] = call.data["automatic_charging"]
         if "charge_now" in call.data:
             changes["immediate_charging"] = call.data["charge_now"]
+        if call.data.get("charge_full_once"):
+            changes["full_once"] = True
         if not changes:
             raise ServiceValidationError(translation_domain=DOMAIN, translation_key="no_changes")
         await coordinator.async_change(**changes)
