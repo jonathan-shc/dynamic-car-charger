@@ -313,6 +313,10 @@
         "charge_now": {
           "name": "Charge now to target",
           "description": "Charge immediately until the target is reached, ignoring prices."
+        },
+        "charge_full_once": {
+          "name": "Charge now to 100% once",
+          "description": "Charge immediately to 100%, ignoring prices; afterwards the target goes back to what it was."
         }
       }
     },

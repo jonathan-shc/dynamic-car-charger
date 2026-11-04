@@ -143,6 +143,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.enabled = False
         self.immediate_charging = False
         self.target = 80.0
+        # Charging to full once: the target to go back to when that charge is over.
+        self._target_before_full: float | None = None
         # Target used once cheap-after-deadline mode takes over. It is
         # initialized to the normal target for backwards-compatible behavior.
         self.cheap_after_deadline_target = self.target
@@ -260,6 +262,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._delivered_kwh = number(saved.get("delivered_kwh", 0), 0)
         self.enabled = bool(saved.get("enabled", False))
         self.immediate_charging = bool(saved.get("immediate_charging", False))
+        before = saved.get("target_before_full")
+        self._target_before_full = None if before is None else number(before, 0, 100)
         self._pending_stop = bool(saved.get("pending_stop", False))
         self._charge_requested = bool(saved.get("charge_requested", False))
         self._lock_pending = bool(saved.get("lock_pending", False))
@@ -581,6 +585,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "target": self.target,
             "enabled": self.enabled,
             "immediate_charging": self.immediate_charging,
+            "target_before_full": self._target_before_full,
             "deadline": self.deadline.isoformat() if self.deadline else None,
             "observed_soc": self._observed_soc,
             "vehicle_completed": self._vehicle_completed,
@@ -643,6 +648,13 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def async_change(self, **changes: Any) -> None:
         async with self._lock:
+            if changes.pop("full_once", False) and not self.energy_mode:
+                # Now, to 100%, and back to the usual target afterwards.
+                if self._target_before_full is None and self.target < 100:
+                    self._target_before_full = self.target
+                changes.update(target=100.0, immediate_charging=True)
+            elif "target" in changes:
+                self._target_before_full = None  # a target set by hand is the new usual one
             if (
                 changes.get("enabled") is True
                 or changes.get("immediate_charging") is True
@@ -1534,6 +1546,11 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if data["status"] == "control_error"
                 else None
             )
+            if not self.immediate_charging and self._target_before_full is not None:
+                # The charge to full is over (done, or switched off): the usual target again.
+                self.target, self._target_before_full = self._target_before_full, None
+                data["target_percentage"] = self.target
+                self.store.async_delay_save(self._save_data, 1)
             self.async_set_updated_data(data)
             self._push(data)
             if self._vehicle_completed and not previously_completed:
