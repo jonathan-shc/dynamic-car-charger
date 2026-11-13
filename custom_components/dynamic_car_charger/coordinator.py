@@ -145,6 +145,8 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.target = 80.0
         # Charging to full once: the target to go back to when that charge is over.
         self._target_before_full: float | None = None
+        # Charging now was seen plugged in: unplugging (or riding off) then ends it.
+        self._immediate_plugged = False
         # Target used once cheap-after-deadline mode takes over. It is
         # initialized to the normal target for backwards-compatible behavior.
         self.cheap_after_deadline_target = self.target
@@ -683,6 +685,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._pending_stop = True
             elif changes.get("immediate_charging") is True:
                 self._pending_stop = False
+                self._immediate_plugged = False
             for key, value in changes.items():
                 setattr(self, key, value)
             if self.schedule_enabled and any(
@@ -1358,6 +1361,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             trip_km = float(trip_sensor.state)
                     self.trips.set_bike_state(self.bike.state, now, trip_km)
             self._follow_schedule(now)
+            self._end_immediate_when_unplugged()
             desired = False
             prices: list[Slot] = []
             self._interval_kwh = 0.0
@@ -1731,7 +1735,25 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.deadline = dt_util.as_utc(moment)
         target = self.schedule_targets.get(WEEKDAYS[moment.weekday()])
         if target is not None and not self.energy_mode:
-            self.target = target
+            if self._target_before_full is not None:
+                # Charging to full once: that goes on, and the day's own target counts after.
+                self._target_before_full = target
+            else:
+                self.target = target
+
+    def _end_immediate_when_unplugged(self) -> None:
+        """Charging now is for the vehicle that is plugged in: once it is unplugged or rides
+        off, the plan and the schedule count again, also when it comes back later."""
+        if not self.immediate_charging:
+            return
+        connected = self._car_connected()
+        if connected:
+            self._immediate_plugged = True
+        elif connected is False and self._immediate_plugged:
+            self.immediate_charging = False
+            self._immediate_plugged = False
+            if not self.enabled:
+                self._pending_stop = True
 
     def _follow_schedule(self, now: datetime) -> None:
         """With the weekly schedule on, a ready-by time that passed makes way for the next

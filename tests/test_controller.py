@@ -198,6 +198,47 @@ async def test_charging_to_full_once_goes_back_to_the_usual_target(rig):
     assert c.target == 90
 
 
+async def test_charging_to_full_once_then_follows_the_weekly_schedule(rig):
+    hass, c, calls = rig
+    c.target = 70.0
+    c.schedule_enabled = True
+    c.schedule = {day: "07:30" for day in ("mon", "tue", "wed", "thu", "fri", "sat", "sun")}
+    c.schedule_targets = {day: 80.0 for day in c.schedule}
+    c.deadline = dt_util.utcnow() - timedelta(minutes=1)
+    await c.async_change(full_once=True)
+    # The ready-by time passed meanwhile: the next one is taken, the full charge goes on.
+    assert c.target == 100 and c.immediate_charging is True
+    assert c.deadline > dt_util.utcnow()
+    hass.states.async_set("sensor.battery", "100", {"unit_of_measurement": "%"})
+    await c.async_reconcile()
+    # Done: the schedule's target for that day, and its ready-by time.
+    assert c.immediate_charging is False
+    assert c.target == 80
+
+
+async def test_charging_now_ends_when_the_vehicle_is_unplugged(rig):
+    hass, c, calls = rig
+    c.settings["connected_entity"] = "binary_sensor.plugged"
+    c.enabled = True
+    c.target = 70.0
+    # Pressed before plugging in: it waits for the vehicle.
+    hass.states.async_set("binary_sensor.plugged", "off")
+    await c.async_change(full_once=True)
+    await c.async_reconcile()
+    assert c.immediate_charging is True
+    hass.states.async_set("binary_sensor.plugged", "on")
+    await c.async_reconcile()
+    assert c.immediate_charging is True
+    # As on 13 November: ridden off before full; back later, the plan counts again.
+    hass.states.async_set("binary_sensor.plugged", "off")
+    await c.async_reconcile()
+    assert c.immediate_charging is False
+    assert c.target == 70
+    hass.states.async_set("binary_sensor.plugged", "on")
+    await c.async_reconcile()
+    assert c.immediate_charging is False
+
+
 async def test_charger_status_fires_connected_event(rig):
     hass, c, _ = rig
     c.settings["connected_entity"] = "sensor.charger_status"
