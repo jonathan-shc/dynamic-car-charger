@@ -66,6 +66,12 @@ def test_content_state_has_the_apps_field_names():
     assert "cheapPrice" not in state
 
 
+def test_content_state_shows_the_charge_ahead_target():
+    now = dt_util.utcnow()
+    data = plan("charging", now, now + timedelta(hours=1), look_ahead={"target_percentage": 100})
+    assert content_state(data, "entry", "nl", 0.8, "scooter")["target"] == 100
+
+
 @pytest.fixture
 async def hub(tmp_path):
     hass = HomeAssistant(str(tmp_path))

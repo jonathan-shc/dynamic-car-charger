@@ -223,7 +223,9 @@ def content_state(
     state = {
         "headline": headline(data, language, now, kind),
         "soc": data.get("estimated_soc", data.get("measured_soc")),
-        "target": data.get("target_percentage"),
+        # Charging ahead for later days: to that target, not the day's own.
+        "target": (data.get("look_ahead") or {}).get("target_percentage")
+        or data.get("target_percentage"),
         "powerKw": round(power_kw, 3) if charging else None,
         "charging": charging,
         "windowStart": apple_time(window[0]) if window else None,
