@@ -17,6 +17,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
             PriceForecast(entry.runtime_data),
             CheapOnly(entry.runtime_data),
             CheapAfterDeadline(entry.runtime_data),
+            CheapBeforeDeadline(entry.runtime_data),
             WeeklySchedule(entry.runtime_data),
         ]
     )
@@ -115,6 +116,26 @@ class CheapAfterDeadline(ChargerEntity, SwitchEntity):
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         await self.coordinator.async_change(cheap_after_deadline=False)
+
+
+class CheapBeforeDeadline(ChargerEntity, SwitchEntity):
+    """Before the deadline too: hours at or below the cheap price charge on past the
+    target, up to the target after the deadline."""
+
+    _attr_icon = "mdi:piggy-bank"
+
+    def __init__(self, coordinator):
+        super().__init__(coordinator, "cheap_before_deadline")
+
+    @property
+    def is_on(self) -> bool:
+        return self.coordinator.cheap_before_deadline
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self.coordinator.async_change(cheap_before_deadline=True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self.coordinator.async_change(cheap_before_deadline=False)
 
 
 class WeeklySchedule(ChargerEntity, SwitchEntity):
