@@ -240,6 +240,9 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.cheap_only = False
         self.cheap_price = 0.10
         self.cheap_after_deadline = False
+        # Before the deadline too: hours at or below the cheap price charge on past the
+        # day's target, up to the target after the deadline.
+        self.cheap_before_deadline = False
         # The car's drives, when its location is known.
         self.trips: TripRecorder | None = None
         self.bike = (
@@ -292,6 +295,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.cheap_only = bool(saved.get("cheap_only", False))
         self.cheap_price = number(saved.get("cheap_price", 0.10), -1, 5)
         self.cheap_after_deadline = bool(saved.get("cheap_after_deadline", False))
+        self.cheap_before_deadline = bool(saved.get("cheap_before_deadline", False))
         self.schedule = {
             day: str(time)
             for day, time in (saved.get("schedule") or {}).items()
@@ -609,6 +613,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "cheap_only": self.cheap_only,
             "cheap_price": self.cheap_price,
             "cheap_after_deadline": self.cheap_after_deadline,
+            "cheap_before_deadline": self.cheap_before_deadline,
             "cheap_after_deadline_target": self.cheap_after_deadline_target,
             "schedule": self.schedule,
             "schedule_targets": self.schedule_targets,
@@ -1385,6 +1390,7 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "cheap_only": self.cheap_only,
                 "cheap_price_eur_kwh": self.cheap_price,
                 "cheap_after_deadline": self.cheap_after_deadline,
+                "cheap_before_deadline": self.cheap_before_deadline,
                 "cheap_after_deadline_target": self.cheap_after_deadline_target,
                 "schedule": {
                     "enabled": self.schedule_enabled,
@@ -2080,9 +2086,56 @@ class ChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         else:
             status = "scheduled"
         data["plan_is_provisional"] = not coverage_complete
+        if self.cheap_before_deadline and not after_deadline and not self.energy_mode:
+            extra = self._cheap_extra(now, prices, plan, soc, effective, target, data)
+            if extra and extra.charging_at(now) and not desired:
+                desired = True
+                status = "charging"
+            elif extra and extra.slots and status == "target_reached":
+                status = "scheduled"
         data["status"] = status if self.enabled or status == "target_reached" else "preview"
         data["plan_status"] = status
         return desired, prices
+
+    def _cheap_extra(self, now, prices, plan, soc, effective, target, data) -> Plan | None:
+        """Cheap hours before the deadline: past the day's target, up to the target after
+        the deadline, in published hours at or below the cheap price the plan doesn't use."""
+        goal = self.cheap_after_deadline_target
+        start = max(effective, target)
+        if goal <= target or self._target_reached(soc, goal) or self._target_reached(start, goal):
+            return None
+        used = [(slot.start, slot.end) for slot in plan.slots]
+        free = [
+            slot
+            for slot in prices
+            if not slot.estimated
+            and slot.price <= self.cheap_price
+            and not any(slot.start < end and begin < slot.end for begin, end in used)
+        ]
+        if not free:
+            return None
+        extra = make_plan(
+            free,
+            now,
+            self.deadline,
+            start,
+            goal,
+            self._capacity(),
+            self.settings["power_kw"],
+            self._efficiency(),
+            max_price=self.cheap_price,
+            taper=self._taper(),
+        )
+        if not extra.slots:
+            return None
+        rows = extra.as_dict(self.settings["power_kw"])
+        data["slots"] = sorted(data["slots"] + rows["slots"], key=lambda slot: slot["start"])
+        data["cheap_extra_kwh"] = rows["planned_grid_kwh"]
+        data["cheap_extra_target_percentage"] = goal
+        data["estimated_cost_eur"] = round(
+            (data.get("estimated_cost_eur") or 0) + rows["estimated_cost_eur"], 4
+        )
+        return extra
 
     def _price_at(self, now: datetime, prices: list[Slot]) -> float | None:
         if not prices:

@@ -266,6 +266,9 @@
       "cheap_after_deadline": {
         "name": "Charge when cheap after the deadline"
       },
+      "cheap_before_deadline": {
+        "name": "Charge when cheap before the deadline"
+      },
       "weekly_schedule": {
         "name": "Weekly schedule"
       }

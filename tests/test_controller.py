@@ -239,6 +239,28 @@ async def test_charging_now_ends_when_the_vehicle_is_unplugged(rig):
     assert c.immediate_charging is False
 
 
+async def test_cheap_hours_before_the_deadline_charge_past_the_target(rig):
+    hass, c, calls = rig
+    c.target = 20  # the battery is at 20%: the day's target is reached
+    c.cheap_after_deadline_target = 100.0
+    c.cheap_price = 0.15
+    await c.async_change(enabled=True)
+    assert c.data["status"] == "target_reached"
+    assert calls == []
+    # Also before the deadline: the hour at 0.10 charges on, the one at 0.30 doesn't.
+    await c.async_change(cheap_before_deadline=True)
+    assert c.data["status"] in ("starting_charge", "charging")
+    assert calls == ["turn_on"]
+    assert [slot["price_eur_kwh"] for slot in c.data["slots"]] == [0.1]
+    assert c.data["cheap_extra_target_percentage"] == 100
+    # Dearer than the cheap price: nothing extra.
+    await c.async_change(cheap_price=0.05)
+    assert c.data["status"] in ("stopping_charge", "target_reached")
+    assert calls[-1] == "turn_off"
+    await c.async_reconcile()
+    assert c.data["status"] == "target_reached"
+
+
 async def test_charger_status_fires_connected_event(rig):
     hass, c, _ = rig
     c.settings["connected_entity"] = "sensor.charger_status"
@@ -1365,6 +1387,7 @@ EXPECTED_ENTITIES = {
         "price_forecast",
         "cheap_only",
         "cheap_after_deadline",
+        "cheap_before_deadline",
         "weekly_schedule",
     },
     "button": {"tomorrow_0700", "tomorrow_0900", "day_after_tomorrow_0900"},
