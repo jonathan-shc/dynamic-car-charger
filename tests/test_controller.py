@@ -2464,6 +2464,36 @@ async def test_detected_cable_turns_probe_off_even_during_completion_check(rig):
     assert c.bike.cable == "connected"
 
 
+async def test_bike_full_once_does_not_block_later_full_charges(rig):
+    hass, c, start = charging_bike(rig)
+    c.bike.home = True
+    c.bike.cable = "connected"
+    c.target = 100.0
+    c.enabled = True
+    c.deadline = start + timedelta(hours=8)
+    c._vehicle_completed = True  # full some days ago, ridden to 65% since
+    c._observed_soc = 65
+    await c.async_reconcile()
+    assert not c._vehicle_completed
+    assert c.data["plan_status"] != "target_reached"
+    assert c.data["slots"]
+
+
+async def test_bike_ridden_off_after_full_is_a_new_charge(rig):
+    hass, c, start = charging_bike(rig)
+    c.target = 100.0
+    c.enabled = True
+    c.deadline = start + timedelta(hours=8)
+    c._vehicle_completed = True
+    c._observed_soc = 99
+    set_power(hass, 0.0)
+    c.bike.home, c.bike.away = False, True
+    c.bike.cable = "disconnected"
+    await c.async_reconcile()
+    assert c.bike.cable == "disconnected"
+    assert not c._vehicle_completed
+
+
 async def test_bike_full_by_power_drop_switches_plug_off(rig):
     hass, c, start = charging_bike(rig)
     calls = rig[2]
